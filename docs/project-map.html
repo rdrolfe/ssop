@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>SSOP — The Ontology Project Map</h1>
-<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Made 2026-08-27.</b></div>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-08-29.</b></div>
 
 <div class="legend">
   <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
@@ -43,37 +43,60 @@
     <div class="item"><div class="t">Decision spine</div><div class="d">router → analyst/hunt/infra → supervisory</div></div>
     <div class="item"><div class="t">Tuning ledger + feedback loop</div><div class="d">Qdrant rule→decision; human adjudication feeds analyst</div></div>
     <div class="item"><div class="t">Playbook library (8) + recommendation</div><div class="d">Data-grounded per-role matrix, most-specific match</div></div>
-    <div class="item"><div class="t">Verify matrix 30/30 GREEN</div><div class="d">Fixtures encode data-driven decisions</div></div>
+    <div class="item"><div class="t">Verify matrix 30/30 GREEN</div><div class="d">Fixtures encode data-driven decisions; isolation fixed (tickets + cases)</div></div>
   </div>
 
   <div class="col done">
-    <h2><span class="dot"></span> Six adopted concepts (done)</h2>
-    <div class="item"><div class="t">1. Observables + extraction <span class="tag commit">5757da7</span></div><div class="d">Case field + auto-IOC extract</div></div>
-    <div class="item"><div class="t">2. Enrichment <span class="tag commit">d4868a8</span></div><div class="d">GreyNoise TI verdicts on case</div></div>
-    <div class="item"><div class="t">3. Guided Analysis questions <span class="tag commit">b2c25ce</span></div><div class="d">Playbook questions w/ live evidence</div></div>
-    <div class="item"><div class="t">4. Managed tuning surface <span class="tag commit">c07e94e</span></div><div class="d">/tuning API + attribution</div></div>
-    <div class="item"><div class="t">5. Case templates <span class="tag commit">f9862ec</span></div><div class="d">Rule → checklist prepopulated</div></div>
-    <div class="item"><div class="t">6. MITRE ATT&amp;CK <span class="tag commit">06286b0</span></div><div class="d">Techniques surfaced on verdicts</div></div>
+    <h2><span class="dot"></span> Closed-loop roles (done + live)</h2>
+    <div class="item"><div class="t">Recognition layer <span class="tag commit">validated</span></div><div class="d">HTTP exfil / DNS tunneling / Windows process / Suricata — 0 FP across stages</div></div>
+    <div class="item"><div class="t">Investigation layer <span class="tag commit">e169aa0</span></div><div class="d">threat-pattern correlation + entity scoring + kill-chain hypothesis</div></div>
+    <div class="item"><div class="t">Supervisor (evidence-aware) <span class="tag commit">94a9b46</span></div><div class="d">adjudicate_with_investigation — approve/deny grounded in scored evidence</div></div>
+    <div class="item"><div class="t">Responder (approval gate) <span class="tag commit">add1dce</span></div><div class="d">obeys supervisor verdict — refuses denied cases</div></div>
+    <div class="item"><div class="t">Pane of glass <span class="tag commit">9179566</span></div><div class="d">Closed Loop console — severity, kill-chain, hypothesis, adjudication</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Two-backend doctrine (done)</h2>
+    <div class="item"><div class="t">SO transport flip + two-backend run</div><div class="d">Matrix 30/30 against SO (.76) — doctrine PROVEN</div></div>
+    <div class="item"><div class="t">Ontology parity test</div><div class="d">Same C2 event → identical execution on Wazuh + SO shapes</div></div>
+    <div class="item"><div class="t">Result normalization</div><div class="d">signal.rule.* → rule.* at the transport layer</div></div>
+    <div class="item"><div class="t">Two-backend comparison (real data) <span class="tag commit">8f6cbd6</span></div><div class="d">20/20 escalate on both — transport flips, spine doesn't</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Ground-truth validation (done)</h2>
+    <div class="item"><div class="t">Data presence — 11/11 anchors</div><div class="d">All published BOTSv1 answers present (APT + ransomware scenarios)</div></div>
+    <div class="item"><div class="t">Full-spine APT scenario <span class="tag commit">e7ec306</span></div><div class="d">7/7 — infected workstation 192.168.250.100 through the whole loop</div></div>
+    <div class="item"><div class="t">Full-spine ransomware scenario <span class="tag commit">618f322</span></div><div class="d">7/7 — Cerber drops (121214.tmp, 3791.exe) recognized + escalated</div></div>
+    <div class="item"><div class="t">Sysmon data ingested <span class="tag commit">618f322</span></div><div class="d">830K docs → bots-sysmon-op-poc (process-exec with hashes)</div></div>
+    <div class="item"><div class="t">Wired into live analyst <span class="tag commit">c8e61c1</span></div><div class="d">sysmon index in the sweep — real 121214.tmp → escalate, level 8, threat</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Security &amp; ship (done)</h2>
+    <div class="item"><div class="t">Security scan + fixes <span class="tag commit">e2a77e8</span></div><div class="d">bandit 0 HIGH — configurable host keys, /tmp perms, log-not-pass</div></div>
+    <div class="item"><div class="t">Code cleanup <span class="tag commit">2c3d521</span></div><div class="d">ruff 543 → 40 (deliberate blind-except only)</div></div>
+    <div class="item"><div class="t">Secret hygiene <span class="tag commit">db4546b</span></div><div class="d">no hardcoded creds — env-driven, .env.gitignored</div></div>
+    <div class="item"><div class="t">Public GitHub repo <span class="tag commit">shipped</span></div><div class="d">rdrolfe/ssop — MIT, 13-step deployment guide, single clean commit</div></div>
   </div>
 
   <div class="col doing">
     <h2><span class="dot"></span> Human surface (in flight)</h2>
-    <div class="item"><div class="t">Supervisory console upgrade <span class="tag verify">built</span></div><div class="d">Tabs: Tickets (with case join) + Tuned Rules</div></div>
-    <div class="item"><div class="t">Ship path fix <span class="tag verify">fixed</span></div><div class="d">severity→alert_severity mapping-safe rename</div></div>
-    <div class="item"><div class="t">Case join in /tickets <span class="tag verify">verified</span></div><div class="d">obs/enr/tech/checklist ride the ticket</div></div>
-    <div class="item"><div class="t">Console commit <span class="tag parked">uncommitted</span></div><div class="d">3 files modified/new pending</div></div>
+    <div class="item"><div class="t">Supervisory console upgrade <span class="tag verify">built</span></div><div class="d">Tabs: Tickets (case join) + Tuned Rules + Closed Loop</div></div>
+    <div class="item"><div class="t">/cases endpoint <span class="tag verify">live</span></div><div class="d">Closed-loop view — investigation + adjudication per case</div></div>
+    <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag parked">parked</span></div><div class="d">iframe the console in the Wazuh dashboard (OSD gotchas)</div></div>
   </div>
 
   <div class="col todo">
     <h2><span class="dot"></span> Coming up</h2>
-    <div class="item"><div class="t">SO transport flip + two-backend run <span class="tag verify">DONE</span></div><div class="d">Matrix 30/30 against SO (.76) — doctrine PROVEN</div></div>
-    <div class="item"><div class="t">Deployment guide publish pass <span class="tag commit">drafted</span></div><div class="d">docs/deployment/two-example-ontology.md</div></div>
+    <div class="item"><div class="t">Hunt role vs ground truth <span class="tag verify">next</span></div><div class="d">Run the hypothesis-driven hunts against the BOTS scenarios</div></div>
+    <div class="item"><div class="t">Live two-backend full-loop run</div><div class="d">Whole spine on both backends — not just classifier parity</div></div>
     <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Revisit after core work — local-model path</div></div>
-    <div class="item"><div class="t">Qdrant stability on .94</div><div class="d">Intermittent connection-refused seen today</div></div>
-    <div class="item"><div class="t">Live two-backend data comparison</div><div class="d">SO has no signals yet — run traffic to compare alert flow</div></div>
+    <div class="item"><div class="t">Qdrant stability on .94</div><div class="d">Intermittent connection-refused seen</div></div>
+    <div class="item"><div class="t">Deployment guide publish pass</div><div class="d">docs/DEPLOYMENT.md now 13 steps — refresh + ship</div></div>
   </div>
 </div>
 
-<div class="sub" style="margin-top:20px">Repo: <span style="font-family:monospace">~/Desktop/ssop</span> · Doc: <span style="font-family:monospace">docs/deployment/two-example-ontology.md</span> · Ticket: <span style="font-family:monospace">wayfinder/so-integration-human-experience.md</span></div>
+<div class="sub" style="margin-top:20px">Repo: <span style="font-family:monospace">github.com/rdrolfe/ssop</span> · Guide: <span style="font-family:monospace">docs/DEPLOYMENT.md</span> · Ground truth: <span style="font-family:monospace">docs/wayfinder/tickets/botsv1-ground-truth.md</span></div>
 </body>
 </html>
