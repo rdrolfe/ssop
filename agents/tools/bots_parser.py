@@ -203,6 +203,22 @@ def normalize(src: dict[str, Any]) -> dict[str, Any]:
         is_process_creation = str(ec) in ("4688", "1")
         webshell = "php-cgi" in proc_name or ("w3wp.exe" in proc_name and "joomla" in hay)
         dll_sideload = "rundll32" in proc_name and not any(k in hay for k in ("system32\\", "shell32.dll", "user32.dll"))
+        # Benign Windows system binaries: their long command lines / temp paths
+        # (SearchProtocolHost indexer, etc.) are NOT attacks — exclude them
+        # from the temp/script heuristics (same class as the system32 rundll32
+        # exclusion above).
+        benign_sys = any(b in proc_name for b in (
+            "searchprotocolhost.exe", "searchfilterhost.exe", "searchindexer.exe",
+            "dllhost.exe", "taskhostw.exe", "sihost.exe", "backgroundtaskhost.exe"))
+        # Dropped malware: a .tmp executable running from AppData/Roaming
+        # (BOTSv1 Cerber: bob.smith...\AppData\Roaming\121214.tmp) — normal
+        # software does not execute .tmp files from a user's roaming profile.
+        dropped_tmp = (not benign_sys) and ("\\appdata\\roaming\\" in proc_name) and proc_name.endswith(".tmp")
+        # Web-uploaded binary: an .exe executed from a web root
+        # (BOTSv1: C:\inetpub\wwwroot\joomla\3791.exe, parent cmd.exe) — the
+        # webshell-upload story. Web servers should not execute uploaded exes.
+        webroot_exe = ("\\inetpub\\wwwroot\\" in proc_name or "\\wwwroot\\" in proc_name) \
+                      and proc_name.endswith(".exe")
         # script_exec must target the REAL scripting binaries, not any name
         # containing the substring (Splunk's splunk-powershell is NOT an attack).
         script_exec = (
@@ -212,8 +228,9 @@ def normalize(src: dict[str, Any]) -> dict[str, Any]:
                 "windows\\system32\\mshta.exe", "windows\\system32\\cscript.exe",
                 "windows\\system32\\wscript.exe", "windows\\system32\\certutil.exe"))
             and len(proc_cmd) > 40)
-        temp_exec = any(k in proc_cmd for k in ("\\temp\\", "\\tmp\\", "%temp%", "\\appdata\\local\\temp"))
-        if is_process_creation and (webshell or dll_sideload or script_exec or temp_exec):
+        temp_exec = (not benign_sys) and any(k in proc_cmd for k in ("\\temp\\", "\\tmp\\", "%temp%", "\\appdata\\local\\temp"))
+        if is_process_creation and (webshell or dll_sideload or script_exec or temp_exec
+                                    or dropped_tmp or webroot_exe):
             alert["rule"] = {
                 "id": f"win-{ec}", "level": 8,
                 "groups": ["windows", "process", "threat", "execution"],

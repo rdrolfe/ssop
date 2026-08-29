@@ -15,17 +15,25 @@ auth = "Basic " + base64.b64encode(f"{settings.indexer_user}:{settings.indexer_p
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 HOST = settings.indexer_host if settings.indexer_host not in ("", "localhost") else "192.168.1.75"
 
-def count(idx, query):
+def count(idx, query, host=None, auth_header=None):
+    h = host or HOST
+    a = auth_header or auth
     body = {"size": 0, "query": query}
     req = urllib.request.Request(
-        f"https://{HOST}:9200/{idx}/_search", data=json.dumps(body).encode(),
-        headers={"Authorization": auth, "Content-Type": "application/json"})
+        f"https://{h}:9200/{idx}/_search", data=json.dumps(body).encode(),
+        headers={"Authorization": a, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
             d = json.loads(r.read().decode())
             return int(d.get("hits", {}).get("total", {}).get("value", 0))
     except Exception as e:
         return f"ERR: {e}"
+
+# SO creds (the winsecurity index lives on SO, not Wazuh)
+SO_HOST = "192.168.1.76"
+SO_USER = "hermes@ssop.local"
+SO_PASS = settings.so_indexer_password or settings.indexer_password
+so_auth = "Basic " + base64.b64encode(f"{SO_USER}:{SO_PASS}".encode()).decode()
 
 # Ground-truth anchors from the published BOTSv1 answers
 # (fields match the data AS IT LIES: dest_ip for dest, _raw for form-data)
@@ -37,17 +45,20 @@ checks = [
     ("deface file poisonivy-coming-for-you", "bots-http-poc", {"match_phrase": {"_raw": "poisonivy-is-coming-for-you-batman.jpeg"}}),
     ("infected workstation 192.168.250.100", "bots-http-poc", {"term": {"c_ip": "192.168.250.100"}}),
     ("exe upload 3791.exe (_raw)", "bots-http-poc", {"match_phrase": {"_raw": "3791.exe"}}),
-    ("ransomware FQDN cerber...xmfir0.win", "bots-dns-poc", {"match_phrase": {"_raw": "xmfir0.win"}}),
-    ("sysmon process 121214.tmp", "bots-sysmon-poc", {"match_phrase": {"_raw": "121214.tmp"}}),
-    ("sysmon hash AAE3F5A29935E6ABCC2C2754D12A9AF0", "bots-sysmon-poc", {"match_phrase": {"_raw": "AAE3F5A29935E6ABCC2C2754D12A9AF0"}}),
-    ("windows process exec (joomla webshell, SO)", "bots-winsecurity", {"bool": {"must": [{"term": {"EventCode": 4688}}, {"match_phrase": {"_raw": "php-cgi"}}]}}),
+    ("ransomware FQDN cerber...xmfir0.win", "bots-dns-poc", {"wildcard": {"query": "*xmfir0*"}}),
+    ("sysmon process 121214.tmp", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "121214.tmp"}}),
+    ("sysmon hash AAE3F5A29935E6ABCC2C2754D12A9AF0", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "AAE3F5A29935E6ABCC2C2754D12A9AF0"}}),
+    ("sysmon 3791.exe process create", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "3791.exe"}}),
+    ("windows process exec (joomla webshell, SO)", "bots-winsecurity", {"bool": {"must": [{"term": {"EventCode": 4688}}, {"match_phrase": {"_raw": "joomla"}}]}}),
 ]
 
 print("=== BOTSv1 GROUND-TRUTH DATA PRESENCE ===")
-print(f"host: {HOST}\n")
+print(f"host: {HOST} (+ SO {SO_HOST} for winsecurity)\n")
 ok = 0
 for label, idx, query in checks:
-    n = count(idx, query)
+    # the winsecurity index lives on SO; everything else on Wazuh
+    is_so = idx == "bots-winsecurity"
+    n = count(idx, query, host=(SO_HOST if is_so else None), auth_header=(so_auth if is_so else None))
     if isinstance(n, int) and n > 0:
         mark = "✅ PRESENT"
         ok += 1
