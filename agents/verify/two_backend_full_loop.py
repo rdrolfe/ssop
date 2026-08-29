@@ -115,4 +115,35 @@ def main() -> None:
         json.dump(summary, f, indent=2)
 
 if __name__ == "__main__":
-    main()
+    # If no backend arg is given, run BOTH and diff the summaries.
+    if len(sys.argv) > 1:
+        main()
+    else:
+        import subprocess
+        outs = {}
+        for b in ("wazuh", "so"):
+            r = subprocess.run([sys.executable, __file__, b],
+                               capture_output=True, text=True, timeout=300)
+            print(r.stdout)
+            print(r.stderr)
+            try:
+                with open(f"/tmp/full_loop_{b}.json") as f:
+                    outs[b] = json.load(f)
+            except OSError as e:
+                print(f"  ! no summary for {b}: {e}")
+        if len(outs) == 2:
+            w, s = outs["wazuh"], outs["so"]
+            diffs = []
+            for k in ("recognize_escalated", "investigate_evidence",
+                      "investigate_severity", "supervise_decision",
+                      "supervise_used_investigation", "responder_blocked"):
+                if w.get(k) != s.get(k):
+                    diffs.append(f"{k}: wazuh={w.get(k)} so={s.get(k)}")
+            print("=== DIFF wazuh vs so ===")
+            if diffs:
+                for d in diffs:
+                    print("  DIFF:", d)
+            else:
+                print("  IDENTICAL — the full spine behaves the same on both backends.")
+                print(f"  (evidence={w['investigate_evidence']}, severity={w['investigate_severity']}, "
+                      f"decision={w['supervise_decision']}, blocked={w['responder_blocked']})")
