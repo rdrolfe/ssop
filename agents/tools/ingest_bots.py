@@ -91,9 +91,13 @@ def _target(backend: str = ""):
         if m:
             host = m.group(1)
             port = int(m.group(2) or 9200)
-            # SO per-backend creds from transport.yaml backends.securityonion
+            # SO per-backend creds: user from transport.yaml (a username is
+            # fine to commit); password from env (SO_INDEXER_PASSWORD) — the
+            # secret-hygiene fix moved it out of the committed config.
             user = _b.get("user") or (_b.get("fields") or {}).get("user", "")
             pw = _b.get("password") or (_b.get("fields") or {}).get("password", "")
+            if not pw:
+                pw = settings.so_indexer_password
             if not user or not pw:
                 from tools.indexer_client import IndexerTransport
                 t = IndexerTransport()
