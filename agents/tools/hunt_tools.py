@@ -66,10 +66,12 @@ class HuntClient:
             raise ValueError(f"Unknown hunt: {hunt_id}. Available: {list(self.HUNTS)}")
         spec = self.HUNTS[hunt_id]
         query = json.loads(json.dumps(spec["query"]))  # deep copy
-        # Time-bind the hunt
+        # Time-bind the hunt — use the transport's timestamp field mapping
+        # (bots/securityonion map to @timestamp; wazuh keeps timestamp).
+        ts_field = getattr(self._indexer, "field_timestamp", "timestamp")
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         query["query"]["bool"]["filter"].append(
-            {"range": {"timestamp": {"gte": since}}}
+            {"range": {ts_field: {"gte": since}}}
         )
         try:
             data = self._indexer.search(query)
@@ -100,6 +102,27 @@ class HuntClient:
             "finding": "info" if docs else "clean",
             "confidence": "low" if docs else "high",
             "summary": f"{len(docs)} events across agents {agents}",
+            "detail": docs[:5],
+        }
+
+    def _analyze_bots_attack(self, docs: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyzer for the BOTS ground-truth hunts.
+
+        A BOTS hunt confirms an attack when it finds events matching the
+        published scenario (UploadData.aspx exfil, xmfir0 C2 DNS, the Cerber
+        drop process). Finding is 'suspicious' (escalatable) when real
+        evidence exists — matching the ground-truth validation the parser +
+        full loop already proved. Requires >=1 hit to confirm.
+        """
+        if not docs:
+            return {"finding": "clean", "confidence": "high",
+                    "summary": "no events matched the BOTS attack pattern",
+                    "detail": []}
+        srcs = sorted({str(d.get("c_ip") or d.get("src_ip") or d.get("Computer") or "?") for d in docs})
+        return {
+            "finding": "suspicious",
+            "confidence": "high",
+            "summary": f"{len(docs)} events confirm the BOTS attack pattern (srcs: {srcs[:3]})",
             "detail": docs[:5],
         }
 

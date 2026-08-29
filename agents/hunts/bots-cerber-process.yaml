@@ -1,0 +1,18 @@
+name: BOTS Cerber ransomware process-exec (dropped .tmp / webroot .exe)
+category: lateral-movement
+hypothesis: "Cerber drops and executes a malicious process — 121214.tmp from AppData/Roaming, 3791.exe from the web root. Ground truth: parent PID 3968, hash AAE3F5A29935E6ABCC2C2754D12A9AF0."
+analyze: bots_attack
+query:
+  size: 50
+  query:
+    bool:
+      filter:
+        - match_phrase:
+            _raw: "121214.tmp"
+  _source:
+    - _raw
+    - Image
+    - CommandLine
+    - Hashes
+    - ParentProcessId
+    - EventCode

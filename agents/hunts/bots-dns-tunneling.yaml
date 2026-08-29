@@ -1,0 +1,16 @@
+name: BOTS DNS C2 tunneling (NIMLOC / high-entropy)
+category: defense-evasion
+hypothesis: "The malware beacon encodes data in DNS — high-entropy NIMLOC queries. Ground truth: cerberhhyed5frqa.xmfir0.win resolves from 192.168.250.100."
+analyze: bots_attack
+query:
+  size: 50
+  query:
+    bool:
+      filter:
+        - wildcard:
+            query: "*xmfir0*"
+  _source:
+    - src_ip
+    - query
+    - query_type
+    - _raw
