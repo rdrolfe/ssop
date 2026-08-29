@@ -209,15 +209,21 @@ class CaseStore:
             f.write(json.dumps(receipt) + "\n")
 
     def _write_memory(self, case: dict[str, Any]) -> None:
-        """Upsert canonical case point in Qdrant (stable uuid5 point id)."""
+        """Upsert canonical case point in Qdrant (stable uuid5 point id).
+
+        Retries transient connection refusals so a brief network blip cannot
+        strand a case as receipt-only (the divergence we hit on .94).
+        """
         try:
             import uuid as _uuid
 
             from qdrant_client.models import PointStruct
+            from tools.qdrant_tools import _retry_call
 
             content = f"{case['case_id']} {json.dumps(case)}"
             pid = str(_uuid.uuid5(_uuid.NAMESPACE_URL, case["case_id"]))
-            self._get_memory().client.upsert(
+            _retry_call(
+                self._get_memory().client.upsert,
                 collection_name=CASE_COLLECTION,
                 points=[PointStruct(
                     id=pid,
@@ -273,10 +279,15 @@ class CaseStore:
             logger.warning("recent_entity_cases read failed: %s", e)
         return out
 
-    def reconcile(self) -> dict[str, Any]:
+    def reconcile(self, heal: bool = True) -> dict[str, Any]:
         """Compare Qdrant vs JSONL for each case. Returns mismatches.
 
         The supervisory agent consumes this as its audit-integrity check.
+        With heal=True (default), receipt-only cases are automatically
+        re-synced into Qdrant — the JSONL receipt is the provable truth, so a
+        working-memory gap is repaired in place rather than left for a human.
+        Qdrant-only points are only reported (never deleted automatically: a
+        phantom point is safer than a silently dropped case).
         """
         qdrant_ids: set[str] = set()
         try:
@@ -287,17 +298,50 @@ class CaseStore:
         except Exception as e:  # noqa: BLE001
             logger.warning("reconcile: qdrant scan failed: %s", e)
         receipt_ids: set[str] = set()
+        receipts: dict[str, dict[str, Any]] = {}
         if self.cases_file.exists():
             for line in self.cases_file.read_text().splitlines():
                 try:
                     rec = json.loads(line)
                     if rec.get("case_id"):
                         receipt_ids.add(rec["case_id"])
+                        receipts.setdefault(rec["case_id"], rec)
                 except json.JSONDecodeError:
                     continue
+        receipt_only = sorted(receipt_ids - qdrant_ids)
+        healed: list[str] = []
+        heal_failed: list[str] = []
+        if heal and receipt_only:
+            for cid in receipt_only:
+                rec = receipts.get(cid) or self._get_from_receipt(cid)
+                if not rec:
+                    heal_failed.append(cid)
+                    continue
+                # Rebuild a minimal canonical case from the receipt record
+                # (title/status/timeline) and re-write the Qdrant point.
+                try:
+                    case = {
+                        "case_id": cid,
+                        "title": rec.get("title", cid),
+                        "status": rec.get("status", "open"),
+                        "ts": rec.get("ts"),
+                        "updated_ts": rec.get("ts"),
+                        "observables": [],
+                        "enrichments": [],
+                        "timeline": [rec.get("detail")] if rec.get("detail") else [],
+                    }
+                    self._write_memory(case)
+                    healed.append(cid)
+                except Exception as e:  # noqa: BLE001 — report, don't die
+                    logger.warning("reconcile heal failed for %s: %s", cid, e)
+                    heal_failed.append(cid)
+            # Refresh the Qdrant id set after healing.
+            qdrant_ids.update(healed)
         return {
             "qdrant_only": sorted(qdrant_ids - receipt_ids),
             "receipt_only": sorted(receipt_ids - qdrant_ids),
+            "healed": healed,
+            "heal_failed": heal_failed,
             "consistent": qdrant_ids == receipt_ids,
             "qdrant_count": len(qdrant_ids),
             "receipt_count": len(receipt_ids),

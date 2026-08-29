@@ -6,6 +6,7 @@ Hygiene: config-driven (config.py), imports at top, logging, structured errors.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,41 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VECTOR_SIZE = 384
 
+# Connection-level errors worth retrying (transient network/refusal blips).
+# Imported lazily — the qdrant client pulls httpx, but keep the import local
+# so this module stays importable even if the transport layer changes.
+def _is_transient_error(exc: Exception) -> bool:
+    import httpx
+
+    from qdrant_client.http.exceptions import ResponseHandlingException
+
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                            httpx.ReadError, httpx.RemoteProtocolError, ConnectionError,
+                            TimeoutError, OSError, ResponseHandlingException))
+
+
+def _retry_call(fn, *args, attempts: int = 3, base_delay: float = 0.4, **kwargs):
+    """Call fn with bounded retry on transient connection errors.
+
+    Non-transient errors propagate immediately; transient errors retry with
+    exponential backoff. Used on every Qdrant write so a brief refusal cannot
+    silently drop a point (the JSONL receipt is truth, but the working store
+    must not fall behind).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 — classified below
+            if not _is_transient_error(e) or attempt == attempts - 1:
+                raise
+            last_exc = e
+            delay = base_delay * (2 ** attempt)
+            logger.warning("qdrant transient failure (attempt %d/%d), retrying in %.1fs: %s",
+                           attempt + 1, attempts, delay, e)
+            time.sleep(delay)
+    raise RuntimeError(f"qdrant transient failure after {attempts} attempts: {last_exc}")
+
 
 class QdrantError(RuntimeError):
     """Raised when Qdrant is unreachable or an operation fails."""
@@ -31,7 +67,9 @@ class QdrantMemory:
         # Prefer QDRANT_URL (full URL convention); fall back to host/port.
         self.url = url or settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
         try:
-            self.client = QdrantClient(url=self.url, prefer_grpc=False)
+            # Explicit connect/read timeouts so a hung connection cannot block
+            # a role forever (no timeout = wait indefinitely on a dead peer).
+            self.client = QdrantClient(url=self.url, prefer_grpc=False, timeout=5.0)
         except Exception as e:
             logger.error("qdrant connect failed: %s", e)
             raise QdrantError(f"qdrant connect failed: {e}") from e
@@ -39,7 +77,7 @@ class QdrantMemory:
     def ensure_collection(self, name: str, vector_size: int = DEFAULT_VECTOR_SIZE) -> dict[str, Any]:
         """Create a collection if it does not exist."""
         try:
-            collections = self.client.get_collections().collections
+            collections = _retry_call(self.client.get_collections).collections
             existing = [c.name for c in collections]
             if name not in existing:
                 self.client.create_collection(
@@ -72,7 +110,8 @@ class QdrantMemory:
             payload.update(metadata)
         vec = vector or [0.0] * DEFAULT_VECTOR_SIZE
         try:
-            self.client.upsert(
+            _retry_call(
+                self.client.upsert,
                 collection_name=collection,
                 points=[PointStruct(id=point_id, vector=vec, payload=payload)],
             )
@@ -85,8 +124,12 @@ class QdrantMemory:
         """Search memory entries by text content."""
         self.ensure_collection(collection)
         try:
-            records = self.client.scroll(
-                collection_name=collection, limit=1000, with_payload=True, with_vectors=False
+            records = _retry_call(
+                self.client.scroll,
+                collection_name=collection,
+                limit=1000,
+                with_payload=True,
+                with_vectors=False,
             )[0]
         except Exception as e:
             logger.error("search_memory scroll failed in %s: %s", collection, e)
@@ -114,8 +157,12 @@ class QdrantMemory:
         """Return the most recent memories by timestamp (descending)."""
         self.ensure_collection(collection)
         try:
-            records = self.client.scroll(
-                collection_name=collection, limit=1000, with_payload=True, with_vectors=False
+            records = _retry_call(
+                self.client.scroll,
+                collection_name=collection,
+                limit=1000,
+                with_payload=True,
+                with_vectors=False,
             )[0]
         except Exception as e:
             logger.error("recent_memories scroll failed in %s: %s", collection, e)
@@ -137,7 +184,7 @@ class QdrantMemory:
     def delete_memory(self, collection: str, point_id: str) -> dict[str, Any]:
         """Delete a memory entry by point id."""
         try:
-            self.client.delete(collection_name=collection, points_selector=[point_id])
+            _retry_call(self.client.delete, collection_name=collection, points_selector=[point_id])
             return {"deleted": True, "point_id": point_id}
         except Exception as e:
             logger.error("delete_memory failed in %s: %s", collection, e)
