@@ -61,6 +61,8 @@
     <div class="item"><div class="t">Ontology parity test</div><div class="d">Same C2 event → identical execution on Wazuh + SO shapes</div></div>
     <div class="item"><div class="t">Result normalization</div><div class="d">signal.rule.* → rule.* at the transport layer</div></div>
     <div class="item"><div class="t">Two-backend comparison (real data) <span class="tag commit">8f6cbd6</span></div><div class="d">20/20 escalate on both — transport flips, spine doesn't</div></div>
+    <div class="item"><div class="t">FULL-LOOP capstone <span class="tag commit">c9309d4</span></div><div class="d">Whole spine identical on both backends — recognize → investigate → supervise → respond</div></div>
+    <div class="item"><div class="t">Apples-to-apples <span class="tag commit">b2ae9cb</span></div><div class="d">dns + suricata ingested into SO → identical evidence counts (3 vs 3), explicit diff</div></div>
   </div>
 
   <div class="col done">
@@ -70,6 +72,13 @@
     <div class="item"><div class="t">Full-spine ransomware scenario <span class="tag commit">618f322</span></div><div class="d">7/7 — Cerber drops (121214.tmp, 3791.exe) recognized + escalated</div></div>
     <div class="item"><div class="t">Sysmon data ingested <span class="tag commit">618f322</span></div><div class="d">830K docs → bots-sysmon-op-poc (process-exec with hashes)</div></div>
     <div class="item"><div class="t">Wired into live analyst <span class="tag commit">c8e61c1</span></div><div class="d">sysmon index in the sweep — real 121214.tmp → escalate, level 8, threat</div></div>
+    <div class="item"><div class="t">Hunt role vs ground truth <span class="tag commit">d2ac0f7</span></div><div class="d">3 BOTS hunts (http-exfil, dns-tunnel, cerber) converge + escalate on published answers</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Reliability &amp; ops (done)</h2>
+    <div class="item"><div class="t">Supervisor queue-drain fix <span class="tag commit">2719a68</span></div><div class="d">dedupe closes repeats, close-node no-op, reconcile repair — queue 174→0, consistent=True</div></div>
+    <div class="item"><div class="t">Qdrant hardening <span class="tag commit">acf6f90</span></div><div class="d">timeout + transient-retry + self-healing reconcile — a blip can't strand a case again</div></div>
   </div>
 
   <div class="col done">
@@ -84,16 +93,13 @@
     <h2><span class="dot"></span> Human surface (in flight)</h2>
     <div class="item"><div class="t">Supervisory console upgrade <span class="tag verify">built</span></div><div class="d">Tabs: Tickets (case join) + Tuned Rules + Closed Loop</div></div>
     <div class="item"><div class="t">/cases endpoint <span class="tag verify">live</span></div><div class="d">Closed-loop view — investigation + adjudication per case</div></div>
-    <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag parked">parked</span></div><div class="d">iframe the console in the Wazuh dashboard (OSD gotchas)</div></div>
   </div>
 
   <div class="col todo">
     <h2><span class="dot"></span> Coming up</h2>
-    <div class="item"><div class="t">Hunt role vs ground truth <span class="tag verify">next</span></div><div class="d">Run the hypothesis-driven hunts against the BOTS scenarios</div></div>
-    <div class="item"><div class="t">Live two-backend full-loop run</div><div class="d">Whole spine on both backends — not just classifier parity</div></div>
+    <div class="item"><div class="t">Operationalize the lab <span class="tag verify">next</span></div><div class="d">Sustained live run — real detection signals through both SIEMs into the spine, not replayed data</div></div>
+    <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag parked">parked</span></div><div class="d">iframe the console in the Wazuh dashboard (OSD gotchas)</div></div>
     <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Revisit after core work — local-model path</div></div>
-    <div class="item"><div class="t">Qdrant stability on .94</div><div class="d">Intermittent connection-refused seen</div></div>
-    <div class="item"><div class="t">Deployment guide publish pass <span class="tag commit">6de2d8e</span></div><div class="d">docs/DEPLOYMENT.md — 13 steps (BOTS, two-backend, closed-loop)</div></div>
   </div>
 </div>
 
