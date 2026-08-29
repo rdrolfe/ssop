@@ -37,15 +37,17 @@ class AnalystClient:
     def recent_alerts(self, limit: int = 10, min_level: int = 0) -> List[Dict[str, Any]]:
         """Fetch recent alerts from the indexer, newest first.
 
-        For the BOTS backend, targets the THREAT-relevant slices (http + dns,
-        which carry the exfil/tunneling artifacts) and normalizes each doc
-        through bots_parser so the analyst sees the ontology shape.
+        For the BOTS backend, targets the THREAT-relevant slices (http + dns
+        for exfil/tunneling, plus the full Sysmon process-exec index for the
+        ransomware/dropped-malware artifacts) and normalizes each doc through
+        bots_parser so the analyst sees the ontology shape.
         """
         backend = getattr(self._indexer, "backend", "")
         if backend == "bots":
             from tools.bots_parser import normalize
             alerts = self._indexer.recent_alerts(
-                limit=limit, min_level=min_level, index="bots-http-poc,bots-dns-poc")
+                limit=limit, min_level=min_level,
+                index="bots-http-poc,bots-dns-poc,bots-sysmon-op-poc")
             return [normalize(a) for a in alerts]
         alerts = self._indexer.recent_alerts(limit=limit, min_level=min_level)
         return alerts
