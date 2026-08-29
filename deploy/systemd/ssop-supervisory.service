@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP supervisory duty (daily)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/ssop-supervisory.sh
+Nice=10

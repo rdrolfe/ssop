@@ -1,0 +1,75 @@
+# SSOP transport configuration — which SIEM backend the agents query.
+# The decision spine (alerts -> categories -> roles -> verdicts -> cases)
+# is transport-agnostic; this file selects the backend + field ontology.
+#
+# backend: wazuh | securityonion | elastic
+#   - wazuh: OpenSearch indices (ssop-events, wazuh-alerts-*, wazuh-states-*)
+#   - securityonion: Elasticsearch indices (so-*, .internal.alerts-*)
+#   - elastic: generic Elasticsearch (future)
+backend: bots
+
+# Global field ontology — the SAME semantic fields across backends.
+# Per-backend overrides live in backends.<name>.fields (see below); the
+# global values are the fallback when a backend doesn't override.
+fields:
+  timestamp: "@timestamp"        # Wazuh/OSD + Elastic share this
+  level: "rule.level"
+  groups: "rule.groups"
+  category: "category"           # our enriched field (set by OTel pipeline)
+
+# Per-backend settings (indexes + field-name overrides + endpoint + creds)
+backends:
+  wazuh:
+    alerts_index: "wazuh-alerts-4.x-*"
+    inventory_index: "wazuh-states-inventory-packages-*"
+    endpoint: "https://192.168.1.75:9200"
+    # creds come from the .env (INDEXER_USERNAME/INDEXER_PASSWORD) by default
+  securityonion:
+    alerts_index: ".ds-logs-zeek-so-*,so-detection"  # passive dataset (imported pcap Zeek logs) + detections
+    inventory_index: "so-*"     # SO host data (Elastic Agent)
+    endpoint: "https://192.168.1.76:9200"   # SO VM 706 — ES is HTTPS-only
+    # SO signals nest rule fields under signal.* — override the field names
+    fields:
+      level: "signal.rule.level"
+      groups: "signal.rule.tags"
+    # SO ES creds: the user is fine to commit (it's a username); the password
+    # lives in .env as SO_INDEXER_PASSWORD — never in this committed file.
+    user: "<so-es-user>"
+    # password: set via SO_INDEXER_PASSWORD in .env
+  elastic:
+    alerts_index: "logs-*"
+    inventory_index: "logs-*"
+    endpoint: ""
+  bots:
+    alerts_index: "bots-*-poc"   # BOTSv1 ingested slices (sysmon/http/winsys/suricata/dns)
+    inventory_index: "bots-*-poc"
+    endpoint: "https://192.168.1.75:9200"
+
+# Rule map — the ontology: alert signature -> (category, role).
+# The MEANING is ours; the signature ids are the SIEM's. Re-mapping for a
+# new backend = editing this file, not code.
+rules:
+  510:    {category: security, role: analyst, template: rootcheck-drift, technique_id: "T1547.001"}      # rootcheck
+  52002:  {category: pattern,  role: hunt, technique_id: "T1068"}        # apparmor
+  5710:   {category: security, role: analyst}     # sshd auth failure
+  5715:   {category: security, role: analyst}     # sshd auth success (unusual)
+  86601:  {category: security, role: analyst}     # suricata generic
+  5740:   {category: security, role: analyst}     # sshd
+  40704:  {category: infra,   role: infra}        # systemd
+  2901:   {category: security, role: analyst}     # dpkg config changed
+  2902:   {category: security, role: analyst}     # dpkg config changed
+  2903:   {category: security, role: analyst}     # dpkg config changed
+  2904:   {category: security, role: analyst}     # dpkg config changed
+  23502:  {category: security, role: analyst}     # vulnerability-detector
+
+# Security Onion rule map — SO signals carry the rule under signal.rule; the
+# signatures are the ET/emerging-threats IDs SO indexes. Categories map to the
+# SAME ontology; only the signature-id key changes.
+securityonion_rules:
+  2024724: {category: threat,  role: analyst}      # ET ADWARE/PUP DNS
+  2027418: {category: threat,  role: analyst}      # ET PUP LNKR
+  2027863: {category: operational, role: analyst}  # ET INFO .biz TLD
+  2045417: {category: threat,  role: analyst}      # ET MALWARE Raspberry Robin
+  2045481: {category: threat,  role: analyst}      # ET MALWARE 0x9.biz
+  2049500: {category: threat,  role: analyst}      # ET MALWARE BIOPASS RAT (approx)
+  default: {category: operational, role: null}

@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP intel daily sweep (KEV/NVD -> hunt packs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/ssop-intel.sh
+Nice=10

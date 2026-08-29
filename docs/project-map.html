@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SSOP Project Map — State of the Ontology</title>
+<style>
+  :root { --fg:#e8e8e8; --muted:#9a9a9a; --border:#3a3a3a; --card:#1e1e1e; --accent:#4f8cff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --bg:#141414; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding:24px; }
+  h1 { font-size:20px; margin-bottom:2px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+  .col { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .col h2 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:12px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .done .dot { background:var(--ok); } .doing .dot { background:var(--warn); } .todo .dot { background:var(--muted); }
+  .item { padding:8px 10px; border:1px solid var(--border); border-radius:6px; margin-bottom:8px; font-size:13px; background:#181818; }
+  .item .t { font-weight:600; }
+  .item .d { color:var(--muted); font-size:12px; margin-top:2px; }
+  .item .tag { font-size:10px; padding:1px 6px; border-radius:8px; margin-left:6px; }
+  .tag.commit { background:rgba(63,185,80,.15); color:var(--ok); }
+  .tag.verify { background:rgba(79,140,255,.15); color:var(--accent); }
+  .tag.parked { background:rgba(210,153,34,.15); color:var(--warn); }
+  .tag.blocked { background:rgba(248,81,73,.15); color:var(--bad); }
+  .legend { display:flex; gap:16px; margin-bottom:16px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:6px; }
+</style>
+</head>
+<body>
+<h1>SSOP — The Ontology Project Map</h1>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Made 2026-08-27.</b></div>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
+  <span><span class="dot" style="background:var(--warn)"></span> In progress / parked</span>
+  <span><span class="dot" style="background:var(--muted)"></span> Upcoming</span>
+</div>
+
+<div class="grid">
+  <div class="col done">
+    <h2><span class="dot"></span> Core spine (done)</h2>
+    <div class="item"><div class="t">Case spine (Qdrant + JSONL receipt)</div><div class="d">CaseStore, dual-write, recidivism attach</div></div>
+    <div class="item"><div class="t">Decision spine</div><div class="d">router → analyst/hunt/infra → supervisory</div></div>
+    <div class="item"><div class="t">Tuning ledger + feedback loop</div><div class="d">Qdrant rule→decision; human adjudication feeds analyst</div></div>
+    <div class="item"><div class="t">Playbook library (8) + recommendation</div><div class="d">Data-grounded per-role matrix, most-specific match</div></div>
+    <div class="item"><div class="t">Verify matrix 30/30 GREEN</div><div class="d">Fixtures encode data-driven decisions</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Six adopted concepts (done)</h2>
+    <div class="item"><div class="t">1. Observables + extraction <span class="tag commit">5757da7</span></div><div class="d">Case field + auto-IOC extract</div></div>
+    <div class="item"><div class="t">2. Enrichment <span class="tag commit">d4868a8</span></div><div class="d">GreyNoise TI verdicts on case</div></div>
+    <div class="item"><div class="t">3. Guided Analysis questions <span class="tag commit">b2c25ce</span></div><div class="d">Playbook questions w/ live evidence</div></div>
+    <div class="item"><div class="t">4. Managed tuning surface <span class="tag commit">c07e94e</span></div><div class="d">/tuning API + attribution</div></div>
+    <div class="item"><div class="t">5. Case templates <span class="tag commit">f9862ec</span></div><div class="d">Rule → checklist prepopulated</div></div>
+    <div class="item"><div class="t">6. MITRE ATT&amp;CK <span class="tag commit">06286b0</span></div><div class="d">Techniques surfaced on verdicts</div></div>
+  </div>
+
+  <div class="col doing">
+    <h2><span class="dot"></span> Human surface (in flight)</h2>
+    <div class="item"><div class="t">Supervisory console upgrade <span class="tag verify">built</span></div><div class="d">Tabs: Tickets (with case join) + Tuned Rules</div></div>
+    <div class="item"><div class="t">Ship path fix <span class="tag verify">fixed</span></div><div class="d">severity→alert_severity mapping-safe rename</div></div>
+    <div class="item"><div class="t">Case join in /tickets <span class="tag verify">verified</span></div><div class="d">obs/enr/tech/checklist ride the ticket</div></div>
+    <div class="item"><div class="t">Console commit <span class="tag parked">uncommitted</span></div><div class="d">3 files modified/new pending</div></div>
+  </div>
+
+  <div class="col todo">
+    <h2><span class="dot"></span> Coming up</h2>
+    <div class="item"><div class="t">SO transport flip + two-backend run <span class="tag verify">DONE</span></div><div class="d">Matrix 30/30 against SO (.76) — doctrine PROVEN</div></div>
+    <div class="item"><div class="t">Deployment guide publish pass <span class="tag commit">drafted</span></div><div class="d">docs/deployment/two-example-ontology.md</div></div>
+    <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Revisit after core work — local-model path</div></div>
+    <div class="item"><div class="t">Qdrant stability on .94</div><div class="d">Intermittent connection-refused seen today</div></div>
+    <div class="item"><div class="t">Live two-backend data comparison</div><div class="d">SO has no signals yet — run traffic to compare alert flow</div></div>
+  </div>
+</div>
+
+<div class="sub" style="margin-top:20px">Repo: <span style="font-family:monospace">~/Desktop/ssop</span> · Doc: <span style="font-family:monospace">docs/deployment/two-example-ontology.md</span> · Ticket: <span style="font-family:monospace">wayfinder/so-integration-human-experience.md</span></div>
+</body>
+</html>

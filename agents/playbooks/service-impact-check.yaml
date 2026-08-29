@@ -1,0 +1,19 @@
+# SSOP playbook — check service impact from systemd/sudo events.
+# Fires on infra-class events (systemd 40704, sudo 5402/5403). Verifies the
+# affected service is healthy after an operational event; no destructive
+# action, just verify-and-report. Tier1 (single approval).
+name: service-impact-check
+description: Verify an affected service is healthy after an operational event
+trigger:
+  category: infra
+  min_level: 4
+  recommended: true
+approval: tier1
+timeout_s: 60
+steps:
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      expected: active
+      timeout_s: 30

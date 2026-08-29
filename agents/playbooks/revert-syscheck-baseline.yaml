@@ -1,0 +1,25 @@
+# SSOP playbook — revert a syscheck/FIM-flagged file to baseline.
+# Fires when integrity monitoring flags a critical config change; restores
+# the file from the protected backup store via the sudoers-whitelisted
+# wrapper, then verifies the owning service is healthy. Tier2 approval.
+name: revert-syscheck-baseline
+description: Restore a file flagged by FIM/syscheck to baseline and verify service health
+trigger:
+  category: security
+  min_level: 5
+  rule_ids: [550, 553, 554]
+  recommended: true
+approval: tier2
+timeout_s: 120
+steps:
+  - step: config_revert
+    params:
+      host: "{{alert.agent}}"
+      path: "{{alert.path}}"
+      backup: "{{alert.backup}}"
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      expected: active
+      timeout_s: 30

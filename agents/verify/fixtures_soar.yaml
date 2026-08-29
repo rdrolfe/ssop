@@ -1,0 +1,175 @@
+# SSOP SOAR verification fixtures — the responder's verification contract.
+# Prototype artifact from the soar-verify-fixtures wayfinder ticket (HITL).
+# Each fixture: scenario + what the RESPONDER must do. These will drive a
+# responder driver in the verify matrix once the responder exists.
+# Verdicts: PASS if behavior matches, FAIL if not, BLOCKED if unobservable.
+
+fixtures:
+  # ---- A. Trigger matching ----
+  - id: soar-candidate-match
+    description: "Alert category=threat level=8 matches playbook trigger (category threat, min_level 7)"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    expect: {candidate: true, playbook: block-src-ip}
+
+  - id: soar-no-candidate-below-level
+    description: "Same alert at level 6 -> no candidate (min_level respected)"
+    probe: false
+    alert: {rule: {id: 86601, level: 6, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    expect: {candidate: false}
+
+  - id: soar-recommendation-gate
+    description: "recommended:true playbook but no recommended_playbook on case -> NOT fired"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    recommended: false
+    expect: {fired: false, reason: recommendation_gate}
+
+  - id: soar-recommendation-fires
+    description: "recommended:true + role attached recommended_playbook -> fires"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    recommended: true
+    expect: {fired: true}
+
+  - id: soar-ruleid-exact
+    description: "Playbook with rule_ids [86601] matches ONLY 86601, not 5710"
+    probe: false
+    alert: {rule: {id: 5710, level: 5, groups: [authentication_failed]}, agent: {name: network}}
+    playbook: {name: auth-lockout, trigger: {rule_ids: [86601]}, recommended: true}
+    expect: {candidate: false}
+
+  # ---- B. Self-infliction guard ----
+  - id: soar-guard-protected-ip
+    description: "Playbook targets src_ip = indexer IP -> WHOLE playbook BLOCKED"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    target: {src_ip: 192.168.1.75}   # indexer
+    expect: {blocked: true, reason: protected-entity, steps_executed: 0}
+
+  - id: soar-guard-protected-host
+    description: "Playbook host = infra-ops (control plane) -> BLOCKED"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: isolate-host, trigger: {category: threat, min_level: 7}, recommended: true}
+    target: {host: infra-ops}
+    expect: {blocked: true, reason: protected-entity, steps_executed: 0}
+
+  - id: soar-guard-cidr
+    description: "Target IP in protected subnet (fleet CIDR) -> BLOCKED"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    target: {src_ip: 192.168.1.94}   # kb-vec, in fleet CIDR
+    expect: {blocked: true, reason: protected-entity, steps_executed: 0}
+
+  - id: soar-guard-failclosed-mixed
+    description: "3-step playbook, step 2 protected -> NO steps run (fail-closed)"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: multi-step, trigger: {category: threat, min_level: 7}, recommended: true,
+               steps: [service_stop, firewall_block_ip, verify_firewall_rule]}
+    target: {src_ip: 192.168.1.75}
+    expect: {blocked: true, steps_executed: 0}
+
+  - id: soar-guard-block-escalates
+    description: "Blocked playbook -> spine blocked event + Tier-2 ticket (never silent)"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    target: {src_ip: 192.168.1.75}
+    expect: {spine_event: blocked-protected-entity, ticket_created: true}
+
+  # ---- C. Approval flow ----
+  - id: soar-tier1-executes
+    description: "tier1 playbook, recommended + guard-clear -> executes immediately, spine records"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: service-stop-nginx, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier1}
+    target: {host: web, service: nginx}
+    expect: {executed: true, immediate: true, spine_event: playbook_run}
+
+  - id: soar-tier2-ticket-created
+    description: "tier2 playbook -> ticket with run_id + payload, NOT executed"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.10}
+    expect: {ticket_created: true, has_run_id: true, executed: false}
+
+  - id: soar-tier2-approve-executes
+    description: "tier2 ticket approved + run_id match -> executes, spine playbook_run"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.10}
+    approval: {status: approved, run_id_match: true}
+    expect: {executed: true, spine_event: playbook_run}
+
+  - id: soar-tier2-deny-closes
+    description: "tier2 ticket denied -> no execute, recorded"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.10}
+    approval: {status: denied}
+    expect: {executed: false, recorded: true}
+
+  - id: soar-tier2-expiry
+    description: "tier2 ticket approved but past 15-min expiry -> NEVER executes, marked expired"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.10}
+    approval: {status: approved, expired: true}
+    expect: {executed: false, marked: expired}
+
+  - id: soar-tier2-wrong-runid
+    description: "tier2 ticket approved but run_id mismatch -> no execute (ambiguity guard)"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.10}
+    approval: {status: approved, run_id_match: false}
+    expect: {executed: false}
+
+  # ---- D. Execution semantics ----
+  - id: soar-step-fail-stops
+    description: "Step 2 of 3 fails -> STOP, run marked failed, no step 3"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: multi-step, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier1,
+               steps: [service_stop, service_restart, verify_service_state]}
+    target: {host: web, service: nginx}
+    step_fail: {step: 2}
+    expect: {run_status: failed, steps_executed: 1}
+
+  - id: soar-playbook-run-recorded
+    description: "Successful run -> playbook_run event on spine + ticket executed"
+    probe: false
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: service-stop-nginx, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier1}
+    target: {host: web, service: nginx}
+    expect: {spine_event: playbook_run, ticket_status: executed}
+
+  # ---- E. Adversarial probes ----
+  - id: soar-probe-unprotected-target
+    description: "Non-protected external IP -> playbook proceeds (guard not over-blocking)"
+    probe: true
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true, approval: tier2}
+    target: {src_ip: 203.0.113.99}   # TEST-NET, external, unprotected
+    expect: {blocked: false, candidate: true}
+
+  - id: soar-probe-no-playbook-flood
+    description: "Un-matched product -> no pack generated, hunt library count unchanged"
+    probe: true
+    alert: {rule: {id: 86601, level: 8, groups: [ids, suricata, attack]}, agent: {name: network}}
+    playbook: {name: block-src-ip, trigger: {category: threat, min_level: 7}, recommended: true}
+    intel: {product: "product-we-dont-run", matched: false}
+    expect: {pack_generated: false, library_count_unchanged: true}

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SSOP Tier-2 Adjudication Console</title>
+<style>
+  :root { --fg:#e8e8e8; --muted:#9a9a9a; --border:#3a3a3a; --card:#1e1e1e; --accent:#4f8cff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:#141414; color:var(--fg); font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding:20px; }
+  h1 { font-size:18px; margin-bottom:4px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:16px; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
+  .toolbar input[type=text] { flex:1; background:var(--card); border:1px solid var(--border); color:var(--fg); padding:8px 10px; border-radius:6px; }
+  button { background:var(--card); border:1px solid var(--border); color:var(--fg); padding:8px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .ticket { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:10px; }
+  .ticket .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .ticket .id { font-family:monospace; color:var(--accent); font-size:12px; }
+  .ticket .title { font-weight:600; flex:1; }
+  .ticket .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; }
+  .badge.t2 { background:rgba(210,153,34,.15); color:var(--warn); }
+  .actions { display:flex; gap:6px; margin-top:10px; }
+  .actions button.approve { border-color:var(--ok); color:var(--ok); }
+  .actions button.deny { border-color:var(--bad); color:var(--bad); }
+  .actions button.fp { border-color:var(--warn); color:var(--warn); }
+  .empty { color:var(--muted); text-align:center; padding:40px; font-style:italic; }
+  .status { font-size:12px; padding:6px 10px; border-radius:6px; margin-top:8px; display:none; }
+  .status.ok { display:block; background:rgba(63,185,80,.12); color:var(--ok); }
+  .status.err { display:block; background:rgba(248,81,73,.12); color:var(--bad); }
+  #authhint { color:var(--muted); font-size:12px; margin-top:10px; }
+</style>
+</head>
+<body>
+<h1>Tier-2 Adjudication Console</h1>
+<div class="sub">Approve / deny / FP on agent-created escalation tickets. Decisions become durable analyst policy.</div>
+
+<div class="toolbar">
+  <input type="text" id="indexer" placeholder="Indexer URL (e.g. https://192.168.1.75:9200)" value="https://192.168.1.75:9200">
+  <input type="text" id="adjudicate" placeholder="Adjudication API (e.g. http://192.168.1.29:8787)" value="http://192.168.1.29:8787">
+  <button class="primary" onclick="refresh()">Refresh</button>
+</div>
+
+<div id="list"><div class="empty">Loading open tier-2 tickets…</div></div>
+<div class="status" id="status"></div>
+<div id="authhint">Read uses basic auth (INDEXER_USERNAME/INDEXER_PASSWORD); write hits the adjudication API directly.</div>
+
+<script>
+const INDEXER_USER = prompt ? (localStorage.getItem("ssop_iu") || "") : "";
+let INDEXER_PASS = "";
+
+async function refresh() {
+  const api = document.getElementById("adjudicate").value.trim();
+  const list = document.getElementById("list");
+  list.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    // Read goes through the adjudication API (server-side fetch from the
+    // indexer) — avoids browser CORS/self-signed-ssl/auth on the indexer.
+    const resp = await fetch(api + "/tickets");
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const d = await resp.json();
+    const hits = (d.tickets) || [];
+    if (!hits.length) { list.innerHTML = '<div class="empty">No open tier-2 tickets. Clean queue.</div>'; return; }
+    list.innerHTML = "";
+    hits.forEach(s => {
+      const t = document.createElement("div");
+      t.className = "ticket";
+      t.innerHTML = `
+        <div class="top">
+          <span class="badge t2">tier-2</span>
+          <span class="title">${esc(s.title || "(no title)")}</span>
+          <span class="id">${esc(s.ticket_id || "")}</span>
+        </div>
+        <div class="meta">actor: ${esc(s.actor || "-")} · agent: ${esc(s.agent || "-")} · ts: ${esc((s["@timestamp"] || s.ts || "").slice(0,19))}</div>
+        <div class="actions">
+          <button class="approve" onclick="act('${esc(s.ticket_id)}','approve',this)">Approve</button>
+          <button class="deny" onclick="act('${esc(s.ticket_id)}','deny',this)">Deny</button>
+          <button class="fp" onclick="act('${esc(s.ticket_id)}','fp',this)">False Positive</button>
+        </div>`;
+      list.appendChild(t);
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function act(id, decision, btn) {
+  const api = document.getElementById("adjudicate").value.trim();
+  const status = document.getElementById("status");
+  status.className = "status"; status.style.display = "none";
+  btn.disabled = true;
+  try {
+    const rationale = prompt("Rationale for " + decision + " on " + id + ":", "operator decision");
+    if (rationale === null) { btn.disabled = false; return; }
+    const resp = await fetch(api + "/adjudicate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket_id: id, decision, rationale })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error((d.error || "HTTP " + resp.status));
+    status.className = "status ok"; status.textContent = "✅ " + id + " → " + decision + " (tuning written)";
+    setTimeout(refresh, 800);
+  } catch (e) {
+    status.className = "status err"; status.textContent = "❌ " + e.message;
+    btn.disabled = false;
+  }
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+refresh();
+</script>
+</body>
+</html>

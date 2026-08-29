@@ -1,0 +1,15 @@
+name: AppArmor denials
+category: defense-evasion
+hypothesis: "Processes being denied by AppArmor may indicate attempts to bypass policy or misconfig."
+analyze: apparmor
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - term:
+            rule.id: "52002"
+  _source:
+    - timestamp
+    - agent.name
+    - full_log

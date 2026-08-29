@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SSOP Supervisory Console</title>
+<style>
+  :root { --fg:#e8e8e8; --muted:#9a9a9a; --border:#3a3a3a; --card:#1e1e1e; --accent:#4f8cff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:#141414; color:var(--fg); font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding:20px; }
+  h1 { font-size:18px; margin-bottom:4px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:16px; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+  .toolbar input[type=text] { flex:1; min-width:220px; background:var(--card); border:1px solid var(--border); color:var(--fg); padding:8px 10px; border-radius:6px; }
+  button { background:var(--card); border:1px solid var(--border); color:var(--fg); padding:8px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tab { padding:8px 16px; border-radius:6px; cursor:pointer; border:1px solid var(--border); background:var(--card); color:var(--muted); }
+  .tab.active { border-color:var(--accent); color:var(--fg); background:rgba(79,140,255,.12); }
+  .panel { display:none; }
+  .panel.active { display:block; }
+  .ticket { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:10px; }
+  .ticket .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .ticket .id { font-family:monospace; color:var(--accent); font-size:12px; }
+  .ticket .title { font-weight:600; flex:1; }
+  .ticket .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; }
+  .badge.t2 { background:rgba(210,153,34,.15); color:var(--warn); }
+  .badge.tech { background:rgba(79,140,255,.15); color:var(--accent); }
+  .badge.obs { background:rgba(63,185,80,.12); color:var(--ok); }
+  .actions { display:flex; gap:6px; margin-top:10px; }
+  .actions button.approve { border-color:var(--ok); color:var(--ok); }
+  .actions button.deny { border-color:var(--bad); color:var(--bad); }
+  .actions button.fp { border-color:var(--warn); color:var(--warn); }
+  .details { margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); font-size:12px; color:var(--muted); }
+  .details .lbl { color:var(--fg); font-weight:600; margin-right:6px; }
+  .details ul { margin:4px 0 4px 18px; }
+  .details .chk { white-space:pre-wrap; background:#181818; border:1px solid var(--border); border-radius:6px; padding:8px; margin-top:6px; max-height:160px; overflow:auto; }
+  .empty { color:var(--muted); text-align:center; padding:40px; font-style:italic; }
+  .status { font-size:12px; padding:6px 10px; border-radius:6px; margin-top:8px; display:none; }
+  .status.ok { display:block; background:rgba(63,185,80,.12); color:var(--ok); }
+  .status.err { display:block; background:rgba(248,81,73,.12); color:var(--bad); }
+  #authhint { color:var(--muted); font-size:12px; margin-top:10px; }
+</style>
+</head>
+<body>
+<h1>SSOP Supervisory Console</h1>
+<div class="sub">Tier-2 adjudication + managed tuning. Decisions become durable analyst policy. Case data shows observables, enrichment, checklist, and MITRE techniques (adopted from the SO human-workflow concepts).</div>
+
+<div class="toolbar">
+  <input type="text" id="adjudicate" placeholder="Adjudication API (e.g. http://192.168.1.29:8787)" value="http://192.168.1.29:8787">
+  <button class="primary" onclick="refreshAll()">Refresh</button>
+</div>
+
+<div class="tabs">
+  <div class="tab active" id="tab-tickets" onclick="showTab('tickets')">Tickets</div>
+  <div class="tab" id="tab-tuning" onclick="showTab('tuning')">Tuned Rules</div>
+  <div class="tab" id="tab-loop" onclick="showTab('loop')">Closed Loop</div>
+</div>
+
+<div class="panel active" id="panel-tickets">
+  <div id="list"><div class="empty">Loading open tier-2 tickets…</div></div>
+</div>
+<div class="panel" id="panel-tuning">
+  <div id="tuning"><div class="empty">Loading tuning ledger…</div></div>
+</div>
+<div class="panel" id="panel-loop">
+  <div id="loop"><div class="empty">Loading closed-loop cases…</div></div>
+</div>
+
+<div class="status" id="status"></div>
+<div id="authhint">Read uses the adjudication API (server-side fetch — CORS-safe). Write hits the adjudication API directly.</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+  document.getElementById("tab-" + name).classList.add("active");
+  document.getElementById("panel-" + name).classList.add("active");
+  if (name === "tuning") loadTuning();
+  else if (name === "loop") loadLoop();
+  else refresh();
+}
+
+async function refreshAll() { refresh(); loadTuning(); }
+
+async function refresh() {
+  const api = document.getElementById("adjudicate").value.trim();
+  const list = document.getElementById("list");
+  list.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const resp = await fetch(api + "/tickets");
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const d = await resp.json();
+    const hits = (d.tickets) || [];
+    if (!hits.length) { list.innerHTML = '<div class="empty">No open tier-2 tickets. Clean queue.</div>'; return; }
+    list.innerHTML = "";
+    hits.forEach(s => {
+      const caseData = s.case || {};
+      const obs = caseData.observables || [];
+      const enr = caseData.enrichments || [];
+      const tech = (s.detail && s.detail.techniques) || caseData.techniques || [];
+      const chk = caseData.checklist;
+      const t = document.createElement("div");
+      t.className = "ticket";
+      const obsHtml = obs.length
+        ? `<div class="details"><span class="lbl">Observables (${obs.length}):</span> ${esc(obs.map(o => o.type + ":" + o.value).join(", "))}</div>`
+        : "";
+      const enrHtml = enr.length
+        ? `<div class="details"><span class="lbl">Enrichment:</span> <ul>${enr.map(v => `<li>${esc((v.observable||{}).value || "?")} → ${esc(v.status)} (${esc(v.provider)})</li>`).join("")}</ul></div>`
+        : "";
+      const techHtml = tech.length
+        ? `<div class="details"><span class="lbl">MITRE:</span> ${tech.map(x => `<span class="badge tech">${esc(x)}</span>`).join(" ")}</div>`
+        : "";
+      const chkHtml = chk
+        ? `<div class="details"><span class="lbl">Case checklist:</span><div class="chk">${esc(chk)}</div></div>`
+        : "";
+      t.innerHTML = `
+        <div class="top">
+          <span class="badge t2">tier-2</span>
+          <span class="title">${esc(s.title || "(no title)")}</span>
+          <span class="id">${esc(s.ticket_id || "")}</span>
+        </div>
+        <div class="meta">actor: ${esc(s.actor || "-")} · agent: ${esc(s.agent || "-")} · rule: ${esc(s.rule_id || "-")} · ts: ${esc((s["@timestamp"] || s.ts || "").slice(0,19))}</div>
+        ${obsHtml}${enrHtml}${techHtml}${chkHtml}
+        <div class="actions">
+          <button class="approve" onclick="act('${esc(s.ticket_id)}','approve',this)">Approve</button>
+          <button class="deny" onclick="act('${esc(s.ticket_id)}','deny',this)">Deny</button>
+          <button class="fp" onclick="act('${esc(s.ticket_id)}','fp',this)">False Positive</button>
+        </div>`;
+      list.appendChild(t);
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadTuning() {
+  const api = document.getElementById("adjudicate").value.trim();
+  const el = document.getElementById("tuning");
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const resp = await fetch(api + "/tuning");
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const d = await resp.json();
+    const entries = d.tuning || [];
+    if (!entries.length) { el.innerHTML = '<div class="empty">Tuning ledger empty.</div>'; return; }
+    el.innerHTML = "";
+    entries.forEach(e => {
+      const t = document.createElement("div");
+      t.className = "ticket";
+      t.innerHTML = `
+        <div class="top">
+          <span class="badge tech">rule ${esc(e.rule_id || "-")}</span>
+          <span class="title">${esc(e.decision || "-")}</span>
+        </div>
+        <div class="meta">source: ${esc(e.source || "-")} · by: ${esc(e.tuned_by || "system")} · ts: ${esc((e.ts || "").slice(0,19))}</div>
+        <div class="details"><span class="lbl">Rationale:</span> ${esc(e.rationale || "-")}</div>`;
+      el.appendChild(t);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadLoop() {
+  const api = document.getElementById("adjudicate").value.trim();
+  const el = document.getElementById("loop");
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const resp = await fetch(api + "/cases");
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const d = await resp.json();
+    const cases = d.cases || [];
+    if (!cases.length) { el.innerHTML = '<div class="empty">No cases in the closed loop yet.</div>'; return; }
+    el.innerHTML = "";
+    cases.forEach(c => {
+      const inv = c.investigation || {};
+      const adj = c.adjudication || c.supervisory || {};
+      const sev = inv.severity_label || "?";
+      const chain = (inv.kill_chain || []).join(" → ") || "-";
+      const decision = adj.decision || c.supervisory?.decision || "open";
+      const sevClass = sev === "high" ? "bad" : sev === "medium" ? "warn" : "ok";
+      const decClass = decision === "approve" ? "ok" : decision === "deny" ? "bad" : "warn";
+      const t = document.createElement("div");
+      t.className = "ticket";
+      t.innerHTML = `
+        <div class="top">
+          <span class="badge t2" style="color:var(--${sevClass})">${esc(sev)}</span>
+          <span class="title">${esc(c.title || "(no title)")}</span>
+          <span class="id">${esc(c.case_id || "")}</span>
+        </div>
+        <div class="meta">status: ${esc(c.status || "-")} · decision: <span style="color:var(--${decClass});font-weight:600">${esc(decision)}</span> · ${esc((inv.evidence||[]).length)} evidence</div>
+        <div class="details"><span class="lbl">Kill-chain:</span> ${esc(chain)}</div>
+        <div class="details"><span class="lbl">Hypothesis:</span> ${esc(inv.hypothesis || "-")}</div>
+        ${adj.rationale ? `<div class="details"><span class="lbl">Adjudication:</span> ${esc(adj.rationale)}</div>` : ""}
+        ${(c.responder && c.responder.blocked) ? `<div class="details"><span class="lbl" style="color:var(--bad)">Responder blocked:</span> ${esc(c.responder.blocked_reason || "")}</div>` : ""}
+      `;
+      el.appendChild(t);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function act(id, decision, btn) {
+  const api = document.getElementById("adjudicate").value.trim();
+  const status = document.getElementById("status");
+  status.className = "status"; status.style.display = "none";
+  btn.disabled = true;
+  try {
+    const rationale = prompt("Rationale for " + decision + " on " + id + ":", "operator decision");
+    if (rationale === null) { btn.disabled = false; return; }
+    const resp = await fetch(api + "/adjudicate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket_id: id, decision, rationale })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error((d.error || "HTTP " + resp.status));
+    status.className = "status ok"; status.textContent = "✅ " + id + " → " + decision + " (tuning written)";
+    setTimeout(refresh, 800);
+  } catch (e) {
+    status.className = "status err"; status.textContent = "❌ " + e.message;
+    btn.disabled = false;
+  }
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+refresh();
+</script>
+</body>
+</html>

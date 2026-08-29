@@ -1,0 +1,23 @@
+# SSOP playbook — auto-heal disk pressure (tier0, no approval).
+# Fires on a low-diskspace alert; runs the disk-clean step (whitelisted
+# docker image prune + package cache cleanup) and verifies space recovered.
+name: clean-disk-pressure
+description: Clear disk pressure on a host flagged for low disk space (auto-heal)
+trigger:
+  category: infra
+  min_level: 3
+  rule_ids: [531, 501, 502]
+  recommended: true
+approval: tier0
+timeout_s: 180
+steps:
+  - step: disk_clean
+    params:
+      host: "{{alert.agent}}"
+      timeout_s: 120
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "wazuh-agent"
+      expected: active
+      timeout_s: 30

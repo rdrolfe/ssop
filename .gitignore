@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+deploy/.env
+*.pem
+*.key
+agent-ssh
+hermes_ssop
+
+# Runtime artifacts
+audit/
+tickets/
+__pycache__/
+*.pyc
+.venv/
+agent-env/
+
+# Local
+*.log
+.DS_Store
+ssop-share*

@@ -1,0 +1,144 @@
+"""Qdrant vector memory tool module for infra-agent (LTM/STM).
+
+Hygiene: config-driven (config.py), imports at top, logging, structured errors.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_VECTOR_SIZE = 384
+
+
+class QdrantError(RuntimeError):
+    """Raised when Qdrant is unreachable or an operation fails."""
+
+
+class QdrantMemory:
+    """Long-term and short-term memory backed by Qdrant vector store."""
+
+    def __init__(self, url: str | None = None) -> None:
+        # Prefer QDRANT_URL (full URL convention); fall back to host/port.
+        self.url = url or settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
+        try:
+            self.client = QdrantClient(url=self.url, prefer_grpc=False)
+        except Exception as e:
+            logger.error("qdrant connect failed: %s", e)
+            raise QdrantError(f"qdrant connect failed: {e}") from e
+
+    def ensure_collection(self, name: str, vector_size: int = DEFAULT_VECTOR_SIZE) -> dict[str, Any]:
+        """Create a collection if it does not exist."""
+        try:
+            collections = self.client.get_collections().collections
+            existing = [c.name for c in collections]
+            if name not in existing:
+                self.client.create_collection(
+                    collection_name=name,
+                    vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                )
+                logger.info("created qdrant collection %s", name)
+                return {"created": True, "collection": name}
+            return {"created": False, "collection": name}
+        except Exception as e:
+            logger.error("ensure_collection failed for %s: %s", name, e)
+            raise QdrantError(f"ensure_collection failed: {e}") from e
+
+    def store_memory(
+        self,
+        collection: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        vector: list[float] | None = None,
+    ) -> dict[str, Any]:
+        """Store a memory entry (decision, observation, state) in Qdrant."""
+        self.ensure_collection(collection)
+        point_id = str(uuid.uuid4())
+        payload: dict[str, Any] = {
+            "content": content,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "agent": "infra-agent",
+        }
+        if metadata:
+            payload.update(metadata)
+        vec = vector or [0.0] * DEFAULT_VECTOR_SIZE
+        try:
+            self.client.upsert(
+                collection_name=collection,
+                points=[PointStruct(id=point_id, vector=vec, payload=payload)],
+            )
+        except Exception as e:
+            logger.error("store_memory failed in %s: %s", collection, e)
+            raise QdrantError(f"store_memory failed: {e}") from e
+        return {"stored": True, "point_id": point_id, "collection": collection}
+
+    def search_memory(self, collection: str, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search memory entries by text content."""
+        self.ensure_collection(collection)
+        try:
+            records = self.client.scroll(
+                collection_name=collection, limit=1000, with_payload=True, with_vectors=False
+            )[0]
+        except Exception as e:
+            logger.error("search_memory scroll failed in %s: %s", collection, e)
+            raise QdrantError(f"search_memory failed: {e}") from e
+
+        results: list[dict[str, Any]] = []
+        for rec in records:
+            payload = rec.payload or {}
+            results.append({
+                "id": rec.id,
+                "content": payload.get("content", ""),
+                "timestamp": payload.get("timestamp", ""),
+                "agent": payload.get("agent", ""),
+                "metadata": {k: v for k, v in payload.items() if k not in ("content", "timestamp", "agent")},
+            })
+
+        # Filter by query text (substring — deterministic, no embeddings needed)
+        if query:
+            q = query.lower()
+            results = [r for r in results if q in r["content"].lower()]
+
+        return results[:limit]
+
+    def recent_memories(self, collection: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Return the most recent memories by timestamp (descending)."""
+        self.ensure_collection(collection)
+        try:
+            records = self.client.scroll(
+                collection_name=collection, limit=1000, with_payload=True, with_vectors=False
+            )[0]
+        except Exception as e:
+            logger.error("recent_memories scroll failed in %s: %s", collection, e)
+            raise QdrantError(f"recent_memories failed: {e}") from e
+
+        results: list[dict[str, Any]] = []
+        for rec in records:
+            payload = rec.payload or {}
+            results.append({
+                "id": rec.id,
+                "content": payload.get("content", ""),
+                "timestamp": payload.get("timestamp", ""),
+                "agent": payload.get("agent", ""),
+                "metadata": {k: v for k, v in payload.items() if k not in ("content", "timestamp", "agent")},
+            })
+        results.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+        return results[:limit]
+
+    def delete_memory(self, collection: str, point_id: str) -> dict[str, Any]:
+        """Delete a memory entry by point id."""
+        try:
+            self.client.delete(collection_name=collection, points_selector=[point_id])
+            return {"deleted": True, "point_id": point_id}
+        except Exception as e:
+            logger.error("delete_memory failed in %s: %s", collection, e)
+            raise QdrantError(f"delete_memory failed: {e}") from e

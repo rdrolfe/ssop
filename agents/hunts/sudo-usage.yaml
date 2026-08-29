@@ -1,0 +1,18 @@
+name: Sudo usage patterns
+category: privilege-escalation
+hypothesis: "Privileged command usage outside expected operators may indicate privilege escalation."
+analyze: sudo
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - term:
+            rule.groups: sudo
+  _source:
+    - timestamp
+    - rule.id
+    - rule.description
+    - agent.name
+    - data.dstuser
+    - full_log

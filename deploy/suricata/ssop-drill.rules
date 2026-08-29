@@ -1,0 +1,5 @@
+# SSOP live-fire drill rule — controlled test beacon detection
+# Matches DNS queries to the drill beacon domain. Uses dns.queries.rrname
+# which matches query names in BOTH request and response messages (robust
+# against resolver behavior). sid space: 9900000+ reserved for SSOP custom.
+alert dns any any -> any any (msg:"SSOP DRILL: beacon domain DNS query"; dns.queries.rrname; content:"beacon-test.ssop.local"; nocase; sid:9900001; rev:1;)

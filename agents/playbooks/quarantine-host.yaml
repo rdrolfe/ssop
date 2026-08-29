@@ -1,0 +1,23 @@
+# SSOP playbook — quarantine a compromised host (stop critical services).
+# Fires on a high-severity threat verdict for an endpoint; stops the
+# named service and verifies it is inactive. Tier2 (dual-control approval).
+name: quarantine-host
+description: Stop a critical service on a compromised host and verify it is down
+trigger:
+  category: threat
+  min_level: 10
+  recommended: true
+approval: tier2
+timeout_s: 120
+steps:
+  - step: service_stop
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      timeout_s: 60
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      expected: inactive
+      timeout_s: 30

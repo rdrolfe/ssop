@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP alert router (3m)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/ssop-router.sh
+Nice=10

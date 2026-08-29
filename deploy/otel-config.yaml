@@ -1,0 +1,80 @@
+# SSOP OTel Collector — ships agent audit/tickets/cases into the Wazuh indexer
+# The "pane of glass": every agent action becomes searchable in the dashboard.
+#
+# contrib v0.159 opensearchexporter schema (verified from upstream README):
+#   http.endpoint + http.auth.authenticator -> basicauth extension
+#   logs_index for the destination index name
+
+receivers:
+  filelog/audit:
+    include:
+      - /data/audit/actions.jsonl
+      - /data/audit/cases.jsonl
+    # Start at end: only NEW audit entries. Historical entries were already
+    # indexed; re-reading from beginning re-parses a legacy entry whose
+    # evidence object conflicts with the text mapping and rejects the whole
+    # batch (blocking the tickets pipeline too).
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.ts
+          layout: '%Y-%m-%dT%H:%M:%S.%f%z'
+
+  filelog/tickets:
+    include:
+      - /data/tickets/*.json
+    # Start at beginning: tickets are ONE-SHOT files (written atomically by
+    # the responder). start_at:end skips them entirely — the file's end is
+    # its whole size at watch time, so nothing ever emits. With beginning,
+    # the whole file is read (json_parser tolerates the single complete JSON).
+    start_at: beginning
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.ts
+          layout: '%Y-%m-%dT%H:%M:%S.%f%z'
+
+processors:
+  resource/audit:
+    attributes:
+      - key: ssop.source
+        value: agent-audit
+        action: upsert
+  resource/tickets:
+    attributes:
+      - key: ssop.source
+        value: escalation-tickets
+        action: upsert
+  batch:
+    timeout: 5s
+    send_batch_size: 50
+
+extensions:
+  basicauth/client:
+    client_auth:
+      username: ${env:WAZUH_INDEXER_USERNAME}
+      password: ${env:WAZUH_INDEXER_PASSWORD}
+
+exporters:
+  opensearch:
+    http:
+      endpoint: ${env:OTEL_EXPORTER_ENDPOINT:-https://localhost:9200}
+      tls:
+        insecure_skip_verify: true
+      auth:
+        authenticator: basicauth/client
+    logs_index: ssop-events
+    logs_index_fallback: ssop-events
+
+service:
+  extensions: [basicauth/client]
+  pipelines:
+    logs/audit:
+      receivers: [filelog/audit]
+      processors: [resource/audit, batch]
+      exporters: [opensearch]
+    logs/tickets:
+      receivers: [filelog/tickets]
+      processors: [resource/tickets, batch]
+      exporters: [opensearch]

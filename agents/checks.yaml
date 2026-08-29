@@ -1,0 +1,15 @@
+# SSOP self-heal checks — one entry per host health probe.
+# Add a check by dropping it here; no code change needed.
+# Fields: name (must match decide() logic), cmd, ok_if (substring in stdout),
+# warn_pct (for disk checks — pct above this flags the check).
+checks:
+  - name: disk_root
+    cmd: "df -h / | tail -1"
+    warn_pct: 85
+  - name: kernel
+    cmd: "uname -r"
+  - name: uptime
+    cmd: "uptime -p"
+  - name: ssh
+    cmd: "echo ok"
+    ok_if: "ok"

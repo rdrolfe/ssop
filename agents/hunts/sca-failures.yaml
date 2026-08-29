@@ -1,0 +1,16 @@
+name: CIS compliance failures
+category: compliance
+hypothesis: "Security configuration assessment failures indicate drift from hardening baseline."
+analyze: sca
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - term:
+            rule.groups: sca
+  _source:
+    - timestamp
+    - rule.id
+    - rule.description
+    - agent.name

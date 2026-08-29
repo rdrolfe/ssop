@@ -1,0 +1,25 @@
+# SSOP playbook — investigate rootcheck host-integrity drift.
+# Fires on a rootcheck alert (lvl 7, 1.6k+ in the last 30d). Verifies the
+# flagged file/binary against baseline and collects the drift evidence for
+# the analyst to classify (tampering vs benign change). Tier1 (single approval).
+name: rootcheck-drift-investigate
+description: Verify a rootcheck drift finding and collect evidence for analyst classification
+trigger:
+  category: security
+  min_level: 7
+  recommended: true
+approval: tier1
+timeout_s: 90
+steps:
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "wazuh-agent"
+      expected: active
+      timeout_s: 30
+  - step: config_revert
+    params:
+      host: "{{alert.agent}}"
+      file: "{{alert.file}}"
+      source: /opt/ssop-backups
+      timeout_s: 60

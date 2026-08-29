@@ -1,0 +1,19 @@
+name: Rootcheck host anomalies
+category: integrity
+hypothesis: "Rootkit/trojan indicators flagged by rootcheck; recurring flags on the same path suggest FP noise, new flags suggest real tampering."
+analyze: rootcheck
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - term:
+            rule.groups: rootcheck
+  _source:
+    - timestamp
+    - rule.id
+    - rule.description
+    - agent.name
+    - data.file
+    - data.title
+    - full_log

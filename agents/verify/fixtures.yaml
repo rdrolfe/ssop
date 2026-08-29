@@ -1,0 +1,142 @@
+# SSOP verification fixtures — synthetic alerts with ground-truth expectations.
+# Each fixture is a Wazuh-style alert payload + what the ROLE must decide.
+# Adding a fixture = adding a file or entry here; no code change.
+# verdict: escalate | note | dedupe  (what the analyst/router MUST produce)
+# probes marked probe: true are adversarial (designed to catch false behavior)
+
+fixtures:
+  - id: rootcheck-fp
+    description: "Recurring rootcheck generic-signature flag — known false positive"
+    probe: false
+    alert:
+      rule: {id: 510, level: 7, groups: [rootcheck, integrity], description: "Host-based anomaly detected (generic)"}
+      agent: {id: "001", name: infra-ops}
+      timestamp: "2026-08-19T12:00:00.000Z"
+    expect:
+      verdict: note
+      category: integrity
+      no_case: true
+      # router dispatches to analyst (correct); analyst must NOT escalate
+      router_role: analyst
+
+  - id: auth-failure-burst
+    description: "Burst of sshd auth failures from one source (credential stuffing)"
+    probe: false
+    alert:
+      rule: {id: 5710, level: 5, groups: [authentication_failed, authentication], description: "sshd: authentication failure"}
+      agent: {id: "004", name: network}
+      timestamp: "2026-08-19T12:00:01.000Z"
+    expect:
+      verdict: note
+      category: authentication
+      no_case: true
+      router_role: analyst
+
+  - id: high-severity-suricata-c2
+    description: "Suricata C2 beacon (rule 86610) — TUNED auto_fp by human adjudication, analyst MUST NOT re-escalate"
+    probe: false
+    alert:
+      rule: {id: 86610, level: 12, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE C2 Beacon"}
+      agent: {id: "004", name: network}
+      timestamp: "2026-08-19T12:00:02.000Z"
+    expect:
+      verdict: note
+      category: threat
+      no_case: true
+      tuned: true
+
+  # --- stateful decision-logic fixtures (tuning ledger + entity chains) ---
+
+  - id: tuned-rule-no-escalate
+    description: "Rule already tuned auto_fp in the ledger — analyst MUST NOT re-escalate"
+    probe: false
+    alert:
+      rule: {id: 987654, level: 10, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE Tuned Rule"}
+      agent: {id: "004", name: network}
+      timestamp: "2026-08-23T12:00:00.000Z"
+    expect:
+      verdict: note
+      category: threat
+      no_case: true
+      tuned: true
+
+  - id: repeated-entity-attaches
+    description: "Same srcip:dstip pair as an open case — analyst must ATTACH, not mint a new case"
+    probe: false
+    alert:
+      rule: {id: 86602, level: 12, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE Repeated Entity"}
+      agent: {id: "004", name: network}
+      timestamp: "2026-08-23T12:00:01.000Z"
+      srcip: "203.0.113.50"
+      dstip: "198.51.100.7"
+    expect:
+      verdict: escalate
+      category: threat
+      attach: true
+      no_new_case: true
+
+  - id: novel-untuned-escalates
+    description: "Genuinely new alert, unseen pair, untuned class — MUST mint a case (the novel gate)"
+    probe: false
+    alert:
+      rule: {id: 86603, level: 12, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE Novel Entity"}
+      agent: {id: "004", name: network}
+      timestamp: "2026-08-23T12:00:02.000Z"
+      srcip: "203.0.113.99"
+      dstip: "198.51.100.9"
+    expect:
+      verdict: escalate
+      category: threat
+      case: true
+
+  - id: pam-session-open
+    description: "PAM session open — pure noise, must NOT wake a role"
+    probe: false
+    alert:
+      rule: {id: 5501, level: 3, groups: [authentication_success, authentication], description: "PAM: Login session opened"}
+      agent: {id: "001", name: infra-ops}
+      timestamp: "2026-08-19T12:00:03.000Z"
+    expect:
+      verdict: note
+      category: operational
+      no_case: true
+      no_dispatch: true
+
+  - id: apparmor-burst-repeat
+    description: "AppArmor denial repeat within burst window — must dedupe"
+    probe: false
+    alert:
+      rule: {id: 52002, level: 5, groups: [apparmor, ossec], description: "Apparmor DENIED"}
+      agent: {id: "003", name: vault-secrets}
+      timestamp: "2026-08-19T12:00:04.000Z"
+    expect:
+      verdict: note
+      category: pattern
+      dedupe_if_repeat: true
+      # Router dispatches apparmor to hunt (correct); hunt may legitimately
+      # flag a denial burst as suspicious — that's its job. The ANALYST notes.
+      router_role: hunt
+      hunt_may_escalate: true
+
+  - id: missing-fields-adversarial
+    description: "Alert missing rule/agent fields — must not crash, must not escalate"
+    probe: true
+    alert:
+      timestamp: "2026-08-19T12:00:05.000Z"
+    expect:
+      verdict: note
+      category: operational
+      no_case: true
+
+  - id: level-4-medium-auth
+    description: "Medium-level auth event — 5715 is NOISE (sshd auth success baseline, 6.3k/30d) — no dispatch"
+    probe: true
+    alert:
+      rule: {id: 5715, level: 4, groups: [authentication_success, authentication], description: "sshd: authentication success (unusual)"}
+      agent: {id: "002", name: kb-vec}
+      timestamp: "2026-08-19T12:00:06.000Z"
+    expect:
+      verdict: note
+      no_dispatch: true
+      category: authentication
+      no_case: true

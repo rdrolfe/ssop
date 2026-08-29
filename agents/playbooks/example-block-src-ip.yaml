@@ -1,0 +1,21 @@
+# Example SSOP playbook — block a source IP at the host firewall.
+# P1 schema per docs/wayfinder/tickets/playbook-schema.md (ADR-004).
+# EXECUTABLE: firewall_block_ip is live via the sudoers whitelist extension.
+name: block-src-ip
+description: Block a source IP at the host firewall after a threat verdict
+trigger:
+  category: threat
+  min_level: 8
+  recommended: true
+approval: tier2
+timeout_s: 120
+steps:
+  - step: firewall_block_ip
+    params:
+      host: network
+      src_ip: "{{alert.srcip}}"
+      ttl_s: 3600
+  - step: verify_firewall_rule
+    params:
+      host: network
+      src_ip: "{{alert.srcip}}"

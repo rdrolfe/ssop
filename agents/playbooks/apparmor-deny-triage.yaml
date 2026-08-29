@@ -1,0 +1,40 @@
+# SSOP playbook — triage an AppArmor denial.
+# Fires on AppArmor denials (52002/52000, 7.2k+ in 30d — the largest
+# dispatched class to hunt). Classify the denial: known-good app, misconfig,
+# or evasion attempt. Verify the app is still functioning. Tier1.
+name: apparmor-deny-triage
+description: Triage an AppArmor denial — known-good, misconfig, or evasion
+trigger:
+  category: pattern
+  min_level: 3
+  recommended: true
+approval: tier1
+timeout_s: 60
+steps:
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      expected: active
+      timeout_s: 30
+questions:
+  - question: "Is this AppArmor denial a repeat pattern for this agent?"
+    query:
+      bool:
+        filter:
+          - term: {"agent.name": "{{alert.agent}}"}
+          - terms: {"rule.id": [52002, 52000]}
+    expected: "Recurring denials suggest a systemic app misconfig; a single event suggests a one-off"
+  - question: "Has the same app been denied on other hosts (fleet-wide pattern)?"
+    query:
+      bool:
+        filter:
+          - terms: {"rule.id": [52002, 52000]}
+    expected: "Fleet-wide = package default or active attack; isolated = host-specific config"
+  - question: "Is the affected service currently running on the agent?"
+    query:
+      bool:
+        filter:
+          - term: {"agent.name": "{{alert.agent}}"}
+          - term: {"rule.groups": "syscheck"}
+    expected: "Service up = denial is tolerated; service down = denial may be breaking the app"

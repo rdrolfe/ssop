@@ -1,0 +1,18 @@
+name: Authentication success from unusual source
+category: lateral-movement
+hypothesis: "An attacker with valid creds authenticates from a source IP outside the normal set."
+analyze: srcip_frequency
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - term:
+            rule.groups: authentication_success
+  _source:
+    - timestamp
+    - rule.id
+    - rule.description
+    - agent.name
+    - data.srcip
+    - data.dstuser

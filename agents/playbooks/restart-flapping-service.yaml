@@ -1,0 +1,24 @@
+# SSOP playbook — restart a flapping/crash-looping service.
+# Fires when a health check or pattern dispatch flags a service in a bad
+# state; restarts it (whitelisted systemctl) and verifies it comes back
+# active. Tier1 (single-approval).
+name: restart-flapping-service
+description: Restart a service flagged as crash-looping and verify it recovers
+trigger:
+  category: operational
+  min_level: 5
+  recommended: true
+approval: tier1
+timeout_s: 90
+steps:
+  - step: service_restart
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      timeout_s: 60
+  - step: verify_service_state
+    params:
+      host: "{{alert.agent}}"
+      service: "{{alert.service}}"
+      expected: active
+      timeout_s: 30
