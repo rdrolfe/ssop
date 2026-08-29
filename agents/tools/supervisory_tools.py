@@ -92,6 +92,27 @@ class SupervisoryClient:
         logger.info("adjudicated %s -> %s (%s)", ticket["ticket_id"], decision, rationale[:50])
         return ticket
 
+    def mark_adjudicated(self, ticket: dict[str, Any], decision: str, rationale: str) -> dict[str, Any]:
+        """Close a ticket in-place WITHOUT the tuning write.
+
+        Used for duplicates of an already-adjudicated representative — the
+        tuning entry is written once (for the representative); closing N
+        identical repeats must not spam the ledger. Marks status/decision/
+        rationale + adjudicator, then rewrites the file.
+        """
+        ticket["status"] = "adjudicated"
+        ticket["decision"] = decision
+        ticket["rationale"] = rationale
+        ticket["adjudicated_ts"] = datetime.now(timezone.utc).isoformat()
+        ticket["adjudicator"] = "supervisory"
+        path = self.ticket_dir / f"{ticket['ticket_id']}.json"
+        try:
+            path.write_text(json.dumps(ticket, indent=2))
+        except OSError as e:
+            logger.error("mark_adjudicated write failed for %s: %s", ticket["ticket_id"], e)
+            raise
+        return ticket
+
     def reconcile(self) -> dict[str, Any]:
         """Audit-integrity check: Qdrant vs JSONL case spine."""
         return self._cases.reconcile()

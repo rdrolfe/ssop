@@ -10,7 +10,7 @@ Tier 1 can be settled by the supervisory agent alone (single approval).
 """
 
 import sys
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
@@ -48,18 +48,19 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
         if not tickets:
             state["result"] = "No open tickets."
             return state
-        # Dedupe by (title, agent) — keep the first, count repeats
-        seen = {}
+        # Dedupe by (title, agent) — keep the first, collect the repeats so
+        # they can be closed with the SAME decision (otherwise identical
+        # repeats stay open forever and the queue never drains).
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for t in tickets:
             key = (t.get("title", ""), t.get("agent", ""))
-            if key in seen:
-                seen[key]["repeat_count"] = seen[key].get("repeat_count", 1) + 1
-                continue
-            seen[key] = t
-            seen[key]["repeat_count"] = 1
-        unique = list(seen.values())[:limit]
-        lines = [f"Adjudicating {len(unique)} unique tickets (from {len(tickets)} raw):"]
-        for t in unique:
+            groups.setdefault(key, []).append(t)
+        # sort so the representative (first of each group) comes first
+        ordered = [grp[0] for grp in groups.values()][:limit]
+        lines = [f"Adjudicating {len(ordered)} unique tickets (from {len(tickets)} raw):"]
+        for t in ordered:
+            key = (t.get("title", ""), t.get("agent", ""))
+            repeats = groups[key][1:]
             # Context-aware decision: fetch the case (observables/enrichments/
             # techniques/checklist) and let supervise_case decide, falling back
             # to the old title heuristics when no case exists.
@@ -97,7 +98,11 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
                     decision = "approve"
                     rationale = "agent connectivity confirmed down — restart approved"
             sup.adjudicate(t, decision, rationale)
-            lines.append(f"  {t['ticket_id']} [{decision}] {t.get('title', '')[:50]} — {rationale[:40]}")
+            # Close the identical repeats with the same decision (no tuning spam)
+            for dup in repeats:
+                sup.mark_adjudicated(dup, decision, f"{rationale} (duplicate)")
+            lines.append(f"  {t['ticket_id']} [{decision}] {t.get('title', '')[:50]} — {rationale[:40]}"
+                         + (f" (+{len(repeats)} dup)" if repeats else ""))
             # Record on the case spine
             if case_id:
                 ev = {"decision": decision, "rationale": rationale}
@@ -124,7 +129,9 @@ def node_reconcile(state: SupervisoryState) -> SupervisoryState:
             f"  qdrant_only: {len(r.get('qdrant_only', []))}",
             f"  receipt_only: {len(r.get('receipt_only', []))}",
         ]
-        state["result"] = "\n".join(lines)
+        # Append (not overwrite) so the adjudication output survives the chain.
+        prev = state.get("result") or ""
+        state["result"] = (prev + "\n" if prev else "") + "\n".join(lines)
         return state
     except Exception as e:
         logger.exception("reconcile failed")
@@ -134,13 +141,16 @@ def node_reconcile(state: SupervisoryState) -> SupervisoryState:
 
 
 def node_close_case(state: SupervisoryState) -> SupervisoryState:
-    """Close a case with a verdict (dual-control aware)."""
+    """Close a case with a verdict (dual-control aware).
+
+    No-op when no target case_id is given — the close node is the terminal
+    step of the adjudicate -> reconcile -> close chain, and it must not error
+    on a routine adjudication sweep that isn't closing a specific case.
+    """
+    case_id = state.get("target")
+    if not case_id:
+        return state
     try:
-        case_id = state.get("target")
-        if not case_id:
-            state["error"] = "No case_id target."
-            state["result"] = "ERROR: no case_id"
-            return state
         params = state.get("params") or {}
         decision = params.get("decision", "approve")
         rationale = params.get("rationale", "supervisory closure")
