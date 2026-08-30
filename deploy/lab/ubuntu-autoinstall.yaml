@@ -1,0 +1,47 @@
+#cloud-config
+# Ubuntu 24.04 autoinstall seed for SSOP purple-team targets.
+# Built by deploy/lab/build_seeds.sh on the infra host — the password hash is
+# GENERATED at build time and never committed.
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: __HOSTNAME__
+    username: lab
+    password: __PASSWORD_HASH__
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - __SSH_PUBKEY__
+  storage:
+    layout:
+      name: lvm
+  network:
+    version: 2
+    ethernets:
+      mgmt:
+        match:
+          macaddress: "__MGMT_MAC__"
+        addresses:
+          - __MGMT_IP__/24
+        routes:
+          - to: default
+            via: __GATEWAY__
+        nameservers:
+          addresses: [__GATEWAY__, 1.1.1.1]
+      attack:
+        match:
+          macaddress: "__ATTACK_MAC__"
+        addresses:
+          - __ATTACK_IP__/24
+  late-commands:
+    # Wazuh agent (direct .deb, per fleet-deploy pattern) + SSH hardening
+    - curtin in-target -- bash -c "cd /tmp && (curl -s -o wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.5-1_amd64.deb || wget -q -O wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.5-1_amd64.deb) && dpkg -i wazuh-agent.deb"
+    - curtin in-target -- sed -i 's|<address>MANAGER_IP</address>|<address>__WAZUH_MANAGER__</address>|' /var/ossec/etc/ossec.conf
+    - curtin in-target -- /var/ossec/bin/agent-auth -m __WAZUH_MANAGER__ -p 1515 -A __HOSTNAME__
+    - curtin in-target -- systemctl daemon-reload
+    - curtin in-target -- systemctl enable wazuh-agent
+    - curtin in-target -- systemctl start wazuh-agent

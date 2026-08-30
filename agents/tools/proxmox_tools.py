@@ -130,3 +130,98 @@ class ProxmoxClient:
     def get_vm_config(self, vmid: int, node: str | None = None) -> dict[str, Any]:
         """Get VM configuration."""
         return self._act("config", vmid, node)
+
+    def create_vm(
+        self,
+        vmid: int,
+        name: str,
+        memory_mb: int = 4096,
+        cores: int = 2,
+        disk_gb: int = 40,
+        storage: str = "local-zfs",
+        disk_ctl: str = "scsi0",
+        net0: str = "virtio,bridge=vmbr0",
+        net1: str | None = None,
+        iso: str | None = None,
+        iso2: str | None = None,
+        ostype: str = "l26",
+        node: str | None = None,
+        start: bool = False,
+        agent: int = 1,
+        onboot: int = 0,
+        scsihw: str | None = "virtio-scsi-pci",
+        **extra,
+    ) -> dict[str, Any]:
+        """Create a QEMU VM with a disk on the given storage.
+
+        iso / iso2 are storage paths like 'local:iso/<file>.iso' — iso is
+        attached as ide2 (primary boot media), iso2 as ide3 (seed/answer
+        drive for autoinstall or autounattend). net1, when given, wires a
+        second NIC (attack plane) on vmbr1. disk_ctl picks the disk
+        attachment (scsi0 default for virtio-scsi; 'ide0' for Windows so no
+        virtio drivers are needed during setup; pass net0 with an e1000 NIC
+        for the same reason).
+        """
+        targets = [node] if node else self._nodes()
+        for n in targets:
+            try:
+                boot_first = disk_ctl.split("0")[0] + "0"
+                params: dict[str, Any] = {
+                    "vmid": vmid,
+                    "name": name,
+                    "memory": memory_mb,
+                    "cores": cores,
+                    "sockets": 1,
+                    "cpu": "cputype=host",
+                    "net0": net0,
+                    disk_ctl: f"{storage}:{disk_gb}",
+                    "ostype": ostype,
+                    "agent": agent,
+                    "onboot": onboot,
+                    "boot": f"order={boot_first};ide2",
+                }
+                if net1:
+                    params["net1"] = net1
+                if scsihw and disk_ctl.startswith("scsi"):
+                    params["scsihw"] = scsihw
+                if iso:
+                    params["ide2"] = f"{iso},media=cdrom"
+                if iso2:
+                    params["ide3"] = f"{iso2},media=cdrom"
+                params.update(extra)
+                upid = self.api.nodes(n).qemu.post(**params)
+                self._wait_task(n, upid)
+                if start:
+                    upid = self.api.nodes(n).qemu(vmid).status.start.post()
+                    self._wait_task(n, upid)
+                return {"success": True, "action": "create", "vmid": vmid, "node": n, "started": start}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("proxmox create %s on %s failed: %s", vmid, n, e)
+                continue
+        return {"error": f"Could not create VM {vmid}"}
+
+    def _wait_task(self, node: str, upid: str, timeout_s: int = 120, poll_s: float = 2.0) -> None:
+        """Poll a Proxmox task until it stops; raise if it failed.
+
+        qm create / qm start / imgcopy return a UPID immediately and run
+        asynchronously — the config/disk/file is NOT ready until the task
+        finishes. Reporting success on POST-acceptance races the task (real
+        bug: vm902's create task failed with 'volume ... does not exist' but
+        the caller saw success).
+        """
+        import time as _t
+
+        deadline = _t.time() + timeout_s
+        while _t.time() < deadline:
+            try:
+                st = self.api.nodes(node).tasks(upid).status.get()
+            except Exception:  # noqa: BLE001 — task may not be queryable yet
+                _t.sleep(poll_s)
+                continue
+            if st.get("status") == "stopped":
+                exitstatus = st.get("exitstatus")
+                if exitstatus not in (None, "OK"):
+                    raise RuntimeError(f"proxmox task {upid} failed: exitstatus={exitstatus}")
+                return
+            _t.sleep(poll_s)
+        raise TimeoutError(f"proxmox task {upid} did not finish in {timeout_s}s")
