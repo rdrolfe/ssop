@@ -60,6 +60,50 @@ class Investigator:
         self._ctx.verify_mode = ssl.CERT_NONE
         self.host = indexer_host
 
+        # LIVE-alert correlation: in addition to the replayed BOTS ground-truth
+        # slices, correlate the entity against the LIVE alert stream so the
+        # operational lab (real attacks into Wazuh/SO) shows up in evidence.
+        # Resolve the alerts index from transport.yaml (backend-aware), like
+        # indexer_client does — never hardcode the index name here.
+        self.SOURCES = list(self.SOURCES)
+        live_index = settings.alerts_index
+        try:
+            import yaml as _yaml
+            from pathlib import Path as _Path
+            tpath = _Path(__file__).resolve().parent / "transport.yaml"
+            if tpath.exists():
+                tcfg = _yaml.safe_load(tpath.read_text()) or {}
+                backend = tcfg.get("backend", "wazuh")
+                b = (tcfg.get("backends") or {}).get(backend, {})
+                if b.get("alerts_index"):
+                    live_index = b["alerts_index"]
+        except Exception:  # noqa: BLE001 — transport resolution is best-effort
+            pass
+        # The live alert index is SUBDIVIDED by attack shape (each a distinct
+        # source), not one broad bucket. Rationale: the evidence model scores
+        # KILL-CHAIN BREADTH — an entity that scans AND beacons AND exfils is
+        # stronger evidence than one with a pile of identical alerts. Every hit
+        # in the alert index IS signal (an alert, not raw traffic), so each
+        # source is min_count=1 with a shape-matching filter.
+        # NOTE: rule.description is a keyword field in the alert index — match
+        # shapes with wildcard, not match_phrase/query_string (both return 0).
+        self.SOURCES.extend([
+            ("live_scan", live_index, "data.src_ip", "rule.description",
+             "Live network scan", {"wildcard": {"rule.description": "*STREAM*"}}, 1),
+            ("live_threat", live_index, "data.src_ip", "rule.description",
+             "Live threat-class alert",
+             {"wildcard": {"rule.description": "*ET MALWARE*"}}, 1),
+            ("live_http", live_index, "data.src_ip", "rule.description",
+             "Live HTTP exfil", {"term": {"data.dest_port": 8080}}, 1),
+            ("live_net", live_index, "data.src_ip", "rule.description",
+             "Live network activity", None, 1),
+        ])
+        # Live sources correlate the entity in EITHER direction (src or dst):
+        # a scan shows the entity as the STREAM alert's target (20->11) while
+        # a beacon shows it as the source (11->20). The base query for these
+        # sources is a should over both IP fields.
+        self._live_both_directions = {"live_scan", "live_threat", "live_http", "live_net"}
+
     # --- query helpers ---
     def _search(self, index: str, body: dict[str, Any], port: int = 9200) -> dict[str, Any]:
         req = urllib.request.Request(
@@ -87,6 +131,13 @@ class Investigator:
                 # Base query: entity match in this source's entity field
                 if src_name == "winsec":
                     base_q = {"match_phrase": {"_raw": entity}}
+                elif src_name in self._live_both_directions:
+                    # Live alerts: the entity may be the source OR the target
+                    # (a scan shows the entity as the STREAM alert's target).
+                    base_q = {"bool": {"should": [
+                        {"term": {"data.src_ip": entity}},
+                        {"term": {"data.dest_ip": entity}},
+                    ]}}
                 else:
                     base_q = {"term": {field: entity}}
                 # Combine with the threat-pattern filter so only the ATTACK
@@ -145,12 +196,16 @@ class Investigator:
         # rough kill-chain ordering: process exec (execution) -> http (exfil) -> dns (c2)
         if "winsec" in src_set:
             stages.append("EXECUTION: process artifacts in Windows security logs")
-        if "http" in src_set:
+        if "http" in src_set or "live_http" in src_set:
             stages.append("EXFILTRATION: HTTP upload/exfil traffic")
         if "dns" in src_set:
             stages.append("C2: DNS queries/tunneling")
-        if "suricata" in src_set:
-            stages.append("NETWORK: suricata flows observed")
+        if "live_threat" in src_set:
+            stages.append("C2/MALWARE: threat-class live alert")
+        if "suricata" in src_set or "live_scan" in src_set:
+            stages.append("RECON: network scan / suricata flow observed")
+        if "live_net" in src_set:
+            stages.append("NETWORK: live alert activity on entity")
         if not stages:
             stages.append("NO CORRELATION: entity not observed across sources (isolated signal)")
 

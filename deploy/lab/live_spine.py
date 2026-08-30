@@ -102,9 +102,10 @@ def main() -> int:
         if not srcip:
             srcip = "10.10.1.11"  # ubuntu-target attack NIC — the scanner
         res = inv.investigate(srcip=srcip)
-        n_ev = res.get("evidence_count", 0)
+        n_ev = len(res.get("evidence", []))  # evidence is a list, not evidence_count
         sev = res.get("severity_label", "?")
-        print(f"  2. investigate: {n_ev} evidence sources, severity={sev} (entity {srcip})")
+        chain = res.get("kill_chain", [])
+        print(f"  2. investigate: {n_ev} evidence sources, severity={sev}, chain={len(chain)} (entity {srcip})")
         # 3. OPEN CASE + SUPERVISE
         case = cases.open_case(
             source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": desc},
@@ -115,6 +116,7 @@ def main() -> int:
                             **{k: v[k] for k in ("level", "category", "agent")}})
         cases.append_event(case["case_id"], "analyst", "investigation", {
             "entity": srcip, "evidence_count": n_ev,
+            "kill_chain": chain,  # supervisor adjudicates on this (medium + 2+ stages)
             "severity": res.get("severity", 0), "severity_label": sev,
         })
         dec = sup.adjudicate_with_investigation(case["case_id"])
