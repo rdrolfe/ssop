@@ -189,12 +189,16 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
     if rid in NOISE_RULES:
         return "operational", None
     # Tuned rules (auto_fp / operational) are not dispatched — the analyst
-    # noted them and a human confirmed; no role should re-engage.
+    # noted them and a human confirmed; no role should re-engage. EXCEPT:
+    # a tuned rule firing with strong true-positive evidence (threat-class
+    # tokens / high severity) still dispatches so the analyst can apply the
+    # tuning override (a tuned-FP rule must not blind the SOC to a real TP).
     try:
-        from tools.tuning_tools import TuningLedger
+        from tools.tuning_tools import TuningLedger, strong_tp_evidence
         tuning = TuningLedger().lookup(rid)
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
-            return "operational", None
+            if not strong_tp_evidence(alert):
+                return "operational", None
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
         import logging
         logging.getLogger(__name__).warning("tuning lookup failed for %s: %s", rid, e)

@@ -140,6 +140,25 @@ class AnalystClient:
         except Exception:  # noqa: BLE001 — ledger failure must never break triage
             tuning = None
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
+            # Evidence-gated override: a tuned-FP rule must not silently
+            # swallow a strong true-positive signal. If THIS alert carries
+            # threat-class evidence (malware/C2 tokens) or high severity, the
+            # tuning is lifted and the alert escalates to a human with a
+            # tuning_override flag so the tuning itself is re-adjudicated.
+            from tools.tuning_tools import strong_tp_evidence
+            if strong_tp_evidence(alert):
+                return {
+                    "verdict": "escalate",
+                    "confidence": "high",
+                    "tuning_override": True,
+                    "tuned": True,
+                    "rationale": (f"rule {rule_id} tuned {tuning.get('decision')} "
+                                  f"({tuning.get('source')}): {tuning.get('rationale','')} "
+                                  f"BUT current alert carries strong TP evidence "
+                                  f"(threat-desc/high severity) — tuning override, "
+                                  f"escalate to human re-adjudication"),
+                    **c,
+                }
             return {
                 "verdict": "note",
                 "confidence": "high",

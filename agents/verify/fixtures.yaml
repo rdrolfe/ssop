@@ -33,30 +33,30 @@ fixtures:
       router_role: analyst
 
   - id: high-severity-suricata-c2
-    description: "Suricata C2 beacon (rule 86610) — TUNED auto_fp by human adjudication, analyst MUST NOT re-escalate"
+    description: "Suricata C2 beacon (rule 86610) — tuned auto_fp BUT carries strong TP evidence (lvl 12, ET MALWARE) — MUST escalate with tuning_override"
     probe: false
     alert:
       rule: {id: 86610, level: 12, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE C2 Beacon"}
       agent: {id: "004", name: network}
       timestamp: "2026-08-19T12:00:02.000Z"
     expect:
-      verdict: note
+      verdict: escalate
       category: threat
-      no_case: true
+      tuning_override: true
       tuned: true
 
   # --- stateful decision-logic fixtures (tuning ledger + entity chains) ---
 
   - id: tuned-rule-no-escalate
-    description: "Rule already tuned auto_fp in the ledger — analyst MUST NOT re-escalate"
+    description: "Tuned auto_fp rule with WEAK evidence (lvl 3, operational, no threat tokens) — tuning respected, MUST NOT escalate"
     probe: false
     alert:
-      rule: {id: 987654, level: 10, groups: [ids, suricata, attack], description: "Suricata: Alert - ET MALWARE Tuned Rule"}
+      rule: {id: 987654, level: 3, groups: [ids, suricata], description: "Suricata: Alert - SURICATA STREAM 3way handshake wrong seq wrong ack"}
       agent: {id: "004", name: network}
       timestamp: "2026-08-23T12:00:00.000Z"
     expect:
       verdict: note
-      category: threat
+      category: operational
       no_case: true
       tuned: true
 

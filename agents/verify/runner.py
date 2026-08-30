@@ -42,6 +42,7 @@ def drive_analyst(fixture: Dict[str, Any]) -> RoleOutcome:
     v = analyst.verdict(alert)
     return RoleOutcome(v["verdict"], category=v.get("category"), level=v.get("level"),
                        tuned=v.get("tuned", False),
+                       tuning_override=v.get("tuning_override", False),
                        existing_chain=v.get("existing_chain"),
                        driver_role="analyst")
 
@@ -57,16 +58,21 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
     alert = fixture.get("alert", {})
     category, role = classify(alert)
     # Tuned rules: the router returns ("operational", None) — mark tuned so
-    # the invariant can verify the tuning was respected in dispatch.
+    # the invariant can verify the tuning was respected in dispatch. If the
+    # rule is tuned but STILL dispatched, that's the evidence-gated override
+    # (strong TP evidence lifted the tuning) — surface tuning_override.
     tuned = False
-    if role is None and category == "operational":
-        try:
-            from tools.tuning_tools import TuningLedger
-            rid = str(alert.get("rule", {}).get("id", ""))
-            t = TuningLedger().lookup(rid)
-            tuned = bool(t and t.get("decision") in ("auto_fp", "operational"))
-        except Exception:  # noqa: BLE001
-            tuned = False
+    tuning_override = False
+    try:
+        from tools.tuning_tools import TuningLedger
+        rid = str(alert.get("rule", {}).get("id", ""))
+        t = TuningLedger().lookup(rid)
+        tuned = bool(t and t.get("decision") in ("auto_fp", "operational"))
+        # dispatched despite tuned = override (router fell through for evidence)
+        if tuned and role is not None:
+            tuning_override = True
+    except Exception:  # noqa: BLE001
+        tuned = False
     # Fixture may declare the expected router_role; the verdict check for the
     # router driver is about DISPATCH, not escalate/note.
     expected_role = fixture.get("expect", {}).get("router_role")
@@ -76,7 +82,8 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
         dispatched = role is not None
     return RoleOutcome("escalate" if dispatched else "note",
                        category=category, role=role, dispatched=dispatched,
-                       tuned=tuned, wrote_case=False, driver_role="router")
+                       tuned=tuned, tuning_override=tuning_override,
+                       wrote_case=False, driver_role="router")
 
 
 def drive_hunt(fixture: Dict[str, Any]) -> RoleOutcome:

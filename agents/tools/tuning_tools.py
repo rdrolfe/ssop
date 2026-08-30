@@ -17,6 +17,7 @@ from typing import Any
 
 from qdrant_client.models import PointStruct
 
+from config import settings
 from tools.qdrant_tools import QdrantMemory
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,35 @@ TUNING_COLLECTION = "tuning"
 
 # Decisions that make a rule "already handled" — analyst must not re-escalate.
 FINAL_DECISIONS = {"auto_fp", "operational", "escalate"}
+
+# Threat-class description tokens: a tuned-FP rule must not silently swallow
+# a strong true-positive signal. If a tuned rule fires carrying one of these
+# (or at high severity), the tuning is overridden and the alert escalates to
+# a human with a tuning_override flag (re-adjudication), instead of being
+# auto-suppressed. Single source of truth for the analyst + router.
+THREAT_DESC_TOKENS = (
+    "et malware", "et trojan", "et rat", "et c2", "et botnet",
+    "malicious", "malware dns", "cnc", "command and control",
+    "mimikatz", "meterpreter", "cobalt strike",
+)
+
+
+def strong_tp_evidence(alert: dict) -> bool:
+    """True when the current alert carries strong true-positive evidence.
+
+    A tuned-FP rule is suppressed by default, but if THIS alert independently
+    shows a threat-class description token or high severity, the suppression
+    is lifted (evidence overrides tuning — the "clear exception").
+    """
+    rule = alert.get("rule") or {}
+    desc = str(rule.get("description", "")).lower()
+    if any(t in desc for t in THREAT_DESC_TOKENS):
+        return True
+    try:
+        level = int(rule.get("level", 0))
+    except (TypeError, ValueError):
+        level = 0
+    return level >= settings.high_level
 
 
 class TuningError(RuntimeError):

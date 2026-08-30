@@ -135,13 +135,17 @@ def inv_case_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], sto
 
 
 def inv_tuned_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
-    """If fixture says tuned:true, the verdict must be note (tuning respected)."""
+    """If fixture says tuned:true, the verdict must respect the tuning —
+    UNLESS the outcome carries tuning_override (evidence-gated override:
+    a tuned-FP rule firing with strong TP evidence escalates to a human)."""
     if fixture.get("expect", {}).get("tuned"):
-        # note = analyst/router correctly declined; skip = hunt correctly
-        # declined (no pattern for a tuned rule). Both respect the tuning.
+        # note/skip = tuning respected (correct decline for a tuned rule)
         if outcome.verdict in ("note", "skip") and outcome.extra.get("tuned"):
             return Check("tuned", CHECK_OK, "tuning respected — no escalation")
-        return Check("tuned", CHECK_FAIL, "expected tuned rule to be noted, got escalate")
+        # escalate + tuning_override = evidence override (clear-exception path)
+        if outcome.verdict == "escalate" and outcome.extra.get("tuning_override"):
+            return Check("tuned", CHECK_OK, "tuning override — strong TP evidence escalated to human")
+        return Check("tuned", CHECK_FAIL, "tuned rule: expected note (respected) or escalate+tuning_override, got mismatch")
     return Check("tuned", CHECK_SKIP, "no expectation")
 
 
