@@ -118,7 +118,13 @@ class SupervisoryClient:
         return self._cases.reconcile()
 
     def case_verdict(self, case_id: str, decision: str, rationale: str) -> dict[str, Any] | None:
-        """Record a supervisory verdict on a case."""
+        """Record a supervisory verdict on a case.
+
+        Writes BOTH the top-level `supervisory` field AND a timeline
+        adjudication event (so the /cases console view surfaces the decision —
+        it reads the timeline, not the top-level field). Keeps receipt +
+        timeline consistent.
+        """
         case = self._cases.get_case(case_id)
         if not case:
             logger.warning("case_verdict: %s not found", case_id)
@@ -126,6 +132,13 @@ class SupervisoryClient:
         case["status"] = "closed" if decision == "approve" else "open"
         case["supervisory"] = {"decision": decision, "rationale": rationale,
                                "ts": datetime.now(timezone.utc).isoformat()}
+        # Append a timeline event so the human console's /cases view sees it.
+        case.setdefault("timeline", []).append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": "supervisory",
+            "type": "adjudication",
+            "detail": {"decision": decision, "rationale": rationale},
+        })
         self._cases._write_both(case, event="adjudication", role="supervisory")
         return case
 

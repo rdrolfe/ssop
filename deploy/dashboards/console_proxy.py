@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Telemetry-host console proxy — serves the adjudication console on the
-Wazuh dashboard's hostname (192.168.1.75) so the iframe is same-host and
-uses the already-accepted cert. Proxies /tickets + /adjudicate to the
-adjudication API on infra-ops (.29:8787).
+"""Telemetry-host console proxy — serves the SSOP human console on the Wazuh
+dashboard's hostname (192.168.1.75) so the iframe is same-host and uses the
+already-accepted cert.
+
+Proxies the console HTML + read/write API paths to the adjudication API on
+infra-ops (.29:8787) server-side — the browser never hits the indexer or a
+second service directly (CORS + self-signed-ssl safe).
 
 Run on the telemetry host:  python3 console_proxy.py  (port 5602)
 Iframe URL: https://192.168.1.75:5602/console
@@ -18,6 +21,9 @@ from pathlib import Path
 
 ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
+
+# GET paths proxied 1:1 to the adjudication API (read-through).
+GET_ROUTES = ("/tickets", "/tuning", "/cases", "/health")
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -44,6 +50,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _proxy_get(self, path):
+        # Forward a read path to the adjudication API (server-side, trusted).
+        try:
+            with urllib.request.urlopen(ADJUDICATE_API + path, timeout=15,
+                                        context=ssl._create_unverified_context()) as r:
+                self._json(r.status, json.loads(r.read().decode()))
+        except urllib.error.HTTPError as e:
+            try:
+                self._json(e.code, json.loads(e.read().decode()))
+            except Exception:  # noqa: BLE001
+                self._json(e.code, {"ok": False, "error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            self._json(502, {"ok": False, "error": str(e)})
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
@@ -57,14 +77,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except OSError:
                 self._json(500, {"ok": False, "error": "console html missing"})
             return
-        if path == "/tickets":
-            # proxy to the adjudication API (server-side, trusted)
-            try:
-                with urllib.request.urlopen(ADJUDICATE_API + "/tickets", timeout=15,
-                                            context=ssl._create_unverified_context()) as r:
-                    self._json(200, json.loads(r.read().decode()))
-            except Exception as e:  # noqa: BLE001
-                self._json(502, {"ok": False, "error": str(e)})
+        if path in GET_ROUTES:
+            self._proxy_get(path)
             return
         self._json(404, {"ok": False, "error": f"unknown {path}"})
 
