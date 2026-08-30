@@ -1,3 +1,15 @@
+# SSOP analyst sweep — cadence is an ADJUSTABLE NOZZLE, not a fixed value.
+#
+# A run costs ~6s CPU / ~100MB peak regardless of cadence (pure-rule
+# classification; no LLM in the sweep — escalation fires only on verdicts).
+# Doubling frequency ~doubles CPU/day linearly. Tuned for a homelab:
+#   5m  ~= 29 min CPU/day   (current — ~24x better latency than 2h)
+#   1m  ~= 2.4h CPU/day     (per-run Python startup stops being free here)
+# At millions of events/min, move to the resident poller / event-driven
+# dispatch (router in Step 8) instead of shrinking OnCalendar further.
+# Keep `limit=` in ssop-analyst.sh in step with cadence — it's the coverage
+# knob; without it you poll a smaller slice faster (the old 2h/limit=20
+# blind spot). See docs/DEPLOYMENT.md Step 7.
 [Unit]
 Description=SSOP analyst sweep (every 5m)
 

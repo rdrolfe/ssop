@@ -170,12 +170,36 @@ systemctl enable --now ssop-analyst.timer ssop-supervisory.timer ssop-selfheal.t
 ```
 
 The cycle:
-- every 2h  — analyst sweep (ingest alerts, classify, escalate high-severity)
-- 04:45     — supervisory duty (adjudicate queue, reconcile case spine)
-- 03:07     — self-heal (host health, disk incl. docker prune, agent connectivity)
+- every 5m — analyst sweep (ingest alerts, classify, escalate high-severity)
+- 04:45    — supervisory duty (adjudicate queue, reconcile case spine)
+- 03:07    — self-heal (host health, disk incl. docker prune, agent connectivity)
 
 Every run logs to journald; outcomes flow to the case spine and the pane of
 glass automatically. The platform keeps working whether anyone is watching.
+
+**The sweep cadence is an adjustable nozzle, not a one-time flip.** Two knobs,
+tuned here for a homelab (thousands of events/hour):
+
+- `OnCalendar` in `deploy/systemd/ssop-analyst.timer` — how often the sweep
+  fires. A run costs ~6s CPU / ~100MB peak regardless of cadence (pure-rule
+  classification; no LLM in the sweep itself — escalation only fires when a
+  verdict escalates, which is rare). So halving the interval ~doubles CPU
+  spend linearly: 5m ≈ 29 min CPU/day, 1m ≈ 2.4h CPU/day, and the 1m mark is
+  where the per-run Python startup stops being free.
+- `limit=` in `deploy/systemd/ssop-analyst.sh` — how many alerts a run
+  classifies. This is the coverage knob: at 2h/limit=20 the sweep only ever
+  saw the 20 newest alerts (the blind spot we fixed — a busy 45-min window
+  pulled 200). Raise `limit` alongside any cadence increase or you're just
+  polling a smaller slice faster.
+
+**At scale (millions of events/minute) the nozzle model flips to a poller.**
+A fixed-cadence sweep pays ~6s of process startup every tick; past a few
+hundred-thousand events/min the right shape is a resident poller (start once,
+loop cheaply) or event-driven dispatch — the router in Step 8 already does
+interval polling with a cursor (`router_state.json`) and is the natural
+upgrade path. Rule: keep the sweep a short-lived oneshot while `limit` covers
+a full interval's traffic; move to the poller the moment the backlog outruns
+the window.
 
 ## Step 8 — event-driven dispatch (the router)
 
