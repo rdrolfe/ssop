@@ -103,11 +103,11 @@
     <div class="item"><div class="t">Tuning override (evidence-gated) <span class="tag commit">dd06501</span></div><div class="d">tuned-FP rule + strong TP evidence → escalate with tuning_override; weak evidence stays noted. Proven live.</div></div>
     <div class="item"><div class="t">Sweep cadence 5m / limit 100 <span class="tag commit">b219f0b</span></div><div class="d">24× faster detection at ~29min CPU/day; coverage knob documented as adjustable nozzle</div></div>
     <div class="item"><div class="t">Env bootstrap fix <span class="tag commit">e52790b</span></div><div class="d">config.py owns load_dotenv — kills intermittent indexer 401; matrix 30/30</div></div>
+    <div class="item"><div class="t">Live approve path <span class="tag commit">22e30ae</span></div><div class="d">Investigator correlates live alert stream by attack shape → recognize/escalate → 3-stage chain → supervisor APPROVES → responder unblocked (dry-run)</div></div>
   </div>
 
   <div class="col todo">
     <h2><span class="dot"></span> Coming up</h2>
-    <div class="item"><div class="t">Live approve path (clustered signal) <span class="tag verify">next</span></div><div class="d">Scan + HTTP + beacon in one window → investigator correlates → supervisor APPROVES → responder acts</div></div>
     <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag parked">parked</span></div><div class="d">iframe the console in the Wazuh dashboard (OSD gotchas)</div></div>
     <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Revisit after core work — local-model path</div></div>
   </div>
