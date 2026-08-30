@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP SPAN mirror: attack-plane (vmbr1) traffic -> SO capture tap
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ssop-span-mirror.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
