@@ -2,12 +2,13 @@
 
 Every tunable value in the platform lives here — read from environment once
 (at import) with sane defaults, never scattered as constants inside tool
-modules. Entry points (agent.py, analyst.py, hunt.py, router.py) call
-load_dotenv() before importing tools; tool modules consume `settings` only.
+modules. config.py owns the .env bootstrap (see below); tool modules consume
+`settings` only.
 
 Rules enforced by review:
 - No os.getenv() in tool modules — use settings.<name>
-- No load_dotenv() in non-entry files — config is loaded once, passed down
+- No load_dotenv() in non-entry files — config owns the single bootstrap,
+  everyone else consumes `settings`
 - All thresholds/hosts/paths have ONE home: this module
 """
 
@@ -17,6 +18,16 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+
+# config.py owns the env bootstrap: load .env BEFORE Settings freezes at
+# import. Without this, any import path that pulls in tools.* (tools/__init__
+# re-exports every client) freezes Settings with empty credentials before an
+# entry point's own load_dotenv() runs — the source of the intermittent
+# "indexer HTTP 401" (AnalystClient worked inline, 401'd from the analyst CLI
+# / scripts depending on import order).
+load_dotenv()
 
 # ---- env bootstrap (only this module reads raw env) -----------------------
 
