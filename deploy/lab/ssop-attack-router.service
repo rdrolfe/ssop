@@ -1,0 +1,12 @@
+[Unit]
+Description=SSOP attack-segment router (10.10.1.x /31 links through Suricata)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ssop-attack-router.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -8,7 +8,7 @@ RESOLVER = os.getenv("DNS_RESOLVER", "") or input("DNS resolver IP (your LAN gat
 def build_query(txid: int) -> bytes:
     # DNS query for beacon-test.ssop.local (A record)
     q = bytes([0x12, 0x34 + txid]) + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
-    q += b"\x08beacon-test\x04ssop\x02local\x00"  # labels
+    q += b"\x0bbeacon-test\x04ssop\x05local\x00"  # labels (11 + 4 + 5 chars)
     q += b"\x00\x01\x00\x01"  # QTYPE=A, QCLASS=IN
     return q
 

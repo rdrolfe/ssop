@@ -13,4 +13,7 @@ network:
     ens19:
       dhcp4: false
       addresses:
-        - 10.10.1.11/24
+        - 10.10.1.11/31
+      routes:
+        - to: 10.10.1.20/31
+          via: 10.10.1.10
