@@ -95,7 +95,11 @@ def render_ubuntu_seed(hostname: str, mgmt_ip: str, attack_ip: str, mgmt_mac: st
     """Render user-data + meta-data for the Ubuntu autoinstall cidata ISO."""
     pw_hash = subprocess.check_output(
         ["openssl", "passwd", "-6", gen_password()], text=True).strip()
-    keys = "\n".join(f"      - {k}" for k in (PUBKEYS or [AGENT_KEY]))
+    # The template already carries "      - " before __SSH_PUBKEY__, so the
+    # FIRST key rides that dash; subsequent keys need their own "      - "
+    # line. Joining with "\n      - " keeps the list valid (a per-line dash
+    # prefix here would double the dash on the first key -> malformed YAML).
+    keys = ("\n      - ").join(PUBKEYS or [AGENT_KEY])
     user_data = open(os.path.join(REPO_LAB, "ubuntu-autoinstall.yaml")).read()
     user_data = (user_data
                  .replace("__HOSTNAME__", hostname)
