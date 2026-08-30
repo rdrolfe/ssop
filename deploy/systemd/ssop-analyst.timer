@@ -1,10 +1,10 @@
 [Unit]
-Description=Every-2h SSOP analyst sweep
+Description=SSOP analyst sweep (every 5m)
 
 [Timer]
-OnCalendar=*-*-* 00,02,04,06,08,10,12,14,16,18,20,22:15:00
+OnCalendar=*-*-* *:0/5:00
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=30
 
 [Install]
 WantedBy=timers.target
