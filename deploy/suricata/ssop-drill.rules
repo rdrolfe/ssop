@@ -3,3 +3,10 @@
 # which matches query names in BOTH request and response messages (robust
 # against resolver behavior). sid space: 9900000+ reserved for SSOP custom.
 alert dns any any -> any any (msg:"SSOP DRILL: beacon domain DNS query"; dns.queries.rrname; content:"beacon-test.ssop.local"; nocase; sid:9900001; rev:1;)
+# Threat-class variant: same beacon, ET-MALWARE-style description. Fires
+# alongside 9900001; the analyst's threat-desc gate sees "ET MALWARE" and
+# escalates (or lifts a tuned-FP override). Used to prove the evidence-gated
+# tuning override on live data. NOTE: match content differs from 9900001
+# (ssop.local vs beacon-test.ssop.local) so Suricata doesn't dedupe the
+# identical rule — two same-match rules collapse to one; both must load.
+alert dns any any -> any any (msg:"ET MALWARE SSOP Lab C2 Beacon beacon-test.ssop.local"; dns.queries.rrname; content:"ssop.local"; nocase; sid:9900002; rev:1;)
