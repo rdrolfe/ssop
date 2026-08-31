@@ -44,6 +44,21 @@ def _load_transport() -> dict[str, Any]:
     return {}
 
 
+def _so_severity_to_level(sev: Any) -> int:
+    """Map SO event.severity (1–4) to the Wazuh rule.level scale (0–15).
+
+    Wazuh's analyst thresholds: medium_level=4, high_level=7. SO severities
+    are 1 (informational/low) .. 4 (critical). Map so the spine's level
+    heuristics behave sensibly on SO alerts: 1->3 (low), 2->6 (medium),
+    3->9 (high), 4->12 (critical). Accepts str/int.
+    """
+    try:
+        s = int(sev)
+    except (TypeError, ValueError):
+        return 1
+    return {1: 3, 2: 6, 3: 9, 4: 12}.get(s, 3 if s <= 2 else 9)
+
+
 class IndexerTransport:
     """Transport interface: search/count/recent_alerts over any backend."""
 
@@ -110,17 +125,20 @@ class IndexerTransport:
     def _normalize(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Normalize a backend result into the ontology shape.
 
-        SO signals nest the rule under `signal.rule.*` (Elastic Security
-        schema); the spine expects `rule.*` (Wazuh shape). Flatten so the
-        analyst/router see a consistent alert regardless of backend. This is
-        the transport adapter's job — parity of the ontology across backends.
+        The spine expects Wazuh-shaped alerts (rule.id/level/groups/
+        description, top-level srcip/dstip). Two SO shapes exist:
+          - Elastic Security `signal.rule.*` (detection-engine schema);
+          - native ECS alerts (`.ds-logs-suricata.alerts-so-*` /
+            `.ds-logs-detections.alerts-so-*`): rule is a dict
+            {name, uuid, category, ...}, level lives in event.severity,
+            groups in tags, the entity pair in source.ip/destination.ip.
+        The transport adapter's job is parity of the ontology across both.
         """
         if self.backend != "securityonion":
             return doc
-        if "signal" not in doc:
-            return doc
         src = dict(doc)
-        sig = src.get("signal") or {}
+        # Case 1: Elastic Security signal.* wrapper (existing behaviour)
+        sig = src.get("signal")
         if isinstance(sig, dict):
             # Flatten signal.rule.* -> rule.* (don't clobber an existing rule)
             if "rule" not in src and isinstance(sig.get("rule"), dict):
@@ -131,6 +149,34 @@ class IndexerTransport:
                     src[k] = sig[k]
             # Drop the nested signal wrapper to avoid confusion
             src.pop("signal", None)
+            return src
+        # Case 2: native ECS alert shape (suricata/detections alerts-so)
+        rule = src.get("rule")
+        if isinstance(rule, dict) and (rule.get("uuid") or rule.get("name")):
+            sev = (src.get("event") or {}).get("severity")
+            level = _so_severity_to_level(sev)
+            groups = list(src.get("tags") or [])
+            if not groups:
+                cat = rule.get("category")
+                if cat:
+                    groups = [str(cat)]
+            mapped: dict[str, Any] = {
+                "id": str(rule.get("uuid") or rule.get("gid") or ""),
+                "level": level,
+                "groups": groups,
+                "description": rule.get("name") or rule.get("description") or "",
+                "category": rule.get("category") or "",
+            }
+            if rule.get("id"):
+                mapped["id"] = str(rule["id"])
+            src["rule"] = mapped
+            # Entity pair: ECS source.ip / destination.ip -> top-level srcip/dstip
+            srcip = (src.get("source") or {}).get("ip")
+            dstip = (src.get("destination") or {}).get("ip")
+            if srcip:
+                src["srcip"] = srcip
+            if dstip:
+                src["dstip"] = dstip
         return src
 
     def search(self, body: dict[str, Any], index: str | None = None) -> dict[str, Any]:

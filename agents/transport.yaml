@@ -25,13 +25,14 @@ backends:
     endpoint: "https://192.168.1.75:9200"
     # creds come from the .env (INDEXER_USERNAME/INDEXER_PASSWORD) by default
   securityonion:
-    alerts_index: ".ds-logs-zeek-so-*,so-detection"  # passive dataset (imported pcap Zeek logs) + detections
+    alerts_index: ".ds-logs-suricata.alerts-so-*,.ds-logs-detections.alerts-so-*"
     inventory_index: "so-*"     # SO host data (Elastic Agent)
     endpoint: "https://192.168.1.76:9200"   # SO VM 706 — ES is HTTPS-only
     # SO signals nest rule fields under signal.* — override the field names
+    # for the ECS alert shape (suricata.alerts-so / detections.alerts-so).
     fields:
-      level: "signal.rule.level"
-      groups: "signal.rule.tags"
+      level: "event.severity"
+      groups: "tags"
     # SO ES creds: the user is fine to commit (it's a username); the password
     # lives in .env as SO_INDEXER_PASSWORD — never in this committed file.
     user: "<so-es-user>"
