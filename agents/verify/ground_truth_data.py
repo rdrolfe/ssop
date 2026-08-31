@@ -50,14 +50,18 @@ checks = [
     ("sysmon hash AAE3F5A29935E6ABCC2C2754D12A9AF0", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "AAE3F5A29935E6ABCC2C2754D12A9AF0"}}),
     ("sysmon 3791.exe process create", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "3791.exe"}}),
     ("windows process exec (joomla webshell, SO)", "bots-winsecurity", {"bool": {"must": [{"term": {"EventCode": 4688}}, {"match_phrase": {"_raw": "joomla"}}]}}),
+    # sysmon slice is now duplicated to SO for two-backend ground-truth parity
+    ("sysmon process 121214.tmp (SO)", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "121214.tmp"}}, "so"),
+    ("sysmon hash AAE3F5A29935E6ABCC2C2754D12A9AF0 (SO)", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "AAE3F5A29935E6ABCC2C2754D12A9AF0"}}, "so"),
+    ("sysmon 3791.exe process create (SO)", "bots-sysmon-op-poc", {"match_phrase": {"_raw": "3791.exe"}}, "so"),
 ]
 
 print("=== BOTSv1 GROUND-TRUTH DATA PRESENCE ===")
-print(f"host: {HOST} (+ SO {SO_HOST} for winsecurity)\n")
+print(f"host: {HOST} (+ SO {SO_HOST} for winsecurity + duplicated sysmon)\n")
 ok = 0
-for label, idx, query in checks:
-    # the winsecurity index lives on SO; everything else on Wazuh
-    is_so = idx == "bots-winsecurity"
+for row in checks:
+    label, idx, query = row[0], row[1], row[2]
+    is_so = (len(row) > 3 and row[3] == "so") or idx == "bots-winsecurity"
     n = count(idx, query, host=(SO_HOST if is_so else None), auth_header=(so_auth if is_so else None))
     if isinstance(n, int) and n > 0:
         mark = "✅ PRESENT"
