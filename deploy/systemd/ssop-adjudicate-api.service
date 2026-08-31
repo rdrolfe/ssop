@@ -1,0 +1,19 @@
+[Unit]
+Description=SSOP adjudication API (TLS, human console backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rdrolfe
+Group=rdrolfe
+WorkingDirectory=/home/rdrolfe/agent-runtime
+# -m tools.adjudicate_api (not a script path): the module imports
+# logging_setup + tools.* which need the runtime root on sys.path.
+ExecStart=/home/rdrolfe/agent-runtime/agent-env/bin/python3 -m tools.adjudicate_api --host 0.0.0.0 --port 8787 --tls
+Restart=on-failure
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

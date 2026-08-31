@@ -285,14 +285,17 @@ def main() -> None:
                 args.host, args.port, "HTTPS" if args.tls else "HTTP")
     if args.tls:
         import ssl
+        # Durable cert path next to the runtime (not /tmp — wiped on reboot).
+        cert_dir = _AGENT_RUNTIME / "certs"
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain("/tmp/api_cert.pem", "/tmp/api_key.pem")
-        # Tighten key perms: the private key in /tmp must not be world-readable
+        ctx.load_cert_chain(str(cert_dir / "api_cert.pem"),
+                            str(cert_dir / "api_key.pem"))
+        # Tighten key perms: the private key must not be world-readable
         # (bandit B108 — secure the temp file).
         try:
             import os
-            os.chmod("/tmp/api_key.pem", 0o600)
-            os.chmod("/tmp/api_cert.pem", 0o644)
+            os.chmod(cert_dir / "api_key.pem", 0o600)
+            os.chmod(cert_dir / "api_cert.pem", 0o644)
         except OSError as e:
             logger.warning("could not chmod api key/cert: %s", e)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)

@@ -105,8 +105,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
 def main():
     # Use the Wazuh dashboard's OWN cert (dashboard.pem) — the browser already
     # trusts it for 192.168.1.75, so the iframe gets no cert warning.
-    cert = "/tmp/telemetry_cert.pem"
-    key = "/tmp/telemetry_key.pem"
+    # Cert lives in a durable path next to this script (not /tmp, which is
+    # wiped on reboot) — see the start script for how it's refreshed.
+    cert_dir = Path(__file__).resolve().parent / "certs"
+    cert = cert_dir / "cert.pem"
+    key = cert_dir / "key.pem"
     server = HTTPServer(("0.0.0.0", 5602), ProxyHandler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
