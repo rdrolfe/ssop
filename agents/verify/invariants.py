@@ -150,17 +150,43 @@ def inv_tuned_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], st
 
 
 def inv_no_new_case_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
-    """If fixture says no_new_case:true, attaching to a chain must NOT mint."""
-    if fixture.get("expect", {}).get("no_new_case"):
-        # The analyst driver attaches to existing chain without opening a case;
-        # the recent-cases check confirms no NEW case_opened receipt.
-        recent = stores.recent_cases(since_minutes=5)
-        # count only case_opened events matching the fixture's entity pair
-        match = [c for c in recent if c.get("source", {}).get("srcip") == fixture.get("alert", {}).get("srcip")]
-        if match:
-            return Check("no_new_case", CHECK_FAIL, f"new case minted for repeated entity ({len(match)})")
-        return Check("no_new_case", CHECK_OK, "no new case for repeated entity")
-    return Check("no_new_case", CHECK_SKIP, "no expectation")
+    """If fixture says no_new_case:true, attaching must not mint a new case.
+
+    The old check scanned receipts for a `source` field that never exists
+    (receipts carry no source) — vacuously green. The real assertion is:
+    (1) the analyst ATTACHED — verdict() returned an existing_chain for the
+    entity pair (recidivism fired); and (2) no NEW open case exists for that
+    pair beyond the seeded/attached one.
+    """
+    exp = fixture.get("expect", {})
+    if not (exp.get("attach") or exp.get("no_new_case")):
+        return Check("no_new_case", CHECK_SKIP, "no expectation")
+    # (1) attach must be observable from the ANALYST driver: verdict() returned
+    # existing_chain (recidivism fired). The router driver runs classify(), not
+    # verdict(), so it never produces existing_chain — skip the attach assert
+    # for non-analyst drivers (its dispatch outcome is checked separately).
+    chain = outcome.get("existing_chain")
+    driver = outcome.get("driver_role")
+    if exp.get("attach") and driver == "analyst" and not chain:
+        return Check("no_new_case", CHECK_FAIL,
+                     "expected attach to existing chain but recidivism did not fire (existing_chain absent)")
+    # (2) no NEW open case minted for the pair: scan Qdrant working store.
+    try:
+        from tools.observables import entity_pair
+        pair = entity_pair(fixture.get("alert", {}))
+        if not pair:
+            return Check("no_new_case", CHECK_SKIP, "no entity pair on fixture alert")
+        srcip, dstip = pair
+        open_cases = stores.cases.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
+        # The seed case (verify_seed) may legitimately exist; count non-seed.
+        non_seed = [c for c in open_cases if not (c.get("source") or {}).get("verify_seed")]
+        if len(non_seed) > 0:
+            return Check("no_new_case", CHECK_FAIL,
+                         f"new case(s) minted for repeated entity: {[c.get('case_id') for c in non_seed]}")
+        note = f"attached to chain {chain}" if chain else "no new case minted"
+        return Check("no_new_case", CHECK_OK, note)
+    except Exception as e:  # noqa: BLE001 — invariant must not crash the matrix
+        return Check("no_new_case", CHECK_WARN, f"entity scan failed: {e}")
 
 
 def inv_no_dispatch_for_noise(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:

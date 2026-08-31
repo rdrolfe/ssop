@@ -70,10 +70,11 @@ fixtures:
       srcip: "203.0.113.50"
       dstip: "198.51.100.7"
     expect:
-      verdict: escalate
+      verdict: note        # analyst: escalation suppressed — attaching, not re-escalating
       category: threat
-      attach: true
-      no_new_case: true
+      attach: true         # analyst: verdict() must return existing_chain for the pair
+      no_new_case: true    # no new case minted
+      router_role: analyst # router driver: dispatch to analyst is the correct outcome
 
   - id: novel-untuned-escalates
     description: "Genuinely new alert, unseen pair, untuned class — MUST mint a case (the novel gate)"

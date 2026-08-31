@@ -77,6 +77,33 @@ def main() -> int:
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("tuning seed skipped — tuned fixtures may fail as BLOCKED")
 
+    # Seed the entity-pair case the repeated-entity-attaches fixture depends on.
+    # Entity recidivism is stateful: verdict() attaches to an existing OPEN
+    # case for the pair. Without a seeded open case the attach path has
+    # nothing to attach to, and the fixture's attach/no_new_case expectations
+    # pass vacuously. Idempotent: reuse an existing matching open case.
+    try:
+        from tools.case_tools import CaseStore
+        from tools.observables import entity_pair
+        _cs = CaseStore()
+        for f in fixtures:
+            exp = f.get("expect", {})
+            if not (exp.get("attach") or exp.get("no_new_case")):
+                continue
+            pair = entity_pair(f.get("alert", {}))
+            if not pair:
+                continue
+            srcip, dstip = pair
+            existing = _cs.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
+            if not existing:
+                _cs.open_case(
+                    source={"srcip": srcip, "dstip": dstip, "verify_seed": True},
+                    title=f"VERIFY SEED repeated-entity {srcip}:{dstip}",
+                )
+                logger.info("verify seed: open case for entity %s:%s", srcip, dstip)
+    except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
+        logger.warning("entity seed skipped — attach fixtures may fail as BLOCKED")
+
     results = run_matrix(fixtures, roles)
     report = {
         "summary": summarize(results),

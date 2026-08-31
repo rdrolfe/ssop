@@ -292,20 +292,35 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
         escalator = get_escalation()
         v = analyst.verdict(alert)
         result["verdict"] = v["verdict"]
-        if v["verdict"] == "escalate":
-            case = cases.open_case(
-                source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
-                        "category": v["category"], "level": v["level"]},
-                title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
-            )
-            cases.append_event(case["case_id"], "router", "dispatch", {
-                "verdict": "escalate", "rationale": v["rationale"],
-                "level": v["level"], "category": v["category"], "agent": v["agent"],
-            })
+        if v["verdict"] == "escalate" or v.get("existing_chain"):
+            # Stateful: repeated entity pair with an open case ATTACHES to the
+            # existing chain (evidence accumulation), never re-mints.
+            if v.get("existing_chain"):
+                case_id = v["existing_chain"]
+                cases.append_event(case_id, "router", "dispatch", {
+                    "verdict": "escalate", "rationale": v["rationale"],
+                    "level": v["level"], "category": v["category"], "agent": v["agent"],
+                })
+                result["case_id"] = case_id
+                result["attached"] = True
+                result["escalated"] = True
+                logger.info("router attached alert to existing chain %s (repeated entity)", case_id)
+            else:
+                case = cases.open_case(
+                    source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
+                            "category": v["category"], "level": v["level"],
+                            "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
+                    title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
+                )
+                case_id = case["case_id"]
+                cases.append_event(case_id, "router", "dispatch", {
+                    "verdict": "escalate", "rationale": v["rationale"],
+                    "level": v["level"], "category": v["category"], "agent": v["agent"],
+                })
+                result["case_id"] = case_id
+                result["escalated"] = True
             escalator.escalate(tier=2, title=f"[ROUTER-ANALYST] {v['description'][:60]}",
-                               detail={"case_id": case["case_id"], "verdict": v}, actor="router")
-            result["case_id"] = case["case_id"]
-            result["escalated"] = True
+                               detail={"case_id": case_id, "verdict": v}, actor="router")
             # SOAR enrichment loop: if the analyst recommended a playbook,
             # hand the alert + recommendation to the responder (it gates on
             # tier + approval; tier2 produces the approval ticket).
@@ -313,7 +328,7 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                 try:
                     from responder import run as run_responder
                     resp = run_responder(
-                        alert, case_id=case["case_id"], dry_run=False,
+                        alert, case_id=case_id, dry_run=False,
                         recommended_playbook=v["recommended_playbook"],
                     )
                     result["responder"] = {
@@ -329,7 +344,7 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                 except Exception as e:
                     logger.exception("responder invocation failed")
                     result["responder_error"] = str(e)
-            logger.info("security dispatch escalated: case %s", case["case_id"])
+            logger.info("security dispatch escalated: case %s", case_id)
         else:
             result["action"] = "noted_no_escalate"
     except Exception as e:

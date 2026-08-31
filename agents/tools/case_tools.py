@@ -285,33 +285,35 @@ class CaseStore:
         """Find open/recent cases engaged with the same (srcip, dstip) pair.
 
         Powers the stateful entity-recidivism check: a repeated pair should
-        ATTACH to an existing chain, not mint a new case. Scans the receipt
-        spine (cases.jsonl) — cheap, and the JSONL is the provable truth.
+        ATTACH to an existing chain, not mint a new case.
+
+        Scans the Qdrant working store (the receipt spine carries no `source`
+        — only Qdrant holds source.srcip/src.dstip). Keeps cases with a
+        matching entity pair, status != closed, and a recent ts.
         """
         out: list[dict[str, Any]] = []
-        cutoff = (datetime.now(timezone.utc).timestamp() - window_s) * 1000  # ms epoch
+        cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
-            with open(self.cases_file, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
+            mem = self._get_memory()
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000):
+                payload = self._parse_content(r.get("content", ""))
+                if not payload:
+                    continue
+                if payload.get("status") == "closed":
+                    continue
+                src = payload.get("source", {})
+                if (str(src.get("srcip")) != str(srcip)
+                        or str(src.get("dstip")) != str(dstip)):
+                    continue
+                try:
+                    ts = payload.get("ts", "")
+                    if datetime.fromisoformat(ts).timestamp() < cutoff:
                         continue
-                    if rec.get("status") == "closed":
-                        continue
-                    src = rec.get("source", {})
-                    if str(src.get("srcip")) == str(srcip) and str(src.get("dstip")) == str(dstip):
-                        # recency window check on the receipt ts
-                        ts = rec.get("ts", "")
-                        try:
-                            from datetime import datetime as _dt
-                            if _dt.fromisoformat(ts).timestamp() * 1000 < cutoff:
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-                        out.append(rec)
-        except OSError as e:
-            logger.warning("recent_entity_cases read failed: %s", e)
+                except (ValueError, TypeError):
+                    pass
+                out.append(payload)
+        except Exception as e:  # noqa: BLE001 — recidivism must never break triage
+            logger.warning("recent_entity_cases scan failed: %s", e)
         return out
 
     def reconcile(self, heal: bool = True) -> dict[str, Any]:

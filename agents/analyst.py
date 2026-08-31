@@ -93,7 +93,8 @@ def node_analyze_recent(state: AnalystState) -> AnalystState:
                     continue
                 case = cases.open_case(
                     source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
-                            "rule_id": (v.get("rule") or {}).get("id")},
+                            "rule_id": (v.get("rule") or {}).get("id"),
+                            "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
                     title=f"{v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
                     observables=obs,
                     enrichments=enrichments,

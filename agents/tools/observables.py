@@ -63,6 +63,33 @@ def _is_valid_ip(value: str) -> bool:
         return False
 
 
+def entity_pair(alert: dict[str, Any]) -> tuple[str, str] | None:
+    """Extract the (srcip, dstip) entity pair from an alert, if present.
+
+    Flatten-aware: live Wazuh alerts nest these under data.* (data.srcip /
+    data.src_ip), replayed/other backends use top-level srcip/src_ip, and
+    ECS-style backends use source.ip / destination.ip. Tries all candidate
+    names (shared with extract_observables) so the entity key is backend-
+    agnostic. Returns None when either side is missing — a pair is required
+    for entity recidivism (one-sided alerts get no attach/chain).
+    """
+    flat = _flatten(alert)
+    src = dst = ""
+    for f in ("srcip", "src_ip", "data.srcip", "data.src_ip", "source.ip", "clientip"):
+        v = flat.get(f)
+        if isinstance(v, str) and v and _is_valid_ip(v):
+            src = v
+            break
+    for f in ("dstip", "dst_ip", "data.dstip", "data.dst_ip", "destination.ip"):
+        v = flat.get(f)
+        if isinstance(v, str) and v and _is_valid_ip(v):
+            dst = v
+            break
+    if not src or not dst:
+        return None
+    return src, dst
+
+
 def _dedupe(observables: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set = set()
     out: list[dict[str, str]] = []

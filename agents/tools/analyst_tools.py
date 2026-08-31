@@ -182,13 +182,15 @@ class AnalystClient:
         # STATEFUL STEP — entity recidivism: if we already have an OPEN case
         # on this (srcip, dstip) pair, we ATTACH (reuse the chain), not mint.
         existing_chain = None
+        entity_srcip = entity_dstip = None
         if escalate:
             try:
+                from tools.observables import entity_pair
                 from tools.registry import get_cases
-                srcip = alert.get("srcip") or alert.get("src_ip")
-                dstip = alert.get("dstip") or alert.get("dst_ip")
-                if srcip and dstip:
-                    existing_chain = get_cases().recent_entity_cases(srcip, dstip)
+                pair = entity_pair(alert)
+                if pair:
+                    entity_srcip, entity_dstip = pair
+                    existing_chain = get_cases().recent_entity_cases(entity_srcip, entity_dstip)
                     if existing_chain:
                         escalate = False  # attach to chain below, don't mint a new escalation
             except Exception:  # noqa: BLE001 — recidivism check must never break triage
@@ -224,6 +226,8 @@ class AnalystClient:
                 + (f"; attaching to existing chain {existing_chain[0].get('case_id')}" if existing_chain else "")
             ),
             "existing_chain": existing_chain[0].get("case_id") if existing_chain else None,
+            "entity_srcip": entity_srcip,
+            "entity_dstip": entity_dstip,
             "recommended_playbook": recommended_playbook,
             "techniques": techniques,
             **c,
