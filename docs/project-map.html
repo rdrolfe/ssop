@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>SSOP — The Ontology Project Map</h1>
-<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-08-30.</b></div>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-08-31.</b></div>
 
 <div class="legend">
   <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
@@ -44,6 +44,8 @@
     <div class="item"><div class="t">Tuning ledger + feedback loop</div><div class="d">Qdrant rule→decision; human adjudication feeds analyst</div></div>
     <div class="item"><div class="t">Playbook library (8) + recommendation</div><div class="d">Data-grounded per-role matrix, most-specific match</div></div>
     <div class="item"><div class="t">Verify matrix 30/30 GREEN</div><div class="d">Fixtures encode data-driven decisions; isolation fixed (tickets + cases)</div></div>
+    <div class="item"><div class="t">Entity-recidivism fixed (was dead) <span class="tag commit">5960caa</span></div><div class="d">attach-on-repeat was broken in 5 places (receipt scan, missing srcip key, live-shape, router re-mint, vacuous test) — all fixed; probes prove attach fires, novel still escalates</div></div>
+    <div class="item"><div class="t">Invariants hardened (non-vacuous) <span class="tag commit">e5080e9</span></div><div class="d">dedupe/case/reconcile were dead or vacuous — now exercise the real dispatch + write paths; 30/30 actually asserts the behavior</div></div>
   </div>
 
   <div class="col done">
@@ -79,6 +81,7 @@
     <h2><span class="dot"></span> Reliability &amp; ops (done)</h2>
     <div class="item"><div class="t">Supervisor queue-drain fix <span class="tag commit">2719a68</span></div><div class="d">dedupe closes repeats, close-node no-op, reconcile repair — queue 174→0, consistent=True</div></div>
     <div class="item"><div class="t">Qdrant hardening <span class="tag commit">acf6f90</span></div><div class="d">timeout + transient-retry + self-healing reconcile — a blip can't strand a case again</div></div>
+    <div class="item"><div class="t">Boot-evidence watchdog <span class="tag commit">b2b5463</span></div><div class="d">graceful-shutdown marker + boot check — an unclean stop (crash/OOM) now leaves a trail instead of a mystery</div></div>
   </div>
 
   <div class="col done">
@@ -106,6 +109,7 @@
     <div class="item"><div class="t">Env bootstrap fix <span class="tag commit">e52790b</span></div><div class="d">config.py owns load_dotenv — kills intermittent indexer 401; matrix 30/30</div></div>
     <div class="item"><div class="t">Live approve path <span class="tag commit">22e30ae</span></div><div class="d">Investigator correlates live alert stream by attack shape → recognize/escalate → 3-stage chain → supervisor APPROVES → responder unblocked (dry-run)</div></div>
     <div class="item"><div class="t">Live hunt sweep (proactive) <span class="tag commit">6923f5f</span></div><div class="d">Hunt role wired into cadence (15m timer) — 5 live hunts over 1-day window, hunt-recidivism attach + once-per-case escalation; found real auth/apparmor signals</div></div>
+    <div class="item"><div class="t">Hunt flood fixed <span class="tag commit">6fe9834</span></div><div class="d">chronic-FP hunt re-ticketed every 15m (64 tickets) — deny never wrote tuning (no rule_id); now keys hunt:&lt;id&gt; + tuning-respect + 24h re-arm cooldown. Queue drained to 3 legit analyst tickets</div></div>
   </div>
 
   <div class="col todo">

@@ -1,0 +1,13 @@
+[Unit]
+Description=SSOP boot-evidence check (was previous shutdown clean?)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/ssop-boot-evidence.sh
+
+[Install]
+WantedBy=multi-user.target

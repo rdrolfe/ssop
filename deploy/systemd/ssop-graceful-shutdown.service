@@ -1,0 +1,17 @@
+[Unit]
+Description=SSOP graceful-shutdown marker (so next boot knows the stop was clean)
+DefaultDependencies=no
+Before=shutdown.target reboot.target poweroff.target halt.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+RemainAfterExit=yes
+# ExecStart no-ops; ExecStop runs on shutdown and writes the marker.
+ExecStart=/bin/true
+ExecStop=/bin/mkdir -p /home/rdrolfe/.ssop/state
+ExecStop=/bin/touch /home/rdrolfe/.ssop/state/graceful-shutdown
+
+[Install]
+WantedBy=multi-user.target
