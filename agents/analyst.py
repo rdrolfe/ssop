@@ -10,7 +10,7 @@ Loop: INGEST -> CLASSIFY -> CASE -> VERDICT -> (ESCALATE | NOTE)
 
 import json
 import sys
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
@@ -39,6 +39,92 @@ escalator = get_escalation()
 
 # --- Nodes ---
 
+def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any]:
+    """Full per-alert analyst write path: classify, mint/attach case, escalate.
+
+    Shared by the live sweep (node_analyze_recent) and the verify driver
+    (drive_analyst with case:true) so the matrix asserts the REAL write path,
+    not a logic-only proxy. Returns {verdict, case_id, attached, escalated,
+    observables, enrichments} — never raises (fail-closed to a note).
+
+    `escalate=False` (verify) mints the case + records verdict/investigation
+    but SKIPS the escalation ticket — a synthetic alert must not pollute the
+    human-facing queue. The case-mint is what case:true asserts.
+    """
+    try:
+        v = analyst.verdict(alert)
+    except Exception as e:  # noqa: BLE001 — a crash must not take down the sweep
+        logger.warning("verdict failed (treating as note): %s", e)
+        return {"verdict": "note", "case_id": None, "attached": False,
+                "escalated": False, "observables": [], "enrichments": []}
+    out: dict[str, Any] = {"verdict": v["verdict"], "case_id": None,
+                           "attached": False, "escalated": False,
+                           "observables": [], "enrichments": []}
+    if not (v["verdict"] == "escalate" or v.get("existing_chain")):
+        return out
+    # Extract IOCs (adopted SO concept — first-class observables on the case).
+    from tools.enrichment import EnrichmentClient
+    from tools.observables import extract_observables
+
+    obs = extract_observables(v)
+    out["observables"] = obs
+    enrichments = []
+    if obs:
+        try:
+            enrichments = EnrichmentClient().enrich_many(obs)
+        except Exception as e:  # noqa: BLE001 — enrichment must not block
+            logger.warning("enrichment failed (continuing): %s", e)
+    out["enrichments"] = enrichments
+    # Stateful: repeated entity pair attaches to the open chain, never mints.
+    if v.get("existing_chain"):
+        cid = v["existing_chain"]
+        cases.append_event(
+            cid, "analyst", "verdict",
+            {"verdict": "escalate", "rationale": v["rationale"], "observables": obs,
+             "enrichments": enrichments, **{k: v[k] for k in ("level", "category", "agent")}},
+        )
+        out.update({"case_id": cid, "attached": True})
+        return out
+    case = cases.open_case(
+        source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
+                "rule_id": (v.get("rule") or {}).get("id"),
+                "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
+        title=f"{v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
+        observables=obs,
+        enrichments=enrichments,
+    )
+    out["case_id"] = case["case_id"]
+    # INVESTIGATE: correlate the case entities across sources and append the
+    # kill-chain hypothesis + evidence to the timeline.
+    try:
+        from tools.investigator import Investigator
+        inv = Investigator()
+        srcip = (obs[0].get("value") if obs else "") or alert.get("srcip", "")
+        inv_res = inv.investigate(srcip=srcip)
+        if inv_res["evidence"]:
+            cases.append_event(
+                case["case_id"], "analyst", "investigation",
+                {"hypothesis": inv_res["hypothesis"],
+                 "evidence": inv_res["evidence"],
+                 "kill_chain": inv_res["kill_chain"]},
+            )
+    except Exception as e:  # noqa: BLE001 — investigation must not block escalation
+        logger.warning("investigation failed (continuing): %s", e)
+    cases.append_event(
+        case["case_id"], "analyst", "verdict",
+        {"verdict": "escalate", "rationale": v["rationale"], **{k: v[k] for k in ("level", "category", "agent")}},
+    )
+    if escalate:
+        esc = escalator.escalate(
+            tier=2,
+            title=f"[ANALYST] {case['case_id']} {v['description'][:60]}",
+            detail={"case_id": case["case_id"], **v},
+            actor="analyst",  # who decided; v["agent"] is the alert source
+        )
+        out["escalated"] = bool(esc.get("delivery", {}).get("delivered", False))
+    return out
+
+
 def node_analyze_recent(state: AnalystState) -> AnalystState:
     """Pull recent alerts, classify, open cases for escalatable ones."""
     try:
@@ -62,73 +148,12 @@ def node_analyze_recent(state: AnalystState) -> AnalystState:
                 f"[{str(ts)[:19]}] agent={ag} lvl={v.get('level', 0)} "
                 f"{v.get('category', 'operational'):<13} -> {v['verdict']}"
             )
-            if v["verdict"] == "escalate" or v.get("existing_chain"):
-                # Extract IOCs from the alert (adopted SO concept — first-class
-                # observables on the case). Backend-agnostic: works on the
-                # transport-normalized alert, identical on Wazuh or SO.
-                from tools.enrichment import EnrichmentClient
-                from tools.observables import extract_observables
-
-                obs = extract_observables(v)
-                # Enrich the observables (adopted SO analyzer concept) —
-                # threat-intel verdicts attach to the case. Degrades silently
-                # on provider failure; never blocks case creation.
-                enrichments = []
-                if obs:
-                    try:
-                        enrichments = EnrichmentClient().enrich_many(obs)
-                    except Exception as e:  # noqa: BLE001 — enrichment must not block
-                        logger.warning("enrichment failed (continuing): %s", e)
-                # Stateful: if this entity pair already has an open case, ATTACH
-                # to that chain (evidence accumulation), never mint a duplicate.
-                if v.get("existing_chain"):
-                    chain_id = v["existing_chain"]
-                    cases.append_event(
-                        chain_id, "analyst", "verdict",
-                        {"verdict": "escalate", "rationale": v["rationale"], "observables": obs,
-                         "enrichments": enrichments, **{k: v[k] for k in ("level", "category", "agent")}},
-                    )
-                    lines.append(f"    attached to chain={chain_id} (repeated entity) [+{len(obs)} observables, {len(enrichments)} enrichments]")
-                    opened += 1
-                    continue
-                case = cases.open_case(
-                    source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
-                            "rule_id": (v.get("rule") or {}).get("id"),
-                            "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
-                    title=f"{v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
-                    observables=obs,
-                    enrichments=enrichments,
-                )
-                # INVESTIGATE: correlate the case entities across sources and
-                # append the kill-chain hypothesis + evidence to the timeline.
-                try:
-                    from tools.investigator import Investigator
-                    inv = Investigator()
-                    # Use the ALERT's srcip directly (the verdict dict doesn't
-                    # carry the srcip/dstip that extract_observables needs)
-                    srcip = (obs[0].get("value") if obs else "") or alert.get("srcip", "")
-                    inv_res = inv.investigate(srcip=srcip)
-                    if inv_res["evidence"]:
-                        cases.append_event(
-                            case["case_id"], "analyst", "investigation",
-                            {"hypothesis": inv_res["hypothesis"],
-                             "evidence": inv_res["evidence"],
-                             "kill_chain": inv_res["kill_chain"]},
-                        )
-                        lines.append(f"    investigation: {len(inv_res['evidence'])} correlations, chain={' -> '.join(inv_res['kill_chain'][:3])}")
-                except Exception as e:  # noqa: BLE001 — investigation must not block escalation
-                    logger.warning("investigation failed (continuing): %s", e)
-                cases.append_event(
-                    case["case_id"], "analyst", "verdict",
-                    {"verdict": "escalate", "rationale": v["rationale"], **{k: v[k] for k in ("level", "category", "agent")}},
-                )
-                esc = escalator.escalate(
-                    tier=2,
-                    title=f"[ANALYST] {case['case_id']} {v['description'][:60]}",
-                    detail={"case_id": case["case_id"], **v},
-                    actor="analyst",  # who decided; v["agent"] is the alert source
-                )
-                lines.append(f"    case={case['case_id']} escalated -> {esc['delivery'].get('delivered')}")
+            res = process_alert(alert)
+            if res.get("case_id"):
+                if res.get("attached"):
+                    lines.append(f"    attached to chain={res['case_id']} (repeated entity) [+{len(res.get('observables', []))} observables, {len(res.get('enrichments', []))} enrichments]")
+                else:
+                    lines.append(f"    case={res['case_id']} escalated -> {res.get('escalated')}")
                 opened += 1
         state["result"] = f"Analyzed {len(alerts)} alerts, escalated {opened}:\n" + "\n".join(lines)
     except Exception as e:

@@ -40,10 +40,27 @@ def drive_analyst(fixture: Dict[str, Any]) -> RoleOutcome:
     analyst = get_analyst()
     alert = fixture.get("alert", {})
     v = analyst.verdict(alert)
+    wrote_case = False
+    case_id = None
+    attached = False
+    # A fixture that declares case:true asserts the REAL write path (mint a
+    # case on a novel escalation) — exercise process_alert so the invariant
+    # checks an actual case was opened, not a logic-only proxy.
+    if fixture.get("expect", {}).get("case"):
+        try:
+            from analyst import process_alert
+            res = process_alert(alert, escalate=False)  # mint case, no ticket
+            wrote_case = bool(res.get("case_id"))
+            case_id = res.get("case_id")
+            attached = bool(res.get("attached"))
+        except Exception as e:  # noqa: BLE001 — write-path failure surfaces as not-wrote
+            logger.warning("process_alert in verify failed for %s: %s",
+                           fixture.get("id", "?"), e)
     return RoleOutcome(v["verdict"], category=v.get("category"), level=v.get("level"),
                        tuned=v.get("tuned", False),
                        tuning_override=v.get("tuning_override", False),
                        existing_chain=v.get("existing_chain"),
+                       wrote_case=wrote_case, case_id=case_id, attached=attached,
                        driver_role="analyst")
 
 
@@ -54,9 +71,29 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
     Its verdict-equivalent is 'dispatched' (role assigned) vs 'not dispatched'
     (noise/unclassified). The analyst/hunt drivers own the escalate/note call.
     """
-    from router import classify
+    from router import classify, dispatch
     alert = fixture.get("alert", {})
     category, role = classify(alert)
+    # Fixture may declare the expected router_role; the verdict check for the
+    # router driver is about DISPATCH, not escalate/note.
+    expected_role = fixture.get("expect", {}).get("router_role")
+    if expected_role is not None:
+        dispatched = role == expected_role
+    else:
+        dispatched = role is not None
+    # Burst-dedupe is a DISPATCH-layer behavior, not a classify() one. When the
+    # fixture declares dedupe_if_repeat, exercise the real dispatch() with a
+    # repeat burst_count so the invariant asserts the actual dedupe action
+    # (burst_deduped) — not a field no driver ever sets.
+    burst = 1
+    dispatch_action = None
+    if fixture.get("expect", {}).get("dedupe_if_repeat"):
+        burst = 2  # a repeat of a known burst signature
+        dr = dispatch(alert, burst_count=burst)
+        dispatch_action = (dr.get("dispatch") or {}).get("action")
+        # dispatch() is authoritative for the dedupe decision
+        if dispatch_action == "burst_deduped":
+            dispatched = False
     # Tuned rules: the router returns ("operational", None) — mark tuned so
     # the invariant can verify the tuning was respected in dispatch. If the
     # rule is tuned but STILL dispatched, that's the evidence-gated override
@@ -73,16 +110,10 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
             tuning_override = True
     except Exception:  # noqa: BLE001
         tuned = False
-    # Fixture may declare the expected router_role; the verdict check for the
-    # router driver is about DISPATCH, not escalate/note.
-    expected_role = fixture.get("expect", {}).get("router_role")
-    if expected_role is not None:
-        dispatched = role == expected_role
-    else:
-        dispatched = role is not None
     return RoleOutcome("escalate" if dispatched else "note",
                        category=category, role=role, dispatched=dispatched,
                        tuned=tuned, tuning_override=tuning_override,
+                       burst=burst, dispatch_action=dispatch_action,
                        wrote_case=False, driver_role="router")
 
 

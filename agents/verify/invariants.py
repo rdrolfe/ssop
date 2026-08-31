@@ -115,23 +115,37 @@ def inv_no_case_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], 
 
 
 def inv_case_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
-    """If fixture says case:true, a case must exist.
+    """If fixture says case:true, a case must have been minted.
 
-    Only meaningful for WRITE-path drivers (integration tests that feed an
-    alert through the real router/analyst dispatch). The pure-logic drivers
-    (verdict/classify/hunt) never mint cases by design — for them this check
-    is SKIP unless the driver actually performed a dispatch.
+    The analyst driver now exercises the REAL write path (process_alert)
+    when the fixture declares case:true, surfacing the minted case_id. This
+    asserts the specific case actually landed in the working store — not
+    "any recent case" (which could match another fixture's write).
     """
     if not fixture.get("expect", {}).get("case"):
         return Check("case", CHECK_SKIP, "no expectation")
-    # Logic-only drivers don't write; only assert when a case was actually
-    # written (integration drivers set wrote_case=True).
-    if outcome.get("wrote_case"):
-        recent = stores.recent_cases(since_minutes=5)
-        if not recent:
-            return Check("case", CHECK_FAIL, "expected a case, none opened")
-        return Check("case", CHECK_OK, f"case opened ({recent[0].get('case_id')})")
-    return Check("case", CHECK_SKIP, "logic driver — case covered by integration test")
+    # Case-minting is the ANALYST's write path; router/hunt drivers classify/
+    # dispatch, they don't mint cases — skip for them (their dispatch outcome
+    # is checked separately).
+    if outcome.get("driver_role") != "analyst":
+        return Check("case", CHECK_SKIP, "analyst write-path behavior")
+    case_id = outcome.get("case_id")
+    if not outcome.get("wrote_case") or not case_id:
+        return Check("case", CHECK_FAIL,
+                     f"expected a case to be minted for a novel escalation (wrote_case={outcome.get('wrote_case')})")
+    cur = stores.cases.get_case(case_id)
+    if not cur:
+        return Check("case", CHECK_FAIL, f"case {case_id} not found in working store")
+    if cur.get("status") != "open":
+        return Check("case", CHECK_FAIL, f"case {case_id} opened but status={cur.get('status')}")
+    # Clean up the verify artifact: this fixture minted a synthetic case; close
+    # it so repeated matrix runs don't accumulate open cases. The append-only
+    # receipt keeps the case_opened history (reconcile still sees it).
+    try:
+        stores.cases.close_case(case_id, reason="verify fixture artifact")
+    except Exception as e:  # noqa: BLE001 — cleanup must not fail the check
+        logger.warning("verify case cleanup failed for %s: %s", case_id, e)
+    return Check("case", CHECK_OK, f"case minted, verified, closed: {case_id}")
 
 
 def inv_tuned_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
@@ -218,28 +232,65 @@ def inv_no_dispatch_for_noise(fixture: Dict[str, Any], outcome: Dict[str, Any], 
 
 
 def inv_deduped_burst(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
-    """Burst repeats must be deduped (one dispatch, not N)."""
-    if fixture.get("expect", {}).get("dedupe_if_repeat"):
-        burst = outcome.get("burst", 1)
-        if burst > 1:
-            return Check("dedupe", CHECK_OK, f"burst #{burst} deduped")
-        return Check("dedupe", CHECK_OK, "first occurrence (dispatch once)")
-    return Check("dedupe", CHECK_SKIP, "no expectation")
+    """Burst repeats must be deduped (one dispatch, not N).
+
+    The driver now exercises the REAL dispatch() with a repeat burst_count
+    and surfaces the action. A repeat must produce dispatch_action ==
+    'burst_deduped' and must NOT be dispatched. (Old check read burst from
+    the outcome — a field no driver set — so it could never fail.)
+    """
+    if not fixture.get("expect", {}).get("dedupe_if_repeat"):
+        return Check("dedupe", CHECK_SKIP, "no expectation")
+    # Dedupe is a router-dispatch behavior; analyst/hunt drivers don't dedupe.
+    if outcome.get("driver_role") != "router":
+        return Check("dedupe", CHECK_SKIP, "router-only behavior")
+    burst = outcome.get("burst", 1)
+    action = outcome.get("dispatch_action")
+    if burst > 1 and action == "burst_deduped" and not outcome.get("dispatched"):
+        return Check("dedupe", CHECK_OK, f"burst repeat #{burst} deduped (no dispatch)")
+    if burst > 1 and action != "burst_deduped":
+        return Check("dedupe", CHECK_FAIL,
+                     f"burst repeat #{burst} NOT deduped — dispatch action was {action!r}")
+    if burst > 1 and outcome.get("dispatched"):
+        return Check("dedupe", CHECK_FAIL, "burst repeat was dispatched instead of deduped")
+    return Check("dedupe", CHECK_OK, "first occurrence (dispatch once)")
 
 
 def inv_reconcile_consistent(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
-    """After any role activity, the spine must stay consistent.
+    """A fixture that wrote a case must leave it dual-written (Qdrant == JSONL).
 
-    OPT-IN: only enforced when the fixture declares `expect.reconcile: true`.
-    The spine's standing divergence (orphan receipts from debugging) is a
-    separate operational concern, not a per-fixture invariant — otherwise one
-    stale orphan drowns every fixture with a false FAIL.
+    OPT-IN via `expect.reconcile: true`. Asserts THIS fixture's write is
+    consistent — the specific case_id minted by the driver must exist in both
+    the Qdrant working store and the JSONL receipt spine. It deliberately
+    does NOT demand whole-spine consistency: standing divergence from earlier
+    debugging is a separate operational concern, and one stale orphan would
+    otherwise drown every fixture in a false FAIL.
     """
     if not fixture.get("expect", {}).get("reconcile"):
         return Check("reconcile", CHECK_SKIP, "not part of this fixture")
-    if stores.reconcile_consistent():
-        return Check("reconcile", CHECK_OK, "Qdrant == JSONL")
-    return Check("reconcile", CHECK_FAIL, "spine divergence detected")
+    case_id = outcome.get("case_id")
+    if not case_id:
+        return Check("reconcile", CHECK_SKIP, "fixture wrote no case — nothing to reconcile")
+    # Qdrant working store.
+    try:
+        cur = stores.cases.get_case(case_id)
+    except Exception as e:  # noqa: BLE001 — must not crash the matrix
+        return Check("reconcile", CHECK_WARN, f"qdrant read failed: {e}")
+    # JSONL receipt spine.
+    receipt_ok = False
+    try:
+        if stores.cases.cases_file.exists():
+            with open(stores.cases.cases_file, encoding="utf-8") as f:
+                receipt_ok = any(
+                    case_id in line for line in f if line.strip()
+                )
+    except OSError as e:
+        return Check("reconcile", CHECK_WARN, f"receipt read failed: {e}")
+    if cur is None:
+        return Check("reconcile", CHECK_FAIL, f"case {case_id} in receipt but MISSING from Qdrant")
+    if not receipt_ok:
+        return Check("reconcile", CHECK_FAIL, f"case {case_id} in Qdrant but MISSING from receipt spine")
+    return Check("reconcile", CHECK_OK, f"case {case_id} dual-written (Qdrant + JSONL)")
 
 
 # registry

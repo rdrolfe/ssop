@@ -79,9 +79,14 @@ def main() -> int:
 
     # Seed the entity-pair case the repeated-entity-attaches fixture depends on.
     # Entity recidivism is stateful: verdict() attaches to an existing OPEN
-    # case for the pair. Without a seeded open case the attach path has
-    # nothing to attach to, and the fixture's attach/no_new_case expectations
-    # pass vacuously. Idempotent: reuse an existing matching open case.
+    # case for the pair, and it only looks at the last `window_s` (default 1h).
+    # Without a seeded case the attach path has nothing to attach to, and the
+    # fixture's attach/no_new_case expectations pass vacuously.
+    # CRITICAL: the seed must be FRESH — a stale open case from a previous
+    # matrix run is outside verdict()'s recidivism window and the attach never
+    # fires. Close any stale seed case for the pair, then mint a fresh one.
+    # (The analyst driver closes its minted case after verifying, so a fresh
+    # seed per run does not accumulate — and no_new_case excludes verify_seed.)
     try:
         from tools.case_tools import CaseStore
         from tools.observables import entity_pair
@@ -94,13 +99,17 @@ def main() -> int:
             if not pair:
                 continue
             srcip, dstip = pair
-            existing = _cs.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
-            if not existing:
-                _cs.open_case(
-                    source={"srcip": srcip, "dstip": dstip, "verify_seed": True},
-                    title=f"VERIFY SEED repeated-entity {srcip}:{dstip}",
-                )
-                logger.info("verify seed: open case for entity %s:%s", srcip, dstip)
+            # Close any existing open case for the pair (stale or current) so
+            # the seed below is the ONLY open one and is guaranteed fresh.
+            stale = _cs.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
+            for c in stale:
+                if (c.get("source") or {}).get("verify_seed"):
+                    _cs.close_case(c["case_id"], reason="verify seed refresh")
+            _cs.open_case(
+                source={"srcip": srcip, "dstip": dstip, "verify_seed": True},
+                title=f"VERIFY SEED repeated-entity {srcip}:{dstip}",
+            )
+            logger.info("verify seed: fresh open case for entity %s:%s", srcip, dstip)
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("entity seed skipped — attach fixtures may fail as BLOCKED")
 

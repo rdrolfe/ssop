@@ -89,6 +89,7 @@ fixtures:
       verdict: escalate
       category: threat
       case: true
+      reconcile: true   # the real write path must keep Qdrant == JSONL
 
   - id: pam-session-open
     description: "PAM session open — pure noise, must NOT wake a role"
@@ -114,9 +115,8 @@ fixtures:
       verdict: note
       category: pattern
       dedupe_if_repeat: true
-      # Router dispatches apparmor to hunt (correct); hunt may legitimately
-      # flag a denial burst as suspicious — that's its job. The ANALYST notes.
-      router_role: hunt
+      # Router dedupes the repeat (burst repeat -> burst_deduped, no dispatch).
+      # Hunt may legitimately flag a denial burst as suspicious — its job.
       hunt_may_escalate: true
 
   - id: missing-fields-adversarial
