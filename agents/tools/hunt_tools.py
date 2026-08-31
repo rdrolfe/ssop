@@ -215,3 +215,67 @@ class HuntClient:
             "by_user": users,
             "detail": docs[:5],
         }
+
+    def _analyze_so_severity(self, docs: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyzer for SO high-severity alerts (event.severity >= 3).
+
+        The hunt query already filtered on the raw event.severity; docs here
+        are the normalized spine shape (rule.level mapped 1-4 -> 0-15, plus
+        top-level srcip/dstip when the ECS normalization fired). Any doc
+        present is a high-severity alert worth surfacing.
+        """
+        if not docs:
+            return {"finding": "clean", "confidence": "high",
+                    "summary": "no high-severity SO alerts in window", "detail": []}
+        descs = Counter()
+        pairs = Counter()
+        for d in docs:
+            desc = (d.get("rule") or {}).get("description") or "?"
+            descs[desc] += 1
+            ed = d.get("event_data") or {}
+            # SO detections wrap the entity pair under event_data.*; the
+            # top-level srcip/dstip only exists for the suricata shape.
+            src = (d.get("srcip") or (d.get("source") or {}).get("ip")
+                   or (ed.get("source") or {}).get("ip") or "?")
+            dst = (d.get("dstip") or (d.get("destination") or {}).get("ip")
+                   or (ed.get("destination") or {}).get("ip") or "?")
+            pairs[(str(src), str(dst))] += 1
+        top = descs.most_common(5)
+        notes = [f"{desc} x{cnt}" for desc, cnt in top]
+        top_pairs = pairs.most_common(3)
+        notes.append("pairs: " + ", ".join(f"{s}->{d} x{c}" for (s, d), c in top_pairs))
+        return {
+            "finding": "suspicious",
+            "confidence": "medium",
+            "summary": f"{len(docs)} high-severity SO alerts ({len(descs)} distinct rules)",
+            "notes": notes,
+            "detail": docs[:5],
+        }
+
+    def _analyze_so_detection(self, docs: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyzer for SO detection-framework hits (Sigma envelope docs).
+
+        These docs carry event_data.* (the wrapped original event) with
+        num_matches/num_hits, plus top-level rule.description/sigma_level.
+        A detection-framework match is a finding by definition.
+        """
+        if not docs:
+            return {"finding": "clean", "confidence": "high",
+                    "summary": "no SO detection-framework hits in window", "detail": []}
+        descs = Counter()
+        total_matches = 0
+        for d in docs:
+            desc = (d.get("rule") or {}).get("description") or "?"
+            descs[desc] += 1
+            ed = d.get("event_data") or {}
+            total_matches += int(ed.get("num_matches") or 0)
+        top = descs.most_common(5)
+        notes = [f"{desc} x{cnt}" for desc, cnt in top]
+        notes.append(f"total embedded matches: {total_matches}")
+        return {
+            "finding": "suspicious",
+            "confidence": "medium",
+            "summary": f"{len(docs)} SO detection-framework hits ({len(descs)} distinct rules)",
+            "notes": notes,
+            "detail": docs[:5],
+        }

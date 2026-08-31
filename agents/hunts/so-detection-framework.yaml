@@ -1,0 +1,14 @@
+name: SO detection-framework hits
+category: lateral-movement
+hypothesis: "Security Onion detection-framework matches (Sigma engine envelope under event_data.*) flag behavior the analyst cadence may not have routed."
+analyze: so_detection
+# No _source filter: these docs wrap the underlying event under
+# event_data.*; request whole docs so the analyzer sees num_matches,
+# sigma_level, and the embedded source/destination.
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - exists:
+            field: event_data

@@ -1,0 +1,15 @@
+name: High-severity SO alerts
+category: lateral-movement
+hypothesis: "High-severity Security Onion alerts (event.severity >= 3) indicate active network attacks transiting the segment."
+analyze: so_severity
+# No _source filter: SO alert shapes are nested (rule dict, event_data
+# envelope); requesting whole docs lets the analyzer read whichever shape
+# the backend returned. Volume is low (alert indices).
+query:
+  size: 100
+  query:
+    bool:
+      filter:
+        - range:
+            event.severity:
+              gte: 3
