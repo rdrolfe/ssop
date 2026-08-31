@@ -18,6 +18,7 @@ load_dotenv()  # entry point — config is loaded here, passed down
 
 from logging_setup import get_logger
 from tools.registry import get_hunt, get_cases, get_escalation
+from tools.supervisory_tools import SupervisoryClient
 
 logger = get_logger(__name__)
 
@@ -112,6 +113,13 @@ def node_run_sweep(state: HuntState) -> HuntState:
                         detail={"case_id": cid, "hunt_id": hid, "finding": finding,
                                 "summary": result.get("summary", ""),
                                 "notes": result.get("notes", []), "category": result["category"]})
+                    # Verdict event so a later human adjudication (or the
+                    # supervisory recommendation) has the real level/category
+                    # — without it, supervise falls back to 6/operational and
+                    # recommends no playbook for the finding.
+                    cases.append_event(cid, "analyst", "verdict", {
+                        "verdict": "escalate", "level": 12,
+                        "category": result["category"], "hunt_id": hid})
                     cases.append_event(cid, "hunt", "escalated",
                                        {"hunt_id": hid, "finding": finding})
                     note += " + escalated"
@@ -141,6 +149,11 @@ def node_run_sweep(state: HuntState) -> HuntState:
                     detail={"case_id": cid, "hunt_id": hid, "finding": finding,
                             "summary": result.get("summary", ""),
                             "notes": result.get("notes", []), "category": result["category"]})
+                # Verdict event so adjudication/recommendation sees the real
+                # level/category (same as the existing-case path above).
+                cases.append_event(cid, "analyst", "verdict", {
+                    "verdict": "escalate", "level": 12,
+                    "category": result["category"], "hunt_id": hid})
                 cases.append_event(cid, "hunt", "escalated",
                                    {"hunt_id": hid, "finding": finding})
                 note += " + escalated"
@@ -194,6 +207,42 @@ def node_run_hunt(state: HuntState) -> HuntState:
                 },
             )
             lines.append(f"Escalated -> case={case['case_id']} queued={esc['delivery'].get('delivered')}")
+            # Verdict event so adjudication/recommendation sees the real
+            # level/category (same as the sweep path above).
+            cases.append_event(case["case_id"], "analyst", "verdict", {
+                "verdict": "escalate", "level": 12,
+                "category": result["category"], "hunt_id": hunt_id})
+            # Investigate the finding's entity (backend-aware) so the case
+            # carries evidence + kill-chain, then adjudicate to surface a
+            # recommended playbook — the human-facing outcome of the hunt.
+            try:
+                from tools.investigator import Investigator
+                srcip = None
+                for d in result.get("detail", []):
+                    ed = d.get("event_data") or {}
+                    srcip = (d.get("srcip") or (d.get("source") or {}).get("ip")
+                             or (ed.get("source") or {}).get("ip")) or None
+                    if srcip:
+                        break
+                if srcip:
+                    ires = Investigator().investigate(srcip=srcip)
+                    cases.append_event(case["case_id"], "analyst", "investigation", {
+                        "entity": srcip,
+                        "evidence_count": len(ires.get("evidence", [])),
+                        "kill_chain": ires.get("kill_chain", []),
+                        "severity": ires.get("severity", 0),
+                        "severity_label": ires.get("severity_label", "low"),
+                        "evidence": ires.get("evidence", []),
+                    })
+                    dec = SupervisoryClient().adjudicate_with_investigation(case["case_id"])
+                    lines.append(f"Investigate: {srcip} -> {ires['severity_label']} "
+                                 f"({ires['severity']}), {len(ires.get('evidence', []))} sources")
+                    lines.append(f"Supervise: {dec['decision']} "
+                                 f"| playbook: {dec.get('recommended_playbook')}")
+                else:
+                    lines.append("Investigate: no entity in finding (skipped)")
+            except Exception:  # noqa: BLE001 — investigation must not break the hunt
+                lines.append("Investigate: failed (see logs)")
         else:
             lines.append(f"Filed as {finding} -> case={case['case_id']} (no escalation needed)")
 

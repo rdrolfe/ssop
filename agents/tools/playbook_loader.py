@@ -104,10 +104,14 @@ class Playbook:
             return rule_id in {str(r) for r in self.trigger_rule_ids}
         # category + level: category matches the alert's category field if
         # present (router-classified), else any of the rule's groups.
+        # trigger.category may be a single ontology category or a list
+        # (e.g. the hunt MITRE categories map to multiple containment
+        # playbooks).
         if self.trigger_category:
+            cats = self.trigger_category if isinstance(self.trigger_category, list) else [self.trigger_category]
             alert_cat = alert.get("category") or ""
             groups = rule.get("groups", [])
-            if alert_cat != self.trigger_category and self.trigger_category not in groups:
+            if alert_cat not in cats and not any(c in groups for c in cats):
                 return False
         return level >= self.trigger_min_level
 

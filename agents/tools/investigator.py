@@ -19,6 +19,8 @@ import ssl
 import urllib.request
 from typing import Any
 
+import yaml
+
 from logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -44,16 +46,34 @@ class Investigator:
 
     def __init__(self, indexer_host: str | None = None,
                  user: str | None = None, password: str | None = None) -> None:
-        # Defaults from env/settings (never hardcoded — see config.py):
-        # the indexer host/creds come from .env; transport.yaml per-backend
-        # creds override when present.
+        # Resolve the ACTIVE backend from transport.yaml ONCE — its endpoint
+        # (host), creds, alerts_index, and raw-rule-field name. Explicit
+        # constructor args (used by the two-backend harnesses) override.
+        # Defaults otherwise follow the transport, NOT settings — the
+        # Investigator must talk to whichever SIEM the spine is running
+        # against (parity, not a special case).
         from config import settings
+        self._backend_cfg: dict = {}
+        try:
+            tpath = settings.hunts_dir.parent / "transport.yaml"
+            if tpath.exists():
+                tcfg = yaml.safe_load(tpath.read_text()) or {}
+                self._backend = tcfg.get("backend", "wazuh")
+                self._backend_cfg = (tcfg.get("backends") or {}).get(self._backend, {}) or {}
+        except Exception:  # noqa: BLE001 — transport resolution is best-effort
+            self._backend = "wazuh"
         if indexer_host is None:
-            indexer_host = settings.indexer_host if settings.indexer_host not in ("", "localhost") else "192.168.1.75"
+            ep = self._backend_cfg.get("endpoint") or ""
+            if ep:
+                indexer_host = ep.replace("https://", "").replace("http://", "").split(":")[0]
+            if not indexer_host:
+                indexer_host = settings.indexer_host if settings.indexer_host not in ("", "localhost") else "192.168.1.75"
         if user is None:
-            user = settings.indexer_user
+            user = self._backend_cfg.get("user") or settings.indexer_user
         if password is None:
-            password = settings.indexer_password
+            password = self._backend_cfg.get("password")
+            if not password:
+                password = settings.so_indexer_password if self._backend == "securityonion" else settings.indexer_password
         self._auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
         self._ctx = ssl.create_default_context()
         self._ctx.check_hostname = False
@@ -67,18 +87,14 @@ class Investigator:
         # indexer_client does — never hardcode the index name here.
         self.SOURCES = list(self.SOURCES)
         live_index = settings.alerts_index
-        try:
-            import yaml as _yaml
-            from pathlib import Path as _Path
-            tpath = _Path(__file__).resolve().parent / "transport.yaml"
-            if tpath.exists():
-                tcfg = _yaml.safe_load(tpath.read_text()) or {}
-                backend = tcfg.get("backend", "wazuh")
-                b = (tcfg.get("backends") or {}).get(backend, {})
-                if b.get("alerts_index"):
-                    live_index = b["alerts_index"]
-        except Exception:  # noqa: BLE001 — transport resolution is best-effort
-            pass
+        self._live_desc_field = "rule.description"  # wazuh stores it here
+        if self._backend_cfg.get("alerts_index"):
+            live_index = self._backend_cfg["alerts_index"]
+        # SO raw alerts store the rule title under rule.name (the read-time
+        # normalize() aliases it to rule.description); wildcard filters must
+        # query the RAW field.
+        if self._backend == "securityonion":
+            self._live_desc_field = "rule.name"
         # The live alert index is SUBDIVIDED by attack shape (each a distinct
         # source), not one broad bucket. Rationale: the evidence model scores
         # KILL-CHAIN BREADTH — an entity that scans AND beacons AND exfils is
@@ -87,22 +103,57 @@ class Investigator:
         # source is min_count=1 with a shape-matching filter.
         # NOTE: rule.description is a keyword field in the alert index — match
         # shapes with wildcard, not match_phrase/query_string (both return 0).
+        _d = self._live_desc_field
         self.SOURCES.extend([
-            ("live_scan", live_index, "data.src_ip", "rule.description",
-             "Live network scan", {"wildcard": {"rule.description": "*STREAM*"}}, 1),
-            ("live_threat", live_index, "data.src_ip", "rule.description",
+            ("live_scan", live_index, "data.src_ip", _d,
+             "Live network scan", {"wildcard": {_d: "*STREAM*"}}, 1),
+            ("live_threat", live_index, "data.src_ip", _d,
              "Live threat-class alert",
-             {"wildcard": {"rule.description": "*ET MALWARE*"}}, 1),
-            ("live_http", live_index, "data.src_ip", "rule.description",
+             {"wildcard": {_d: "*ET MALWARE*"}}, 1),
+            ("live_brute", live_index, "data.src_ip", _d,
+             "Live brute-force / login failure",
+             {"wildcard": {_d: "*Login Failure*"}}, 1),
+            ("live_http", live_index, "data.src_ip", _d,
              "Live HTTP exfil", {"term": {"data.dest_port": 8080}}, 1),
-            ("live_net", live_index, "data.src_ip", "rule.description",
+            ("live_net", live_index, "data.src_ip", _d,
              "Live network activity", None, 1),
         ])
         # Live sources correlate the entity in EITHER direction (src or dst):
         # a scan shows the entity as the STREAM alert's target (20->11) while
         # a beacon shows it as the source (11->20). The base query for these
         # sources is a should over both IP fields.
-        self._live_both_directions = {"live_scan", "live_threat", "live_http", "live_net"}
+        self._live_both_directions = {"live_scan", "live_threat", "live_http", "live_net", "live_brute"}
+
+        # Backend-aware entity fields for the live sources. Wazuh stores the
+        # entity pair as data.src_ip/data.dest_ip; Security Onion stores ECS
+        # source.ip/destination.ip (suricata) and wraps the original event
+        # under event_data.* (detections envelope) — the entity can be in any
+        # of these shapes. Query all stored shapes so live correlation works
+        # on both backends (parity, not a special case).
+        self._entity_pairs = [("data.src_ip", "data.dest_ip")]  # wazuh shape
+        self._dest_port_field = "data.dest_port"
+        try:
+            from config import settings as _s
+            # transport.yaml lives next to the config module (agents/ dir),
+            # same convention as indexer_client.TRANSPORT_FILE.
+            tpath = _s.hunts_dir.parent / "transport.yaml"
+            if tpath.exists():
+                tcfg = yaml.safe_load(tpath.read_text()) or {}
+                if (tcfg.get("backend") or "") == "securityonion":
+                    self._entity_pairs = [
+                        ("source.ip", "destination.ip"),
+                        ("event_data.source.ip", "event_data.destination.ip"),
+                    ]
+                    self._dest_port_field = "destination.port"
+                    # live_http matches the dest-port in the backend's shape
+                    for i, src in enumerate(self.SOURCES):
+                        if src[0] == "live_http":
+                            s, idx, field, art, label, tq, mc = src
+                            self.SOURCES[i] = (s, idx, field, art, label,
+                                               {"term": {self._dest_port_field: 8080}}, mc)
+                            break
+        except Exception:  # noqa: BLE001 — transport resolution is best-effort
+            pass
 
     # --- query helpers ---
     def _search(self, index: str, body: dict[str, Any], port: int = 9200) -> dict[str, Any]:
@@ -134,10 +185,14 @@ class Investigator:
                 elif src_name in self._live_both_directions:
                     # Live alerts: the entity may be the source OR the target
                     # (a scan shows the entity as the STREAM alert's target).
-                    base_q = {"bool": {"should": [
-                        {"term": {"data.src_ip": entity}},
-                        {"term": {"data.dest_ip": entity}},
-                    ]}}
+                    # Query every entity-pair field the backend may store the
+                    # pair in (Wazuh data.src_ip/data.dest_ip; SO ECS
+                    # source.ip/destination.ip + event_data envelope).
+                    should = []
+                    for sf, df in self._entity_pairs:
+                        should.append({"term": {sf: entity}})
+                        should.append({"term": {df: entity}})
+                    base_q = {"bool": {"should": should}}
                 else:
                     base_q = {"term": {field: entity}}
                 # Combine with the threat-pattern filter so only the ATTACK
@@ -196,6 +251,8 @@ class Investigator:
         # rough kill-chain ordering: process exec (execution) -> http (exfil) -> dns (c2)
         if "winsec" in src_set:
             stages.append("EXECUTION: process artifacts in Windows security logs")
+        if "live_brute" in src_set:
+            stages.append("INITIAL ACCESS: brute-force / login-failure pattern")
         if "http" in src_set or "live_http" in src_set:
             stages.append("EXFILTRATION: HTTP upload/exfil traffic")
         if "dns" in src_set:

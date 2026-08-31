@@ -4,7 +4,7 @@
 name: quarantine-host
 description: Stop a critical service on a compromised host and verify it is down
 trigger:
-  category: threat
+  category: [threat, lateral-movement, defense-evasion, privilege-escalation]
   min_level: 10
   recommended: true
 approval: tier2

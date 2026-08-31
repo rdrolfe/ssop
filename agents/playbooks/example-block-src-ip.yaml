@@ -4,7 +4,7 @@
 name: block-src-ip
 description: Block a source IP at the host firewall after a threat verdict
 trigger:
-  category: threat
+  category: [threat, lateral-movement, defense-evasion, privilege-escalation]
   min_level: 8
   recommended: true
 approval: tier2
