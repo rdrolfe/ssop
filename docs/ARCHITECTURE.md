@@ -90,6 +90,13 @@ alert ──► case_id minted ──► analyst verdict ──► hunt finding
 The spine is what makes the whole thing **reconstructable**: query by case_id and
 you replay the entire incident across every role. No case_id, no incident — just logs.
 
+### How each role decides (deep dive)
+
+The decision logic for every role — exact rules, gates, and config thresholds,
+pulled from the code (file:line refs) — lives in
+[`docs/roles/`](roles/README.md). A single visual knowledge graph of
+roles → tools → stores is at [`docs/role-decision-graph.html`](role-decision-graph.html).
+
 ## 4. Dual-write and the integrity contract
 
 Every case write goes to two stores:

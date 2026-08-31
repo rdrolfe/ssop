@@ -14,6 +14,13 @@ SSOP is a security research enclave running on a Dell PowerEdge 720XD under Prox
 | L2 — Triage Agents | Investigate alerts with RAG context, produce verdicts, escalate | 7B-14B local (Gemma 4, Mistral Small) | LangGraph on infra-ops |
 | L3 — Orchestrator | Run campaigns: clone VMs, execute Atomic Red Team, verify detection, score gaps | Frontier (when reasoning depth matters) | LangGraph on infra-ops |
 
+> **Note:** the L1/L2/L3 framing above is the original vision. The built
+> platform uses the [role ontology](ARCHITECTURE.md) (analyst / hunt /
+> infra-manager / supervisory / responder / intel). How each role decides,
+> with exact rules and file:line refs, is documented in
+> **[`roles/`](roles/README.md)** — plus a visual
+> [role decision graph](role-decision-graph.html).
+
 ## Stack
 
 - **Hypervisor:** Proxmox VE (Dell 720XD, 32C/125GB)
