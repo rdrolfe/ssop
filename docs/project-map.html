@@ -96,7 +96,7 @@
     <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag commit">6a04f2c</span></div><div class="d">SSOP Human Console as a markdown-link panel on ssop-pane + SOC Workbench — one click from the primary pane</div></div>
   </div>
 
-  <div class="col done">
+    <div class="col done">
     <h2><span class="dot"></span> Operationalize the lab (done + live)</h2>
     <div class="item"><div class="t">Attack-plane coverage <span class="tag commit">0f94cdf</span></div><div class="d">.13 Suricata routed in-path (/31 via .13) + SPAN mirror (tc mirred) — both SIEMs see unicast attack traffic</div></div>
     <div class="item"><div class="t">Live targets + ART <span class="tag commit">59b4aa9</span></div><div class="d">ubuntu-target (.77), win-target (.78), c2-sink (.79) — Atomic Red Team, Wazuh agents, dual-plane</div></div>
@@ -105,6 +105,7 @@
     <div class="item"><div class="t">Sweep cadence 5m / limit 100 <span class="tag commit">b219f0b</span></div><div class="d">24× faster detection at ~29min CPU/day; coverage knob documented as adjustable nozzle</div></div>
     <div class="item"><div class="t">Env bootstrap fix <span class="tag commit">e52790b</span></div><div class="d">config.py owns load_dotenv — kills intermittent indexer 401; matrix 30/30</div></div>
     <div class="item"><div class="t">Live approve path <span class="tag commit">22e30ae</span></div><div class="d">Investigator correlates live alert stream by attack shape → recognize/escalate → 3-stage chain → supervisor APPROVES → responder unblocked (dry-run)</div></div>
+    <div class="item"><div class="t">Live hunt sweep (proactive) <span class="tag commit">6923f5f</span></div><div class="d">Hunt role wired into cadence (15m timer) — 5 live hunts over 1-day window, hunt-recidivism attach + once-per-case escalation; found real auth/apparmor signals</div></div>
   </div>
 
   <div class="col todo">
