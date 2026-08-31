@@ -65,6 +65,7 @@
     <div class="item"><div class="t">Two-backend comparison (real data) <span class="tag commit">8f6cbd6</span></div><div class="d">20/20 escalate on both — transport flips, spine doesn't</div></div>
     <div class="item"><div class="t">FULL-LOOP capstone <span class="tag commit">c9309d4</span></div><div class="d">Whole spine identical on both backends — recognize → investigate → supervise → respond</div></div>
     <div class="item"><div class="t">Apples-to-apples <span class="tag commit">b2ae9cb</span></div><div class="d">dns + suricata ingested into SO → identical evidence counts (3 vs 3), explicit diff</div></div>
+    <div class="item"><div class="t">Live SO cadence (real alerts) <span class="tag commit">6fbb2ec</span></div><div class="d">Live sweeps on SO surfaced a transport gap (config pointed at Zeek conns + rule defs, not alert events) — fixed index + ECS→ontology normalization; analyst now classifies real SO alerts, escalated a legit lvl-12 op alert</div></div>
   </div>
 
   <div class="col done">
