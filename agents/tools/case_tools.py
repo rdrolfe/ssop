@@ -246,6 +246,41 @@ class CaseStore:
 
     # --- audit-integrity (supervisory duty) ---
 
+    def recent_hunt_cases(self, hunt_id: str, window_s: int = 86400) -> list[dict[str, Any]]:
+        """Find open/recent cases filed by the same HUNT (by hunt_id).
+
+        Hunt-level recidivism: a periodic hunt sweep re-tests the same
+        hypothesis, so a persistent finding must ATTACH to the existing hunt
+        case (append a recheck event), not mint a new case + re-escalate.
+
+        Scans the Qdrant working store (the receipt spine has no `source` —
+        only Qdrant carries source.hunt_id). Iterates case points and keeps
+        those with matching hunt_id, status != closed, and a recent ts.
+        """
+        out: list[dict[str, Any]] = []
+        cutoff = datetime.now(timezone.utc).timestamp() - window_s
+        try:
+            mem = self._get_memory()
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000):
+                payload = self._parse_content(r.get("content", ""))
+                if not payload:
+                    continue
+                if payload.get("status") == "closed":
+                    continue
+                src = payload.get("source", {})
+                if str(src.get("hunt_id")) != str(hunt_id):
+                    continue
+                try:
+                    ts = payload.get("ts", "")
+                    if datetime.fromisoformat(ts).timestamp() < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                out.append(payload)
+        except Exception as e:  # noqa: BLE001 — recidivism must never break the sweep
+            logger.warning("recent_hunt_cases scan failed: %s", e)
+        return out
+
     def recent_entity_cases(self, srcip: str, dstip: str, window_s: int = 3600) -> list[dict[str, Any]]:
         """Find open/recent cases engaged with the same (srcip, dstip) pair.
 

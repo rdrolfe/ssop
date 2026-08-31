@@ -1,0 +1,23 @@
+# SSOP hunt sweep — proactive hypothesis testing on LIVE data (cadence is an
+# ADJUSTABLE NOZZLE, same philosophy as the analyst sweep).
+#
+# The hunt role is the PROACTIVE half of detection: it tests hypotheses
+# (auth-from-unusual-src, apparmor, rootcheck, sca, sudo) against live
+# telemetry, looking for patterns that haven't fired as alerts yet. The
+# analyst sweep (ssop-analyst) is reactive — "what fired, is it real?".
+#
+# Cost: each hunt is a pure-rule index query + analyzer (no LLM). 5 live
+# hunts × 1-day window, ~seconds each. A 15m cadence ≈ 96 runs/day — cheap.
+# Raise/lower OnCalendar freely; the hunt window (days=) in ssop-hunt.sh is
+# the coverage knob (hunt a longer window = catch slower patterns, at more
+# index load per run). Keep both in step.
+[Unit]
+Description=SSOP hunt sweep (every 15m)
+
+[Timer]
+OnCalendar=*-*-* *:0/15:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

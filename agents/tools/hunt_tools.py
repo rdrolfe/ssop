@@ -130,8 +130,11 @@ class HuntClient:
         ips = Counter()
         users = Counter()
         for d in docs:
-            ip = d.get("data", {}).get("srcip", "?")
-            user = d.get("data", {}).get("dstuser", "?")
+            dd = d.get("data", {})
+            # Live Wazuh varies the key: sshd auths carry data.srcip, scan/
+            # STREAM alerts carry data.src_ip — read both for parity.
+            ip = dd.get("srcip") or dd.get("src_ip") or "?"
+            user = dd.get("dstuser", "?")
             ips[ip] += 1
             users[user] += 1
         top_ips = ips.most_common(10)
