@@ -1,0 +1,21 @@
+# SSOP purple-team drill — self-verifying standing capability (daily).
+#
+# Fires a known technique into the lab (SSH brute-force burst), runs the
+# spine against the ACTIVE backend, asserts the decision chain
+# (recognize -> investigate -> supervise -> recommend), and writes a
+# PASS/FAIL receipt (~/.ssop/state/drill-last.json) the daily digest reads.
+#
+# Cadence: daily 06:00, ahead of the 08:00 digest so the receipt is fresh
+# in the morning report. Cost: ~1 min of oneshot work (3 SSH attempts +
+# spine chain on the Cerber ground-truth event). Raise/lower freely; the
+# drill is deliberately non-mutating to the queue.
+[Unit]
+Description=SSOP purple-team drill (daily self-verifying)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

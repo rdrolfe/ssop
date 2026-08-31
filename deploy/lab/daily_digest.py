@@ -115,6 +115,24 @@ def main() -> int:
     m = sh("timeout 115 python3 -m verify.matrix 2>&1 | grep -E 'SSOP verify matrix'", timeout=130)
     lines.append("**Matrix:** " + (m.split("=== ")[-1] if m else "n/a"))
 
+    # Purple-team drill (last receipt from drill.py)
+    try:
+        dp = Path.home() / ".ssop" / "state" / "drill-last.json"
+        if dp.exists():
+            rec = json.loads(dp.read_text())
+            p1 = rec.get("phase1_live_fire", {})
+            p2 = rec.get("phase2_ground_truth", {})
+            lines.append(
+                f"**Drill:** {'PASS' if rec.get('pass') else 'FAIL'} "
+                f"({rec.get('backend')} | {rec.get('ts', '')[:16]}Z) — "
+                f"live-fire: {p1.get('alert_count', 0)} sshd alerts landed, "
+                f"analyst {sorted(set(p1.get('verdicts', []))) or 'n/a'}; "
+                f"chain: {p2.get('detail', 'n/a')}")
+        else:
+            lines.append("**Drill:** n/a (no receipt yet)")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"**Drill:** ERR {e}")
+
     print("\n".join(lines))
     return 0
 

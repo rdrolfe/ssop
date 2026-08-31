@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP purple-team drill (fire + verify the decision chain)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/ssop-drill.sh
+Nice=10
