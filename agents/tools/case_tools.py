@@ -246,16 +246,21 @@ class CaseStore:
 
     # --- audit-integrity (supervisory duty) ---
 
-    def recent_hunt_cases(self, hunt_id: str, window_s: int = 86400) -> list[dict[str, Any]]:
+    def recent_hunt_cases(self, hunt_id: str, window_s: int = 86400,
+                          include_closed: bool = False) -> list[dict[str, Any]]:
         """Find open/recent cases filed by the same HUNT (by hunt_id).
 
         Hunt-level recidivism: a periodic hunt sweep re-tests the same
         hypothesis, so a persistent finding must ATTACH to the existing hunt
         case (append a recheck event), not mint a new case + re-escalate.
 
+        Default returns only OPEN cases (status != closed). Pass
+        include_closed=True to also get recently-CLOSED cases for the same
+        hunt — powers the re-arm cooldown (a finding whose case was just
+        denied must not instantly re-mint a fresh case on the next sweep).
+
         Scans the Qdrant working store (the receipt spine has no `source` —
-        only Qdrant carries source.hunt_id). Iterates case points and keeps
-        those with matching hunt_id, status != closed, and a recent ts.
+        only Qdrant carries source.hunt_id).
         """
         out: list[dict[str, Any]] = []
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
@@ -265,7 +270,7 @@ class CaseStore:
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
                     continue
-                if payload.get("status") == "closed":
+                if payload.get("status") == "closed" and not include_closed:
                     continue
                 src = payload.get("source", {})
                 if str(src.get("hunt_id")) != str(hunt_id):

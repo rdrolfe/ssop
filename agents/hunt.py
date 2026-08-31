@@ -49,11 +49,19 @@ def node_run_sweep(state: HuntState) -> HuntState:
     - A non-clean finding on a hunt with an existing OPEN case ATTACHES a
       recheck event to that case (hunt-level recidivism) — no re-mint, and
       escalation fires once per case (re-arms when a human closes it).
+    - TUNING-RESPECT: a human deny/operational on a hunt finding writes
+      "hunt:<id>" to the tuning ledger (adjudicate now keys it). A tuned
+      hunt is suppressed — recheck attached if a case is open, never a
+      new case or ticket.
+    - RE-ARM COOLDOWN: a finding whose case was closed recently (denied) is
+      not instantly re-minted — prevents a chronic FP from re-ticketing every
+      15m until a human tunes it.
     - Clean findings are logged, not filed (a 15m sweep must not spam the
       case spine with 'nothing to see').
     """
     try:
         days = int((state.get("params") or {}).get("days", 1))
+        cooldown_s = int((state.get("params") or {}).get("cooldown", 86400))
         live_hunts = [hid for hid in hunter.HUNTS if not hid.startswith("bots-")]
         lines = [f"Live hunt sweep (days={days}, {len(live_hunts)} hunts):"]
         for hid in sorted(live_hunts):
@@ -61,8 +69,30 @@ def node_run_sweep(state: HuntState) -> HuntState:
             finding = result.get("finding", "clean")
             esc = (finding == "suspicious"
                    and result["category"] in ESCALATE_CATEGORIES)
+            # Tuning-respect: a human adjudication on this hunt (via the
+            # synthetic "hunt:<id>" ledger key) suppresses it going forward.
+            tuned = False
+            try:
+                from tools.tuning_tools import TuningLedger
+                t = TuningLedger().lookup(f"hunt:{hid}")
+                tuned = bool(t and t.get("decision") in ("auto_fp", "operational"))
+            except Exception:  # noqa: BLE001 — tuning lookup must never break the sweep
+                tuned = False
             if finding == "clean":
                 lines.append(f"  {hid:<38} clean  ({result['events_scanned']} evts)")
+                continue
+            if tuned:
+                # Suppressed: attach a recheck to an open case if one exists;
+                # never mint a new case or ticket for a human-tuned hunt.
+                existing = cases.recent_hunt_cases(hid, window_s=30 * 86400)
+                if existing:
+                    cid = existing[0]["case_id"]
+                    cases.append_event(cid, "hunt", "recheck", {
+                        "finding": finding, "confidence": result["confidence"],
+                        "summary": result.get("summary", ""), "hunt_id": hid})
+                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed, recheck -> {cid}")
+                else:
+                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed (no open case)")
                 continue
             # Hunt-level recidivism: attach to an existing OPEN case for this hunt.
             existing = cases.recent_hunt_cases(hid, window_s=30 * 86400)
@@ -86,6 +116,15 @@ def node_run_sweep(state: HuntState) -> HuntState:
                                        {"hunt_id": hid, "finding": finding})
                     note += " + escalated"
                 lines.append(f"  {hid:<38} {finding:<10} {note}")
+                continue
+            # Re-arm cooldown: a finding whose case was recently closed (denied)
+            # must not instantly re-mint — a chronic FP would re-ticket every
+            # sweep until a human tunes it.
+            recent_any = cases.recent_hunt_cases(hid, window_s=cooldown_s,
+                                                 include_closed=True)
+            if recent_any:
+                cid = recent_any[0]["case_id"]
+                lines.append(f"  {hid:<38} {finding:<10} cooldown (case {cid} recently closed — not re-minting)")
                 continue
             # New finding: mint a case, file, escalate if warranted.
             case = cases.open_case(

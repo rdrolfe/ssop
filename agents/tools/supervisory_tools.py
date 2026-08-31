@@ -79,7 +79,14 @@ class SupervisoryClient:
                 "operational": "operational", "false_positive": "auto_fp"}
         tuning_decision = _map.get(decision.lower())
         if tuning_decision:
+            # Hunt findings carry no rule_id (they're hypothesis-driven, not
+            # rule-triggered) — key the tuning by a synthetic "hunt:<id>" so a
+            # human deny on a hunt finding actually reaches the ledger. Without
+            # this, the hunt sweep never learns and re-tickets forever.
             rule_id = str(ticket.get("rule_id") or ticket.get("detail", {}).get("rule_id", ""))
+            hunt_id = str(ticket.get("hunt_id") or ticket.get("detail", {}).get("hunt_id", ""))
+            if not rule_id and hunt_id:
+                rule_id = f"hunt:{hunt_id}"
             if rule_id:
                 try:
                     from tools.tuning_tools import TuningLedger
