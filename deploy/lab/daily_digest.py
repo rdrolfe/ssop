@@ -115,6 +115,10 @@ def main() -> int:
     m = sh("timeout 115 python3 -m verify.matrix 2>&1 | grep -E 'SSOP verify matrix'", timeout=130)
     lines.append("**Matrix:** " + (m.split("=== ")[-1] if m else "n/a"))
 
+    # Docs citations (ontology spec drift gate)
+    dc = sh("timeout 20 python3 -m verify.check_docs 2>&1", timeout=30)
+    lines.append("**Docs:** " + (dc.strip() if dc else "n/a"))
+
     # Purple-team drill (last receipt from drill.py)
     try:
         dp = Path.home() / ".ssop" / "state" / "drill-last.json"

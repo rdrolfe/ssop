@@ -52,3 +52,23 @@ hardcoded constant inside a tool.
 
 The [role decision graph](../role-decision-graph.html) maps roles → tools →
 stores as a single visual artifact.
+
+## The docs are enforced, not just written
+
+These docs are the ontology's spec — the source of truth we audit against.
+Every `file:line` citation is verified by a **matrix gate**
+(`verify/check_docs.py`, runs inside `verify.matrix`): it resolves each
+citation's file (agents/, agents/tools/, agents/verify/), checks the range
+is inside the file, and — where the doc names a symbol next to the citation
+— asserts that symbol still appears in the cited lines.
+
+A citation that no longer resolves (file moved, range past EOF, symbol
+renamed/moved) turns the matrix **RED** (exit 1) — a divergence is a
+correctness bug, not a docs housekeeping issue. Proven non-vacuous by
+`verify/test_check_docs.py` (past-EOF and symbol-moved corruptions are both
+caught; baseline clean). The daily digest surfaces it as **Docs: …** each
+morning.
+
+**Process implication:** change the code first, then the docs that cite it
+(or both in one change) — a stale citation is a failing gate, same as a
+failing invariant.

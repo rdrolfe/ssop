@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()  # entry point — before config import (frozen settings)
 
 from logging_setup import get_logger
+from verify.check_docs import check_docs
 from verify.core import load_fixtures, VERDICT_FAIL, VERDICT_BLOCKED
 from verify.runner import run_matrix, summarize
 
@@ -119,6 +120,26 @@ def main() -> int:
         "results": [r.to_dict() for r in results],
     }
 
+    # Docs-citation drift check — the role docs are the ontology's spec; a
+    # citation that no longer resolves (file/range/symbol) is a correctness
+    # bug. Runs once per matrix, folded into the exit gate (not the fixture
+    # summary — it's repo-static, not a fixture outcome).
+    try:
+        docs_problems = check_docs()
+        docs_skip = bool(docs_problems) and docs_problems[0].get("kind") == "skip"
+        if docs_skip:
+            print(f"docs citations: SKIP — {docs_problems[0]['detail']}")
+        elif docs_problems:
+            print(f"docs citations: {len(docs_problems)} problem(s)")
+            for p in docs_problems:
+                print(f"  [{p['kind']}] {p['cite']} ({p['file']}): {p['detail']}")
+        else:
+            print("docs citations: all resolve")
+    except Exception as e:  # noqa: BLE001 — the docs gate must not crash the matrix
+        print(f"docs citations: ERROR {e}")
+        docs_problems = [{"kind": "error", "detail": str(e)}]
+        docs_skip = False
+
     if as_json:
         print(json.dumps(report, indent=2))
     else:
@@ -132,7 +153,9 @@ def main() -> int:
                 if c.status in ("fail", "warn", "probe"):
                     print(f"      {c.status:<6} {c.name}: {c.detail}")
 
-    failed = s["failed"] > 0 or s["blocked"] > 0
+    summary = report["summary"]
+    failed = (summary["failed"] > 0 or summary["blocked"] > 0
+              or (docs_problems and not docs_skip))
     return 1 if failed else 0
 
 
