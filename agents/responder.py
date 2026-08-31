@@ -100,8 +100,8 @@ def guard_check(playbook: Playbook, alert: dict[str, Any]) -> str | None:
             val = params.get(field)
             if val and _is_protected(str(val)):
                 return f"{field}={val}"
-    # alert srcip can be a target too
-    srcip = alert.get("srcip") or (alert.get("data", {}) or {}).get("srcip")
+    # alert srcip can be a target too (top-level, or data.src_ip on live alerts)
+    srcip = alert.get("srcip") or (alert.get("data", {}) or {}).get("src_ip")
     if srcip and _is_protected(str(srcip)):
         return f"alert.srcip={srcip}"
     return None
@@ -291,6 +291,7 @@ def run(alert: dict[str, Any], case_id: str = "", dry_run: bool = False,
     decision is the authority.
     """
     supervisor_decision = None
+    alert_category = None
     if case_id:
         try:
             from tools.case_tools import CaseStore
@@ -309,6 +310,14 @@ def run(alert: dict[str, Any], case_id: str = "", dry_run: bool = False,
                         if recommended_playbook is None:
                             recommended_playbook = (ev.get("detail") or {}).get("recommended_playbook")
                         break
+                # 3. Analyst verdict category (live alerts carry no `category`;
+                #    the analyst's classification is what drove the escalation
+                #    and the playbook recommendation — selection must see it).
+                for ev in case.get("timeline", []):
+                    if ev.get("role") == "analyst" and ev.get("type") == "verdict":
+                        alert_category = (ev.get("detail") or {}).get("category")
+                        if alert_category:
+                            break
         except Exception as e:  # noqa: BLE001 — resolution must not block
             logger.warning("supervisory decision resolution failed: %s", e)
     # APPROVAL GATE: a denied case must not execute a playbook.
@@ -320,6 +329,15 @@ def run(alert: dict[str, Any], case_id: str = "", dry_run: bool = False,
             "results": [], "error": None,
             "supervisor_decision": supervisor_decision,
         }
+    # Normalize the alert so the SOAR recommendation/ticket read the live
+    # Wazuh alert shape correctly: IP nested under data.src_ip, and the
+    # analyst's category when the alert carries none (both from the case).
+    alert = dict(alert)
+    _d = alert.get("data") or {}
+    if not alert.get("srcip") and _d.get("src_ip"):
+        alert["srcip"] = _d["src_ip"]
+    if not alert.get("category") and alert_category:
+        alert["category"] = alert_category
     graph = build_graph().compile()
     state: ResponderState = {"alert": alert, "case_id": case_id, "dry_run": dry_run,
                              "recommended_playbook": recommended_playbook}

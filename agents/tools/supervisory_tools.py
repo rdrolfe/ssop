@@ -180,9 +180,46 @@ class SupervisoryClient:
                          f"{evidence_count} evidence, chain={len(chain)} stage(s)")
         # Record the verdict + rationale on the case
         self.case_verdict(case_id, decision, rationale)
+        # SOAR handoff: on approve, recommend a matching playbook for the
+        # responder (the case-lookup in responder.run() reads this). Derive
+        # the pseudo-alert from the case's REAL analyst verdict event so the
+        # recommended playbook actually matches the live alert at execution
+        # time (a synthetic high-level alert would recommend a playbook that
+        # fails pb.matches() against a low-level live alert).
+        recommended = None
+        if decision == "approve":
+            try:
+                from tools.playbook_loader import load_playbooks
+                # Real verdict event: carries the live alert's level/category.
+                real_level, real_cat = 6, "operational"
+                for entry in case.get("timeline", []):
+                    if entry.get("type") == "verdict" and entry.get("role") == "analyst":
+                        d = entry.get("detail", {})
+                        real_level = int(d.get("level", 6) or 6)
+                        real_cat = d.get("category", "operational") or "operational"
+                        break
+                pseudo_alert = {"rule": {"groups": [], "level": real_level},
+                                "category": real_cat}
+                for pb in load_playbooks().values():
+                    if pb.approval in ("tier1", "tier2") and pb.matches(pseudo_alert):
+                        recommended = pb.name
+                        break
+            except Exception:  # noqa: BLE001 — recommendation must never break adjudication
+                recommended = None
+            if recommended:
+                try:
+                    case = self._cases.get_case(case_id)
+                    if case:
+                        sup = case.get("supervisory") or {}
+                        sup["recommended_playbook"] = recommended
+                        case["supervisory"] = sup
+                        self._cases._write_both(case, event="adjudication",
+                                                role="supervisory")
+                except Exception:  # noqa: BLE001 — recommendation persist is best-effort
+                    logger.warning("recommended_playbook persist failed for %s", case_id)
         return {"case_id": case_id, "decision": decision, "rationale": rationale,
                 "used_investigation": True, "severity": severity, "severity_label": sev_label,
-                "evidence_count": evidence_count}
+                "evidence_count": evidence_count, "recommended_playbook": recommended}
 
     def supervise_case(self, case: dict[str, Any]) -> dict[str, Any]:
         """Context-aware supervisory decision for a case.
