@@ -91,6 +91,27 @@ def _timer_gate() -> bool:
         return False
 
 
+def _bakeoff_gate() -> bool:
+    """Bake-off parity gate: both SIEM surfaces must keep scoring 12/12 on
+    the six bake-off axes for the seed case (SO native so-case store vs the
+    console). Fail-closed — an unverifiable bake-off is itself a parity
+    failure (same philosophy as the docs/timer gates). Subprocess: needs SO
+    ES + console proxy, which the runtime host has."""
+    try:
+        import subprocess as _sp
+        br = _sp.run(
+            [sys.executable, "-m", "verify.check_bakeoff"],
+            capture_output=True, text=True, timeout=240)
+        ok = br.returncode == 0
+        print("bake-off parity: " + ("12/12 both surfaces" if ok else "FAIL"))
+        if not ok:
+            print(br.stdout[-800:])
+        return ok
+    except Exception as e:  # noqa: BLE001 — gate must not crash the matrix
+        print(f"bake-off parity: ERROR {e}")
+        return False
+
+
 def main() -> int:
     args = sys.argv[1:]
     roles = None
@@ -208,6 +229,7 @@ def main() -> int:
     _docs_problems = _check_docs_gate()
     _reg_ok = _registry_gate()
     _tmr_ok = _timer_gate()
+    _bo_ok = _bakeoff_gate()
 
     if as_json:
         print(json.dumps(report, indent=2))
@@ -224,7 +246,8 @@ def main() -> int:
 
     summary = report["summary"]
     failed = (summary["failed"] > 0 or summary["blocked"] > 0
-              or (_docs_problems and not _docs_skip) or not _reg_ok or not _tmr_ok)
+              or (_docs_problems and not _docs_skip) or not _reg_ok
+              or not _tmr_ok or not _bo_ok)
     return 1 if failed else 0
 
 
