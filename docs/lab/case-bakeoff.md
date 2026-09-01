@@ -137,6 +137,15 @@ Everything is derived from spine fields — nothing invented. Wired as
 proxy, with an **advisory** button on every console case card — so the same
 product compiles from either SIEM surface, mirroring the `/report` parity.
 
+> **Known limitation / revisit (2026-09-01):** the advisory's ATT&CK mapping
+> is currently *derived* — kill-chain stage names map to tactics via a
+> deterministic `_KILLCHAIN_TO_TACTIC` table (EXFILTRATION → Exfiltration,
+> C2 → Command and Control, …). It is grounded, but it is **not true
+> technique-level mapping** the way CISA's advisories carry per-technique
+> IDs (e.g. T1041, T1071). Revisit as the reporting side matures: have the
+> investigator record actual MITRE technique IDs when it correlates sources,
+> so the advisory's ATT&CK table is technique-accurate.
+
 **Writeup-quality evaluation (2026-09-01):** audited all 47 decided cases for
 what a human needs to action them. Gap: **assignee 47/47 missing, close
 reason 44/47, entity 29/47, hypothesis 22/47, observables 16/47** — and the
