@@ -25,6 +25,7 @@ FILES = [
     "agents/tools/supervisory_tools.py", "agents/tools/investigator.py",
     "agents/tools/self_heal.py", "agents/tools/intel_tools.py",
     "agents/tools/case_tools.py", "agents/tools/observables.py",
+    "agents/tools/ontology.py", "agents/tools/tuning_tools.py",
 ]
 
 
@@ -57,7 +58,7 @@ def main() -> int:
     build()
     for md in (REPO / "docs" / "roles").glob("*.md"):
         t = md.read_text()
-        md.write_text(t.replace("`analyst_tools.py:103-234`", "`analyst_tools.py:999-234`"))
+        md.write_text(t.replace("`analyst_tools.py:55-85`", "`analyst_tools.py:999-85`"))
     probs = check_docs(REPO)
     caught = [p for p in probs if p["kind"] == "range"]
     print(f"past-EOF: {len(probs)} problems, {len(caught)} range-caught")
@@ -65,11 +66,11 @@ def main() -> int:
         fails += 1
 
     # 2. Symbol moved out of range (real co-located case: `dispatch_security`
-    #    is named on the same line as `router.py:286-353`)
+    #    is named on the same line as `router.py:300-369`)
     build()
     for md in (REPO / "docs" / "roles").glob("*.md"):
         t = md.read_text()
-        md.write_text(t.replace("`router.py:286-353`", "`router.py:10-20`"))
+        md.write_text(t.replace("`router.py:300-369`", "`router.py:10-20`"))
     probs = check_docs(REPO)
     caught = [p for p in probs if p["kind"] == "symbol"]
     print(f"symbol-moved: {len(probs)} problems, {len(caught)} symbol-caught")

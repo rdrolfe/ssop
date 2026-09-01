@@ -81,10 +81,23 @@ class SupervisoryClient:
         if tuning_decision:
             # Hunt findings carry no rule_id (they're hypothesis-driven, not
             # rule-triggered) — key the tuning by a synthetic "hunt:<id>" so a
-            # human deny on a hunt finding actually reaches the ledger. Without
-            # this, the hunt sweep never learns and re-tickets forever.
-            rule_id = str(ticket.get("rule_id") or ticket.get("detail", {}).get("rule_id", ""))
-            hunt_id = str(ticket.get("hunt_id") or ticket.get("detail", {}).get("hunt_id", ""))
+            # The verdict dict carries rule_id/groups/level/category/description
+            # (the router's escalate() spreads detail={"case_id":...,"verdict":v}
+            # so ticket.verdict exists at TOP level; analyst tickets carry the
+            # verdict fields at top level OR under detail). Resolve the verdict
+            # once and use it for BOTH rule_id and the fingerprint — this is the
+            # loop-closer: a human deny on an override ticket must update the
+            # tuning fingerprint to the delta shape, or the override loop never
+            # settles (and rule_id must resolve or the tuning write is skipped).
+            vd = ticket.get("verdict")
+            if not isinstance(vd, dict):
+                vd = (ticket.get("detail") or {}).get("verdict")
+            if not isinstance(vd, dict):
+                vd = ticket.get("detail") or {}
+            rule_id = str(ticket.get("rule_id") or vd.get("rule_id")
+                          or ticket.get("detail", {}).get("rule_id", ""))
+            hunt_id = str(ticket.get("hunt_id") or vd.get("hunt_id")
+                          or ticket.get("detail", {}).get("hunt_id", ""))
             if not rule_id and hunt_id:
                 rule_id = f"hunt:{hunt_id}"
             if rule_id:
@@ -93,12 +106,8 @@ class SupervisoryClient:
                     # Thread #2: capture the DECISION-RELEVANT fingerprint of
                     # the alert that led to this adjudication, so future
                     # identical alerts suppress and only a material delta
-                    # overrides. The ticket detail carries the analyst verdict
-                    # (rule_id/groups/level/category/description at top level).
+                    # overrides.
                     fingerprint = None
-                    detail = ticket.get("detail") or {}
-                    # router tickets nest the verdict under detail["verdict"].
-                    vd = detail.get("verdict") if isinstance(detail.get("verdict"), dict) else detail
                     if vd and vd.get("rule_id"):
                         from tools.ontology import fingerprint_from_verdict
                         fingerprint = fingerprint_from_verdict(vd)
@@ -109,8 +118,28 @@ class SupervisoryClient:
                     )
                 except Exception:  # noqa: BLE001 — tuning write must not break adjudication
                     logger.warning("tuning write skipped during adjudication of %s", ticket["ticket_id"])
+        # Re-ship the adjudicated ticket to the indexer so the console
+        # (/tickets reads ssop-events) stops showing it as open — the
+        # "phantom open tickets" fix.
+        self._reship(ticket)
         logger.info("adjudicated %s -> %s (%s)", ticket["ticket_id"], decision, rationale[:50])
         return ticket
+
+    @staticmethod
+    def _reship(ticket: dict[str, Any]) -> None:
+        """Best-effort re-index a ticket after its status changed.
+
+        The console /tickets reads the INDEXER (ssop-events), not the local
+        queue file. Historically adjudication only rewrote the local file, so
+        closed tickets kept showing as OPEN forever in the human surface —
+        the "phantom open tickets" bug. Re-ship so the indexer reflects the
+        adjudicated status (upsert: ship_ticket_doc pins _id=ticket-<id>).
+        """
+        try:
+            from tools.ship_ticket import ship_ticket_doc
+            ship_ticket_doc(ticket)
+        except Exception:  # noqa: BLE001 — re-ship must never break adjudication
+            logger.warning("ticket re-ship failed for %s", ticket.get("ticket_id"))
 
     def mark_adjudicated(self, ticket: dict[str, Any], decision: str, rationale: str) -> dict[str, Any]:
         """Close a ticket in-place WITHOUT the tuning write.
@@ -118,7 +147,8 @@ class SupervisoryClient:
         Used for duplicates of an already-adjudicated representative — the
         tuning entry is written once (for the representative); closing N
         identical repeats must not spam the ledger. Marks status/decision/
-        rationale + adjudicator, then rewrites the file.
+        rationale + adjudicator, then rewrites the file + re-ships to the
+        indexer (so the console stops showing it as open).
         """
         ticket["status"] = "adjudicated"
         ticket["decision"] = decision
@@ -131,6 +161,7 @@ class SupervisoryClient:
         except OSError as e:
             logger.error("mark_adjudicated write failed for %s: %s", ticket["ticket_id"], e)
             raise
+        self._reship(ticket)
         return ticket
 
     def reconcile(self) -> dict[str, Any]:

@@ -42,10 +42,13 @@
   .badge.sev-low { background:rgba(154,154,154,.15); color:var(--muted); }
   .badge.approve { background:rgba(63,185,80,.15); color:var(--ok); }
   .badge.deny { background:rgba(248,81,73,.15); color:var(--bad); }
+  .badge.override { background:var(--accent); color:#fff; font-weight:700; animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
   .chain { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
   .chain span { font-size:11px; background:#262626; border:1px solid var(--border); color:var(--fg); padding:2px 8px; border-radius:10px; }
   .ev { font-size:12px; color:var(--muted); margin-top:6px; padding-left:12px; border-left:2px solid var(--border); }
   .ev .src { color:var(--accent); font-weight:600; }
+  .ev.override-note { border-left-color:var(--accent); color:var(--accent); font-weight:600; }
   .rationale { font-size:12px; margin-top:6px; color:var(--fg); background:#262626; border-radius:6px; padding:8px; }
   .tune .trow { display:flex; justify-content:space-between; gap:10px; align-items:center; }
   .tune .rule { font-family:monospace; color:var(--accent); }
@@ -147,10 +150,12 @@ function renderTickets(view) {
     t.innerHTML = `
       <div class="top">
         <span class="badge t2">tier-2</span>
+        ${s.tuning_override ? '<span class="badge override">RE-TUNE</span>' : ''}
         <span class="title">${esc(s.title || "(no title)")}</span>
         <span class="id">${esc(s.ticket_id || "")}</span>
       </div>
       <div class="meta">actor: ${esc(s.actor || "-")} · agent: ${esc(s.agent || "-")} · ts: ${esc(ts)}${cid ? " · case: <span class='id'>" + esc(cid) + "</span>" : ""}</div>
+      ${s.tuning_override ? '<div class="ev override-note">TUNING OVERRIDE — this alert differs from the tuned signature (material delta). Review the tuning: deny updates the fingerprint, or approve to keep the alert live.</div>' : ''}
       ${(caseInfo.techniques && caseInfo.techniques.length) ? '<div class="chain">' + caseInfo.techniques.map(tt => '<span>' + esc(tt) + '</span>').join("") + '</div>' : ""}
       ${(caseInfo.enrichments && caseInfo.enrichments.length) ? '<div class="ev"><span class="src">enrichments</span>: ' + esc(caseInfo.enrichments.map(e => (e.observable || e.value || JSON.stringify(e))).join(", ").slice(0,160)) + '</div>' : ""}
       <div class="actions">

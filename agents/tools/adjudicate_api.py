@@ -91,6 +91,28 @@ def _list_open_tier2() -> list[dict[str, Any]]:
         }
         r = t.search(body, index="ssop-events")
         tickets = [h.get("_source", {}) for h in r.get("hits", {}).get("hits", [])]
+        # Surface the tuning-override signal: a ticket whose analyst verdict
+        # carries tuning_override=True is a RE-ADJUDICATION request (the
+        # human must update the tuning fingerprint, not just deny the alert).
+        # Normalize the nested verdict flag to a top-level `tuning_override`
+        # the console reads directly.
+        for tk in tickets:
+            vd = tk.get("verdict")
+            # Three shapes after ship normalization:
+            #  - dict verdict (router, local file)
+            #  - JSON string of a dict (router, indexed — serialized on ship)
+            #  - plain string verdict (analyst) with flags flat at top level
+            if isinstance(vd, str):
+                try:
+                    parsed = json.loads(vd)
+                    if isinstance(parsed, dict):
+                        vd = parsed
+                except Exception:  # noqa: BLE001 — plain string verdict
+                    vd = None
+            if isinstance(vd, dict):
+                tk["tuning_override"] = vd.get("tuning_override") is True
+            else:
+                tk["tuning_override"] = tk.get("tuning_override") is True
         # JOIN with the case spine: enrich each ticket with its case's
         # observables/enrichments/checklist/techniques (the adopted SO
         # concepts live on the case in Qdrant, not on the ticket doc).

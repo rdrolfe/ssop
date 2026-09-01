@@ -48,6 +48,14 @@ def ship_ticket_doc(ticket: dict) -> bool:
     if isinstance(doc.get("severity"), str):
         doc["alert_severity"] = doc.pop("severity")
 
+    # The indexer maps `verdict` as text (analyst tickets carry a string).
+    # Router tickets carry a full verdict DICT — a raw dict is rejected with
+    # mapper_parsing_exception, silently dropping every router ticket from
+    # the dashboard. Serialize dict verdicts to JSON on ship; the API
+    # normalizer parses them back.
+    if isinstance(doc.get("verdict"), dict):
+        doc["verdict"] = json.dumps(doc["verdict"])
+
     url = settings.indexer_url or f"https://{settings.indexer_host}:{settings.indexer_port}"
     # Explicit host override wins over the URL host (the URL may be a
     # docker-internal name unreachable from infra-ops).
@@ -63,7 +71,8 @@ def ship_ticket_doc(ticket: dict) -> bool:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    body = json.dumps({"index": {"_index": "ssop-events"}}) + "\n" + json.dumps(doc) + "\n"
+    body = json.dumps({"index": {"_index": "ssop-events",
+                                  "_id": f"ticket-{doc.get('ticket_id', '')}"}}) + "\n" + json.dumps(doc) + "\n"
     req = urllib.request.Request(
         url.rstrip("/") + "/_bulk",
         data=body.encode(),
