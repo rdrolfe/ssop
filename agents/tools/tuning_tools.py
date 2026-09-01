@@ -39,17 +39,35 @@ THREAT_DESC_TOKENS = (
 )
 
 
-def strong_tp_evidence(alert: dict) -> bool:
+def strong_tp_evidence(alert: dict, category: str | None = None) -> bool:
     """True when the current alert carries strong true-positive evidence.
 
     A tuned-FP rule is suppressed by default, but if THIS alert independently
-    shows a threat-class description token or high severity, the suppression
-    is lifted (evidence overrides tuning — the "clear exception").
+    shows a threat-class description token, the suppression is lifted
+    (evidence overrides tuning — the "clear exception").
+
+    The severity leg (level >= high_level) ONLY counts for genuine
+    security/threat categories. Wazuh rule `level` is a STATIC property of
+    the rule, not per-alert evidence — dpkg installs (2902), integrity
+    checksums (550), and package-manager events (2904/533) are all level 7
+    by rule definition. Treating their static level as strong TP evidence
+    defeats the human's auto_fp tuning on those rules and firehoses routine
+    maintenance into the queue. Severity only lifts tuning when the alert is
+    actually threat/authentication-class.
     """
     rule = alert.get("rule") or {}
     desc = str(rule.get("description", "")).lower()
     if any(t in desc for t in THREAT_DESC_TOKENS):
         return True
+    # Severity leg — only for genuine attack categories. Accept either the
+    # analyst taxonomy (threat/authentication) or the router taxonomy
+    # (security). Integrity/compliance/operational at a static high level is
+    # routine maintenance, not a strong TP. When category is None (legacy
+    # caller), do NOT lift on severity — we can't prove it's attack class,
+    # and lifting on an unknown category reintroduces the flood. Only the
+    # description-token leg above overrides in that case.
+    if category not in ("threat", "authentication", "security"):
+        return False
     try:
         level = int(rule.get("level", 0))
     except (TypeError, ValueError):

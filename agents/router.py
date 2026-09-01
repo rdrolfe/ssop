@@ -197,7 +197,14 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
         from tools.tuning_tools import TuningLedger, strong_tp_evidence
         tuning = TuningLedger().lookup(rid)
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
-            if not strong_tp_evidence(alert):
+            # Category-gated override: the severity leg of strong_tp_evidence
+            # only counts for attack classes. syscheck/dpkg (2902/2904/550)
+            # classify as security in the router taxonomy but are routine
+            # maintenance — pass the narrowed attack_class so their static
+            # level-7 does NOT lift the human's auto_fp tuning.
+            attack_class = any(g in ("suricata", "ids", "authentication_failed",
+                                     "invalid_login") for g in groups)
+            if not strong_tp_evidence(alert, category="security" if attack_class else "operational"):
                 return "operational", None
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
         import logging

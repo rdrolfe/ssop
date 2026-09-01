@@ -146,7 +146,7 @@ class AnalystClient:
             # tuning is lifted and the alert escalates to a human with a
             # tuning_override flag so the tuning itself is re-adjudicated.
             from tools.tuning_tools import strong_tp_evidence
-            if strong_tp_evidence(alert):
+            if strong_tp_evidence(alert, category=c["category"]):
                 return {
                     "verdict": "escalate",
                     "confidence": "high",

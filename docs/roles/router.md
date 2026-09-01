@@ -13,7 +13,7 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:495`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:502`); a repeat
 within the burst window returns `count > 1`.
 
 ### 2. Classify → (category, role) (`router.py:184-225`)
@@ -33,7 +33,7 @@ In priority order:
    - `suricata` / `ids` → security/analyst
    - `low_diskspace` → infra/infra
    - `syscheck` / `fim` → security/analyst
-5. **Default** → `(operational, None)` (`router.py:225`).
+5. **Default** → `(operational, None)` (`router.py:232`).
 
 ### 3. Dispatch (`router.py:400-423`)
 - `role is None` → `no_dispatch_needed` (log only).
