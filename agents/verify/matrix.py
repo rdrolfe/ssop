@@ -29,6 +29,68 @@ from verify.runner import run_matrix, summarize
 logger = get_logger(__name__)
 
 
+def _check_docs_gate() -> list[dict]:
+    """Docs-citation drift gate — the role docs are the ontology's spec; a
+    citation that no longer resolves (file/range/symbol) is a correctness
+    bug. Runs once per matrix, folded into the exit gate."""
+    global _docs_skip
+    try:
+        from verify.check_docs import check_docs
+        probs = check_docs()
+        _docs_skip = bool(probs) and probs[0].get("kind") == "skip"
+        if _docs_skip:
+            print(f"docs citations: SKIP — {probs[0]['detail']}")
+        elif probs:
+            print(f"docs citations: {len(probs)} problem(s)")
+            for p in probs:
+                print(f"  [{p['kind']}] {p['cite']} ({p['file']}): {p['detail']}")
+        else:
+            print("docs citations: all resolve")
+        return probs
+    except Exception as e:  # noqa: BLE001 — the docs gate must not crash the matrix
+        print(f"docs citations: ERROR {e}")
+        _docs_skip = False
+        return [{"kind": "error", "detail": str(e)}]
+
+
+def _registry_gate() -> bool:
+    """Registry reentrancy gate: the lazy-singleton deadlock that wedged the
+    router for 19h (Aug 30). Subprocess: it resets registry singletons —
+    must not clobber the matrix's own clients."""
+    try:
+        import subprocess as _sp
+        rr = _sp.run(
+            [sys.executable, "-m", "verify.test_registry_reentrancy"],
+            capture_output=True, text=True, timeout=60)
+        ok = rr.returncode == 0
+        print("registry reentrancy: " + ("ok" if ok else "FAIL"))
+        if not ok:
+            print(rr.stdout[-500:])
+            print(rr.stderr[-500:])
+        return ok
+    except Exception as e:  # noqa: BLE001 — gate must not crash the matrix
+        print(f"registry reentrancy: ERROR {e}")
+        return False
+
+
+def _timer_gate() -> bool:
+    """Timer-liveness gate: no ssop timer may silently stop firing (the
+    router wedged for 19h Aug 30-31 unseen). Subprocess: needs systemctl."""
+    try:
+        import subprocess as _sp
+        tr = _sp.run(
+            [sys.executable, "-m", "verify.check_timers"],
+            capture_output=True, text=True, timeout=30)
+        ok = tr.returncode == 0
+        print("timer liveness: " + ("all healthy" if ok else "FAIL"))
+        if not ok:
+            print(tr.stdout[-500:])
+        return ok
+    except Exception as e:  # noqa: BLE001 — gate must not crash the matrix
+        print(f"timer liveness: ERROR {e}")
+        return False
+
+
 def main() -> int:
     args = sys.argv[1:]
     roles = None
@@ -114,31 +176,38 @@ def main() -> int:
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("entity seed skipped — attach fixtures may fail as BLOCKED")
 
-    results = run_matrix(fixtures, roles)
+    # The dispatching timers (router/hunt) write live cases/tickets. While
+    # they run, their writes race the matrix's no_dispatch/no_case isolation
+    # windows and contaminate results (seen when the router came back alive:
+    # its apparmor dispatch minted a case mid-matrix -> spurious FAILs).
+    # Pause them for the FIXTURE run only; the gates run after restore
+    # (docs/registry/timer checks are read-only or fake-injected).
+    _timers_paused = False
+    try:
+        import subprocess as _sp_pause
+        for _u in ("ssop-router.timer", "ssop-hunt.timer"):
+            _sp_pause.run(["systemctl", "stop", _u], capture_output=True, text=True, timeout=15)
+        _timers_paused = True
+    except Exception:  # noqa: BLE001 — pausing is best-effort
+        _timers_paused = False
+    try:
+        results = run_matrix(fixtures, roles)
+    finally:
+        if _timers_paused:
+            try:
+                import subprocess as _sp_resume
+                for _u in ("ssop-hunt.timer", "ssop-router.timer"):
+                    _sp_resume.run(["systemctl", "start", _u], capture_output=True, text=True, timeout=15)
+            except Exception:  # noqa: BLE001
+                pass
     report = {
         "summary": summarize(results),
         "results": [r.to_dict() for r in results],
     }
 
-    # Docs-citation drift check — the role docs are the ontology's spec; a
-    # citation that no longer resolves (file/range/symbol) is a correctness
-    # bug. Runs once per matrix, folded into the exit gate (not the fixture
-    # summary — it's repo-static, not a fixture outcome).
-    try:
-        docs_problems = check_docs()
-        docs_skip = bool(docs_problems) and docs_problems[0].get("kind") == "skip"
-        if docs_skip:
-            print(f"docs citations: SKIP — {docs_problems[0]['detail']}")
-        elif docs_problems:
-            print(f"docs citations: {len(docs_problems)} problem(s)")
-            for p in docs_problems:
-                print(f"  [{p['kind']}] {p['cite']} ({p['file']}): {p['detail']}")
-        else:
-            print("docs citations: all resolve")
-    except Exception as e:  # noqa: BLE001 — the docs gate must not crash the matrix
-        print(f"docs citations: ERROR {e}")
-        docs_problems = [{"kind": "error", "detail": str(e)}]
-        docs_skip = False
+    _docs_problems = _check_docs_gate()
+    _reg_ok = _registry_gate()
+    _tmr_ok = _timer_gate()
 
     if as_json:
         print(json.dumps(report, indent=2))
@@ -154,25 +223,8 @@ def main() -> int:
                     print(f"      {c.status:<6} {c.name}: {c.detail}")
 
     summary = report["summary"]
-    # Registry reentrancy gate: the lazy-singleton deadlock that wedged the
-    # router for 19h (Aug 30). Runs in a SUBPROCESS because it resets the
-    # registry singletons — must not clobber the matrix's own clients.
-    reg_ok = True
-    try:
-        import subprocess as _sp
-        rr = _sp.run(
-            [sys.executable, "-m", "verify.test_registry_reentrancy"],
-            capture_output=True, text=True, timeout=60)
-        reg_ok = rr.returncode == 0
-        print("registry reentrancy: " + ("ok" if reg_ok else "FAIL"))
-        if not reg_ok:
-            print(rr.stdout[-500:])
-            print(rr.stderr[-500:])
-    except Exception as e:  # noqa: BLE001 — gate must not crash the matrix
-        print(f"registry reentrancy: ERROR {e}")
-        reg_ok = False
     failed = (summary["failed"] > 0 or summary["blocked"] > 0
-              or (docs_problems and not docs_skip) or not reg_ok)
+              or (_docs_problems and not _docs_skip) or not _reg_ok or not _tmr_ok)
     return 1 if failed else 0
 
 

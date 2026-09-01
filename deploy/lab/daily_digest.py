@@ -66,6 +66,10 @@ def main() -> int:
     t = sh("systemctl list-timers ssop-analyst.timer ssop-hunt.timer --no-pager 2>/dev/null | grep -E 'ssop-(analyst|hunt)' | awk '{print $NF}' | tr '\\n' ' '")
     lines.append(f"**Timers:** {' '.join(t.split()) if t else 'n/a'}")
 
+    # Timer liveness (the 19h router-wedge guard)
+    tl = sh("timeout 20 python3 -m verify.check_timers 2>&1", timeout=30)
+    lines.append("**Timer health:** " + (tl.strip() if tl else "n/a"))
+
     # Console API
     lines.append("**Console API:** " + sh("systemctl is-active ssop-adjudicate-api"))
 
