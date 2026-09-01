@@ -76,14 +76,18 @@ class CaseStore:
     # --- core ops ---
 
     def open_case(self, source: dict[str, Any], title: str, observables: list[dict[str, str]] | None = None,
-                  enrichments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                  enrichments: list[dict[str, Any]] | None = None,
+                  assignee: str | None = None) -> dict[str, Any]:
         """Mint a new incident and write it to both stores.
 
         `observables` (optional) is the extracted IOC list [{type, value}] —
         a first-class case field per the adopted SO concept (Concept 1 of the
         two-example doctrine). `enrichments` (optional) is the threat-intel
         verdict list from EnrichmentClient (Concept 2). Both ride in the case
-        payload — backend-agnostic, not in any SIEM index.
+        payload — backend-agnostic, not in any SIEM index. `assignee` (optional)
+        is the role that owns/handles the case from the start (auto-assign;
+        defaults to None = unowned until the escalation/adjudication path
+        assigns it).
         """
         case = {
             "case_id": "case-" + uuid.uuid4().hex[:10],
@@ -95,7 +99,7 @@ class CaseStore:
             "enrichments": enrichments or [],  # [{provider, status, raw, ts}, ...]
             "checklist": None,  # case-template markdown (adopted SO concept 5)
             "timeline": [],  # append-only events (verdicts, actions)
-            "assignee": None,  # role currently handling it
+            "assignee": assignee,  # role currently handling it (auto-assign)
         }
         # Prepopulate the case checklist from the rule's case-template, if any
         # (adopted SO concept: rule.case_template -> auto-populated checklist).
@@ -127,6 +131,33 @@ class CaseStore:
         case.setdefault("timeline", []).append(entry)
         case["updated_ts"] = entry["ts"]
         self._write_both(case, event=event_type, role=role)
+        return case
+
+    def assign_case(self, case_id: str, role: str, note: str = "") -> dict[str, Any] | None:
+        """Assign a case to the role handling it (auto-assign).
+
+        A case with no assignee is unowned — a human opening the queue can't
+        tell who's responsible. Every escalation and every supervisory
+        verdict assigns the case to the role that should act next (writeup
+        audit: 47/47 cases had no assignee). Sets `assignee`, records an
+        `assigned` timeline event, dual-writes.
+        """
+        case = self.get_case(case_id)
+        if not case:
+            logger.warning("assign_case: case %s not found", case_id)
+            return None
+        prev = case.get("assignee")
+        case["assignee"] = role
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "type": "assigned",
+            "detail": {"assignee": role, "previous": prev, "note": note or ""},
+        }
+        case.setdefault("timeline", []).append(entry)
+        case["updated_ts"] = entry["ts"]
+        self._write_both(case, event="assigned", role=role)
+        logger.info("case assigned: %s -> %s (%s)", case_id, role, note or "no note")
         return case
 
     def close_case(self, case_id: str, role: str = "case-spine", reason: str = "") -> dict[str, Any] | None:
