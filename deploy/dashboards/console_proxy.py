@@ -24,7 +24,7 @@ ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
 
 # GET paths proxied 1:1 to the adjudication API (read-through).
-GET_ROUTES = ("/tickets", "/tuning", "/cases", "/report", "/health")
+GET_ROUTES = ("/tickets", "/tuning", "/cases", "/report", "/reports", "/health")
 
 
 class ProxyHandler(BaseHTTPRequestHandler):

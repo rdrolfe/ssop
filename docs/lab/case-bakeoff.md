@@ -93,13 +93,19 @@ for the SAME decided incident?
 | 3 | **Negative-outcome clarity** | Does the surface show WHY an alert was NOT acted on (FP rationale)? | rationale in comment | rationale in adjudication |
 | 4 | **Case compilation** | How does each side assemble one incident from events? (SO: per-op activity log; Wazuh: spine timeline) | per-op log | spine timeline |
 | 5 | **Retention / queryability** | Can an older case be retrieved, or does it age out of view? | **YES — by case id** | **NO — last-50 window** |
-| 6 | **Report readiness** | Can the surface produce the final report deliverable for a larger audience? | TBD (comments + history, export path unknown) | **YES — `/report?case_id=` renders the compiled report (md + html) from the spine** |
+| 6 | **Report readiness** | Can the surface produce the final report deliverable for a larger audience? | **YES — `/report?case_id=&backend=so` compiles the same markdown/HTML from SO's native so-case store** | **YES — `/report?case_id=` renders the compiled report (md + html) from the spine** |
 
 Axes 1–4 are scored on a rubric (0–2: absent / partial / faithful) from the
 captured representations. Axis 5 is decided by the capture (SO yes, console
 no) — and fixed: `/cases?case_id=` now retrieves any spine case by id
 (adjudicate_api + console_proxy, both route on path-only and forward the
-query string). Axis 6 is built: the **final report deliverable** (`/report`).
+query string). Axis 6 is built — and it is a **parity** deliverable: the SAME
+report compiler (`agents/tools/report_gen.py`) renders a decided case from
+either the spine (`backend=spine`, the Wazuh side) or SO's native so-case
+store (`backend=so`), so the two backends can be compared deliverable vs.
+deliverable on the same incident. Plus `/reports?days=N` compiles all decided
+cases in a window into one report for the larger audience (console "Reports"
+button).
 
 ---
 
@@ -113,8 +119,12 @@ query string). Axis 6 is built: the **final report deliverable** (`/report`).
 1. ✅ Fix the console recency window (axis 5) — `/cases?case_id=` retrieves any
    spine case by id; seed case now reachable through API and proxy.
 2. Score axes 1–4 formally from the two captured representations.
-3. ✅ Design the **final report format** (axis 6) — `/report?case_id=` renders
-   the executive deliverable (markdown + standalone HTML) compiled from the
-   spine; a `report` link sits on every console case card.
+3. ✅ Design the **final report format** (axis 6) — one compiler, both
+   backends: `/report?case_id=` (spine) and `/report?case_id=&backend=so`
+   (SO native store) produce the same markdown/HTML deliverable; the console
+   adds a "Reports" button for `/reports?days=N` (all decided cases in a
+   window).
 4. If you can log into the SO SOC console once, capture how it *renders* the
-   so-case ops (the true human experience) vs. the console's rendering.
+   so-case ops (the true human experience) vs. the console's rendering —
+   that's the remaining axis-1/2 "human experience" comparison, and now we
+   have a ready-made `backend=so` report to compare against.

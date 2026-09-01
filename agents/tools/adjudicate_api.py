@@ -259,24 +259,32 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         out.append(v)
                 self._send(200, {"ok": True, "cases": out})
             elif path == "/report":
-                # Final-report deliverable: render a fully-decided spine case
-                # as a human-readable report for a larger audience. The
-                # bake-off axis-6 output — compiled from the spine only, so
-                # it's backend-agnostic and comparable across SIEMs.
-                #   /report?case_id=<id>          -> markdown
-                #   /report?case_id=<id>&format=html -> standalone HTML
+                # Final-report deliverable: render a fully-decided case as a
+                # human-readable report for a larger audience. The bake-off
+                # axis-6 output — compiled from the spine OR SO's native case
+                # store, so it's backend-comparable.
+                #   /report?case_id=<id>                     -> markdown (spine)
+                #   /report?case_id=<id>&format=html         -> standalone HTML
+                #   /report?case_id=<id>&backend=so          -> SO-native store
                 q = parse_qs(urlparse(self.path).query)
                 rid = (q.get("case_id") or [""])[0].strip()
                 fmt = (q.get("format") or ["md"])[0].strip().lower()
+                backend = (q.get("backend") or ["spine"])[0].strip().lower()
                 if not rid:
                     self._send(400, {"ok": False, "error": "case_id required"})
                     return
                 try:
-                    from tools.report_gen import render_case_report, render_case_report_html
-                    if fmt == "html":
-                        self._send_html(render_case_report_html(rid))
+                    from tools import report_gen
+                    if backend == "so":
+                        md = report_gen.render_so_case_report(rid)
+                        html = report_gen._md_to_html(md, f"Incident Report {rid} (SO)")
                     else:
-                        data = render_case_report(rid).encode()
+                        md = report_gen.render_case_report(rid)
+                        html = report_gen.render_case_report_html(rid)
+                    if fmt == "html":
+                        self._send_html(html)
+                    else:
+                        data = md.encode()
                         self.send_response(200)
                         self._cors_headers()
                         self.send_header("Content-Type", "text/markdown; charset=utf-8")
@@ -284,7 +292,27 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(data)
                 except KeyError:
-                    self._send(404, {"ok": False, "error": f"case {rid} not found in spine"})
+                    self._send(404, {"ok": False, "error": f"case {rid} not found ({backend} backend)"})
+            elif path == "/reports":
+                # Combined decision report: all decided cases in the last N
+                # days as one deliverable.  /reports?days=7[&format=html]
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    days = int((q.get("days") or ["7"])[0])
+                except ValueError:
+                    days = 7
+                fmt = (q.get("format") or ["md"])[0].strip().lower()
+                from tools import report_gen
+                if fmt == "html":
+                    self._send_html(report_gen.render_reports_html(days))
+                else:
+                    data = report_gen.render_reports(days).encode()
+                    self.send_response(200)
+                    self._cors_headers()
+                    self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
             elif path in ("/", "/console"):
                 # Serve the adjudication console HTML (hosted here so the
                 # Wazuh dashboard can iframe it over HTTP).

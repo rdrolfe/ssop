@@ -72,6 +72,7 @@
   <input type="text" id="filter" placeholder="Filter (title, id, agent, entity…)" oninput="applyFilter()">
   <label style="color:var(--muted);font-size:12px;white-space:nowrap"><input type="checkbox" id="auto" checked onchange="toggleAuto()"> auto</label>
   <button class="primary" onclick="refresh()">Refresh</button>
+  <button class="primary" onclick="window.open('/reports?days=7&format=html','_blank')" title="All decided cases this week as one report">Reports</button>
 </div>
 
 <div id="view"></div>
