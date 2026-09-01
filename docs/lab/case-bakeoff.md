@@ -93,7 +93,7 @@ computed by `deploy/lab/score_bakeoff.py` from the live capture
 | 1 | **Ontology fidelity** | Can an operator see category / verdict / decision-chain in the surface? | **2** — verdict+decision in comments; **category present on create op** (after the backfill fix) | **2** — verdict, decision, category, kill-chain all present |
 | 2 | **Agent-fact transparency** | Are the agent's actual findings visible — evidence count, kill-chain, severity score, recommendation? | **2** — evidence sources, chain, severity in comments | **2** — evidence + kill-chain in investigation |
 | 3 | **Negative-outcome clarity** | Does the surface show WHY an alert was NOT acted on (FP rationale)? | **2** — false_positive + rationale in comments | **2** — false_positive + rationale in adjudication |
-| 4 | **Case compilation** | How does each side assemble one incident from events? | **2** — 10 ops, ordered by @timestamp | **2** — 4 timeline events, ordered |
+| 4 | **Case compilation** | How does each side assemble one incident from events? | **2** — 5 ops, ordered by @timestamp | **2** — 4 timeline events, ordered |
 | 5 | **Retention / queryability** | Can an older case be retrieved, or does it age out of view? | **2** — so-case ops retrievable by id | **2** — `/cases?case_id=` retrieves any case by id (Qdrant) |
 | 6 | **Report readiness** | Can the surface produce the final report deliverable? | **2** — `/report?case_id=&backend=so` renders the compiled report (1663 chars captured) | **2** — `/report?case_id=` renders md+html from spine (1888 chars captured) |
 
@@ -105,6 +105,16 @@ leaves `source.category` unset on a router dispatch while the analyst verdict
 carries the ontology category). Re-published + re-captured + re-scored:
 SO axis 1 went 1 → 2. Both surfaces now communicate the same ontology facts
 for the same decided incident.
+
+**Idempotency (added 2026-09-01):** the first publisher had no deterministic
+`_id`, so re-publishing appended a second `create` op — the SO SOC Cases page
+showed **2 cases** for the one spine case. `publish_case_so.py` now assigns
+deterministic `ssop-<sha1(case_id-i)>` `_id`s per operation (upsert on
+re-run), and `clean_so_case.py` removes all existing docs (case-keyed + the
+stray `@timestamp:0` detection-envelope probe doc) before a fresh publish.
+Store is now a single clean set (1 create + 4 comments per index), and the
+SOC renders exactly 1 case. `capture_bakeoff.py`/`score_bakeoff.py` unchanged
+— they read the cleaned shape and still score 12/12 both sides.
 
 Axes 1–4 are scored on the 0–2 rubric from the captured representations.
 Axis 5 is decided by the capture (SO yes, console no) — and fixed:
@@ -123,6 +133,8 @@ button).
 ## Re-runs
 
 - `publish_case_so.py <case_id>` — map a spine case into SO's `so-case`/`so-casehistory`
+  (deterministic `_id`s — safe to re-run, upserts instead of duplicating)
+- `clean_so_case.py <case_id>` — remove ALL docs for the case (case-keyed + stray) before a fresh publish
 - `capture_bakeoff.py <case_id>` — dump both surfaces + both backends' reports to `/tmp/bakeoff_capture.json`
 - `score_bakeoff.py [capture_path]` — score all six axes (0–2) from the capture; writes `/tmp/bakeoff_scores.json`
 

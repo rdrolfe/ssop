@@ -161,6 +161,17 @@ def _so_operations(case):
     return ops
 
 
+def _op_ids(case_id: str, n: int) -> list[str]:
+    """Deterministic _ids per operation index, so re-publishing UPSERTS
+    instead of appending (which made the SOC show 2 cases for one spine
+    case after a re-run)."""
+    import hashlib
+    return [
+        "ssop-" + hashlib.sha1(f"{case_id}-{i}".encode()).hexdigest()[:20]
+        for i in range(n)
+    ]
+
+
 def main() -> int:
     case_id = sys.argv[1] if len(sys.argv) > 1 else "case-26b166ce32"
     case = _spine_case(case_id)
@@ -172,12 +183,13 @@ def main() -> int:
 
     # Build + write the SO operations (bulk into so-case, then so-casehistory)
     ops = _so_operations(case)
+    ids = _op_ids(case_id, len(ops))
     bulk = []
-    for op in ops:
-        bulk.append({"index": {"_index": "so-case"}})
+    for op, oid in zip(ops, ids):
+        bulk.append({"index": {"_index": "so-case", "_id": oid}})
         bulk.append(op)
         hist = {**op, "so_kind": "casehistory"}
-        bulk.append({"index": {"_index": "so-casehistory"}})
+        bulk.append({"index": {"_index": "so-casehistory", "_id": oid}})
         bulk.append(hist)
     body = "".join(json.dumps(x) + "\n" for x in bulk)
     req = urllib.request.Request(
@@ -186,11 +198,11 @@ def main() -> int:
     with urllib.request.urlopen(req, timeout=30, context=_ctx()) as r:
         out = json.loads(r.read().decode())
     errs = sum(1 for item in out.get("items", []) if "error" in (item.get("index") or {}))
-    print(f"wrote {len(ops)} SO operations x2 (case+history), {errs} errors")
+    print(f"wrote {len(ops)} SO operations x2 (case+history, deterministic ids), {errs} errors")
 
     # Capture SO-side: read back what SO stores for this case
     print("\n=== SO-SIDE (native so-case store) ===")
-    q = {"query": {"term": {"so_related.case_id.keyword": case_id}}, "size": 20,
+    q = {"query": {"term": {"so_related.case_id": case_id}}, "size": 20,
          "sort": [{"@timestamp": "asc"}]}
     res = _es("POST", host, port, auth, "so-case/_search", q)
     hits = res.get("hits", {}).get("hits", [])
