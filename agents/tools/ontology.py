@@ -64,3 +64,89 @@ def categorize_alert(alert: dict[str, Any]) -> str:
     if "policy" in groups_l or "vulnerability" in groups_l:
         return "compliance"
     return "operational"
+
+
+# --- tuning fingerprints (thread #2: fingerprint-based tuning) --------------
+# When a human tunes a rule, the ledger records the DECISION-RELEVANT
+# signature of the alert that was tuned (rule_id + groups + level + category
+# + threat-desc presence). Identical signatures are always suppressed; only a
+# MATERIAL delta (new attack groups, category became attack-class, a
+# threat-desc token appeared, or level rose) lifts the tuning so the human
+# re-adjudicates. This replaces the pure threshold heuristic — consistency is
+# now explicit: the same alert shape always gets the same outcome.
+
+def _canonical_fingerprint(rule_id: Any, groups: Any, level: Any,
+                           category: str, description: Any) -> dict:
+    """Normalize a fingerprint to its canonical, comparable form."""
+    groups_n = sorted(str(g).lower() for g in (groups or []) if g is not None)
+    desc_l = str(description or "").lower()
+    try:
+        level_n = int(level or 0)
+    except (TypeError, ValueError):
+        level_n = 0
+    return {
+        "rule_id": str(rule_id or ""),
+        "groups": groups_n,
+        "level": level_n,
+        "category": category or "",
+        "threat_desc": any(t in desc_l for t in THREAT_DESC_TOKENS),
+    }
+
+
+def fingerprint_from_alert(alert: dict) -> dict:
+    """Fingerprint a RAW alert (rule nested under alert['rule'])."""
+    rule = alert.get("rule") or {}
+    category = categorize_alert(alert)
+    return _canonical_fingerprint(
+        rule.get("id"), rule.get("groups"), rule.get("level"), category,
+        rule.get("description"))
+
+
+def fingerprint_from_verdict(v: dict) -> dict | None:
+    """Fingerprint a classify/verdict dict (rule_id/groups/level/category/
+    description at TOP level — the shape the analyst verdict and the
+    escalation ticket detail carry). Returns None when no rule_id (can't
+    fingerprint a hunt finding or a malformed ticket)."""
+    rule_id = v.get("rule_id")
+    if not rule_id:
+        return None
+    return _canonical_fingerprint(
+        rule_id, v.get("groups"), v.get("level"), v.get("category") or "",
+        v.get("description"))
+
+
+def fingerprint_materially_differs(stored: dict, current: dict) -> bool:
+    """True when the current alert differs from the TUNED signature in a way
+    that should lift the tuning (re-adjudication), not silent suppression.
+
+    Only deltas that change the risk assessment count:
+      - threat-desc token appeared (False -> True)
+      - category became attack-class (threat/authentication/security)
+      - an attack-class group was added
+      - level ROSE (a higher-severity firing than what was tuned)
+    Benign drift (fewer groups, lower level, same category, different
+    package names in the description) does NOT lift the tuning — the alert
+    is still the class the human decided on.
+    """
+    if stored.get("rule_id") != current.get("rule_id"):
+        return True
+    if current.get("threat_desc") and not stored.get("threat_desc"):
+        return True
+    cur_cat = current.get("category") or ""
+    if (stored.get("category") != cur_cat
+            and cur_cat in ("threat", "authentication", "security")):
+        return True
+    stored_groups = set(stored.get("groups") or [])
+    cur_groups = set(current.get("groups") or [])
+    new_groups = cur_groups - stored_groups
+    attack_tokens = {"attack", "malware", "c2", "command_and_control",
+                     "exfiltration", "threat", "suricata", "ids",
+                     "authentication_failed", "invalid_login"}
+    if new_groups & attack_tokens:
+        return True
+    try:
+        if int(current.get("level", 0)) > int(stored.get("level", 0)):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False

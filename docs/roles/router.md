@@ -13,29 +13,31 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:502`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:501`); a repeat
 within the burst window returns `count > 1`.
 
 ### 2. Classify → (category, role) (`router.py:184-225`)
 In priority order:
 1. **Noise rules** → `(operational, None)` — no dispatch (`router.py:189-190`,
    `settings.noise_rules = {5501, 5502, 5715}`).
-2. **Tuned rules** (ledger `auto_fp`/`operational`) → suppressed UNLESS the
-   alert carries `strong_tp_evidence` (`router.py:196-204`) — a tuned-FP rule
-   must not blind the SOC to a real TP; it dispatches so the analyst can
-   apply the tuning override.
-3. **Transport rule map** first (`router.py:207-209`), then the Wazuh
-   `RULE_MAP` (`router.py:51-80`, `210-211`) — backend-specific rules win.
-4. **Group-string heuristics** (`router.py:213-224`):
+2. **Tuned rules** (ledger `auto_fp`/`operational`) → suppressed UNLESS a
+   MATERIAL delta (new attack groups / category became attack / threat-desc
+   token / level rose) — `tuned_rule_suppresses` (`router.py:197-206`). A
+   fingerprint-matching alert stays suppressed; a materially different one
+   dispatches so the analyst applies the tuning override and the human
+   re-adjudicates.
+3. **Transport rule map** first (`router.py:214`), then the Wazuh
+   `RULE_MAP` (`router.py:51-80`, `216`) — backend-specific rules win.
+4. **Group-string heuristics** (`router.py:218-229`):
    - `authentication_failed` / `invalid_login` → security/analyst
    - `rootcheck` → security/analyst
    - `apparmor` → pattern/hunt
    - `suricata` / `ids` → security/analyst
    - `low_diskspace` → infra/infra
    - `syscheck` / `fim` → security/analyst
-5. **Default** → `(operational, None)` (`router.py:232`).
+5. **Default** → `(operational, None)` (`router.py:231`).
 
-### 3. Dispatch (`router.py:400-423`)
+### 3. Dispatch (`router.py:432-456`)
 - `role is None` → `no_dispatch_needed` (log only).
 - `burst_count > 1` → `burst_deduped` — counted, not re-dispatched.
 - else route by role:
@@ -65,7 +67,7 @@ In priority order:
 alert; a run report with processed/dispatched counts. Cursor persisted.
 
 ## Gates
-- Tuning + strong-TP override (`router.py:196-204`)
+- Tuning + fingerprint-override (`router.py:197-206`)
 - Burst dedupe window (`settings.burst_window_min = 10`)
 - Hunt rate limit (60 min)
 

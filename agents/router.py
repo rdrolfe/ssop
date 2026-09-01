@@ -189,22 +189,21 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
     if rid in NOISE_RULES:
         return "operational", None
     # Tuned rules (auto_fp / operational) are not dispatched — the analyst
-    # noted them and a human confirmed; no role should re-engage. EXCEPT:
-    # a tuned rule firing with strong true-positive evidence (threat-class
-    # tokens / high severity) still dispatches so the analyst can apply the
-    # tuning override (a tuned-FP rule must not blind the SOC to a real TP).
+    # noted them and a human confirmed; no role should re-engage. EXCEPT: a
+    # tuned rule firing with a MATERIAL fingerprint delta (new attack groups,
+    # category became attack, threat-desc token, higher level) still dispatches
+    # so the analyst applies the tuning override and the human re-adjudicates.
     try:
-        from tools.tuning_tools import TuningLedger, strong_tp_evidence
+        from tools.tuning_tools import TuningLedger, tuned_rule_suppresses
         from tools.ontology import categorize_alert
         tuning = TuningLedger().lookup(rid)
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
-            # Category from the SHARED ontology categorizer — the same source
-            # the analyst verdict uses, so both paths reach the identical
-            # override decision on the same alert (single source of truth;
-            # the old ad-hoc attack_class narrowing here could diverge from
-            # the analyst). The severity leg only lifts tuning for categories
-            # in settings.strong_tp_override_categories.
-            if not strong_tp_evidence(alert, category=categorize_alert(alert)):
+            # Same shared decision helper the analyst uses — single source of
+            # truth, so both paths reach the identical outcome on the same
+            # alert (thread #1 + #2). Fingerprint-aware when the ledger stores
+            # one; legacy entries fall back to the config-gated strong-TP gate.
+            _cat = categorize_alert(alert)
+            if tuned_rule_suppresses(tuning, alert, category=_cat)[0]:
                 return "operational", None
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
         import logging

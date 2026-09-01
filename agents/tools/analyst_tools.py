@@ -124,30 +124,27 @@ class AnalystClient:
         except Exception:  # noqa: BLE001 — ledger failure must never break triage
             tuning = None
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
-            # Evidence-gated override: a tuned-FP rule must not silently
-            # swallow a strong true-positive signal. If THIS alert carries
-            # threat-class evidence (malware/C2 tokens) or high severity, the
-            # tuning is lifted and the alert escalates to a human with a
-            # tuning_override flag so the tuning itself is re-adjudicated.
-            from tools.tuning_tools import strong_tp_evidence
-            if strong_tp_evidence(alert, category=c["category"]):
+            # Fingerprint-aware suppression (thread #2): the ledger records
+            # the decision-relevant signature of the alert that was tuned —
+            # identical alerts suppress, only a MATERIAL delta (new attack
+            # groups / category became attack / threat token / level rose)
+            # lifts the tuning so the human re-adjudicates. Legacy entries
+            # without a fingerprint fall back to the strong-TP heuristic.
+            from tools.tuning_tools import tuned_rule_suppresses
+            suppress, reason = tuned_rule_suppresses(tuning, alert, category=c["category"])
+            if not suppress:
                 return {
                     "verdict": "escalate",
                     "confidence": "high",
                     "tuning_override": True,
                     "tuned": True,
-                    "rationale": (f"rule {rule_id} tuned {tuning.get('decision')} "
-                                  f"({tuning.get('source')}): {tuning.get('rationale','')} "
-                                  f"BUT current alert carries strong TP evidence "
-                                  f"(threat-desc/high severity) — tuning override, "
-                                  f"escalate to human re-adjudication"),
+                    "rationale": reason,
                     **c,
                 }
             return {
                 "verdict": "note",
                 "confidence": "high",
-                "rationale": (f"rule {rule_id} tuned {tuning.get('decision')} "
-                              f"({tuning.get('source')}): {tuning.get('rationale','')} — noted, no escalation"),
+                "rationale": reason,
                 "tuned": True,
                 **c,
             }

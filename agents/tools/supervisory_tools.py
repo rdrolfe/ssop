@@ -90,9 +90,22 @@ class SupervisoryClient:
             if rule_id:
                 try:
                     from tools.tuning_tools import TuningLedger
+                    # Thread #2: capture the DECISION-RELEVANT fingerprint of
+                    # the alert that led to this adjudication, so future
+                    # identical alerts suppress and only a material delta
+                    # overrides. The ticket detail carries the analyst verdict
+                    # (rule_id/groups/level/category/description at top level).
+                    fingerprint = None
+                    detail = ticket.get("detail") or {}
+                    # router tickets nest the verdict under detail["verdict"].
+                    vd = detail.get("verdict") if isinstance(detail.get("verdict"), dict) else detail
+                    if vd and vd.get("rule_id"):
+                        from tools.ontology import fingerprint_from_verdict
+                        fingerprint = fingerprint_from_verdict(vd)
                     TuningLedger().write(
                         rule_id=rule_id, decision=tuning_decision,
                         rationale=f"supervisory {decision}: {rationale}", source="human",
+                        fingerprint=fingerprint,
                     )
                 except Exception:  # noqa: BLE001 — tuning write must not break adjudication
                     logger.warning("tuning write skipped during adjudication of %s", ticket["ticket_id"])

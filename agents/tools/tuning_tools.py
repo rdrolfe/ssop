@@ -70,6 +70,46 @@ def strong_tp_evidence(alert: dict, category: str | None = None) -> bool:
     return level >= threshold
 
 
+def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
+    """Decide whether a tuned rule should suppress THIS alert (verdict note /
+    no dispatch), or lift the tuning (override -> re-adjudication).
+
+    Fingerprint-aware (thread #2): if the tuning entry carries the
+    decision-relevant fingerprint of the alert the human originally tuned,
+    we compare — identical signature suppresses; only a MATERIAL delta
+    (new attack groups, category became attack-class, threat-desc token
+    appeared, level rose) lifts the tuning. Legacy entries WITHOUT a stored
+    fingerprint fall back to the config-gated strong_tp_evidence heuristic,
+    so old tuning entries keep working.
+
+    Returns (suppress, reason). suppress=True -> note/no-dispatch with the
+    reason (for the rationale). suppress=False -> the alert should override
+    the tuning (escalate with tuning_override for re-adjudication).
+    """
+    stored_fp = tuning.get("fingerprint") if isinstance(tuning, dict) else None
+    if isinstance(stored_fp, dict) and stored_fp.get("rule_id"):
+        # Fingerprint-aware path.
+        from tools.ontology import fingerprint_from_alert, fingerprint_materially_differs
+        cur = fingerprint_from_alert(alert)
+        if fingerprint_materially_differs(stored_fp, cur):
+            return False, (
+                f"rule {cur.get('rule_id')} tuned {tuning.get('decision')} "
+                f"({tuning.get('source')}): {tuning.get('rationale','')} BUT alert "
+                f"fingerprint differs from the tuned signature — override for "
+                f"human re-adjudication")
+        return True, (
+            f"rule {cur.get('rule_id')} tuned {tuning.get('decision')} "
+            f"({tuning.get('source')}): {tuning.get('rationale','')} — matches the "
+            f"tuned alert fingerprint, no escalation")
+    # Legacy path: no stored fingerprint -> config-gated strong-TP heuristic.
+    if strong_tp_evidence(alert, category=category):
+        return False, "strong true-positive evidence (threat-desc/high severity) on tuned rule — override"
+    rid = str((alert.get("rule") or {}).get("id", ""))
+    return True, (
+        f"rule {rid} tuned {tuning.get('decision')} "
+        f"({tuning.get('source')}): {tuning.get('rationale','')} — noted, no escalation")
+
+
 class TuningError(RuntimeError):
     """Raised when the tuning ledger is unreachable or a write fails."""
 
@@ -107,6 +147,19 @@ class TuningLedger:
             logger.warning("tuning lookup failed for %s: %s", rule_id, e)
             return None
 
+    def all_rules(self) -> list[str]:
+        """Return every rule_id in the ledger (for backfill/audit)."""
+        try:
+            records = self._memory.client.scroll(
+                collection_name=TUNING_COLLECTION, limit=1000,
+                with_payload=True, with_vectors=False,
+            )[0]
+            return sorted({str((r.payload or {}).get("rule_id", ""))
+                           for r in records if (r.payload or {}).get("rule_id")})
+        except Exception as e:  # noqa: BLE001 — enumeration must never crash
+            logger.warning("tuning all_rules failed: %s", e)
+            return []
+
     def write(
         self,
         rule_id: str,
@@ -115,6 +168,7 @@ class TuningLedger:
         source: str = "analyst_seed",
         ts: str | None = None,
         tuned_by: str = "",
+        fingerprint: dict | None = None,
     ) -> bool:
         """Upsert a tuning entry. Human writes are final; analyst seeds mark source.
 
@@ -122,25 +176,35 @@ class TuningLedger:
         managed-tuning surface shows WHO decided, not just the decision. This is
         the adopted SO 'detection tuning as a managed action' concept — the
         ledger gains history/attribution (Concept 4 of the two-example doctrine).
+
+        `fingerprint` (thread #2) is the DECISION-RELEVANT signature of the
+        alert that was tuned (rule_id/groups/level/category/threat-desc) — the
+        ledger records WHAT the human actually decided on, so identical future
+        alerts suppress and only a material delta overrides (see
+        tuned_rule_suppresses). Legacy entries without one fall back to the
+        strong-TP heuristic.
         """
         if decision not in FINAL_DECISIONS:
             raise TuningError(f"invalid decision {decision!r}; expected one of {sorted(FINAL_DECISIONS)}")
         try:
             pid = self._point_id(rule_id)
+            payload: dict[str, Any] = {
+                "rule_id": rule_id,
+                "decision": decision,
+                "rationale": rationale,
+                "source": source,  # human | analyst_seed
+                "tuned_by": tuned_by,  # actor name ("" = system/seed)
+                "ts": ts or datetime.now(timezone.utc).isoformat(),
+                "type": "tuning",
+            }
+            if fingerprint:
+                payload["fingerprint"] = fingerprint
             self._memory.client.upsert(
                 collection_name=TUNING_COLLECTION,
                 points=[PointStruct(
                     id=pid,
                     vector=[0.0] * 384,
-                    payload={
-                        "rule_id": rule_id,
-                        "decision": decision,
-                        "rationale": rationale,
-                        "source": source,  # human | analyst_seed
-                        "tuned_by": tuned_by,  # actor name ("" = system/seed)
-                        "ts": ts or datetime.now(timezone.utc).isoformat(),
-                        "type": "tuning",
-                    },
+                    payload=payload,
                 )],
             )
             logger.info("tuning write: rule %s -> %s (%s) by %s", rule_id, decision, source, tuned_by or "system")

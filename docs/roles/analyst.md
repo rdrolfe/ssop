@@ -27,18 +27,19 @@ treated differently by each path — the Sep 2026 dpkg flood). Heuristics on
 
 Severity: `level >= settings.high_level (7)` → high (`analyst_tools.py:66-71`).
 
-### 2. Verdict (`analyst_tools.py:87-218`)
+### 2. Verdict (`analyst_tools.py:87-215`)
 In priority order:
 1. **Known-FP rule** (`rule_id in settings.fp_rule_ids`, default `{510}`)
    → `note` (`:102-110`).
 2. **Noise rule** (`rule_id in settings.noise_rules`) → `note` (`:111-117`).
 3. **Tuned rule** (ledger `auto_fp`/`operational`) → `note`, BUT
-   `strong_tp_evidence(alert, category)` (threat-desc token, or level ≥ the
-   per-category threshold for an override-allowed category — config-driven
-   `settings.strong_tp_override_categories` / `category_high_levels`) lifts
-   the tuning → `escalate` with `tuning_override=True` so the tuning itself
-   is re-adjudicated (`:118-164`).
-4. **Escalate decision** (`:152-165`):
+   `tuned_rule_suppresses(tuning, alert, category)` (`tuning_tools.py`) lifts
+   the tuning on a MATERIAL fingerprint delta (threat-desc token appeared,
+   category became attack-class, new attack groups, or level rose) →
+   `escalate` with `tuning_override=True` so the tuning itself is
+   re-adjudicated. Legacy entries without a stored fingerprint fall back to
+   the config-gated `strong_tp_evidence` heuristic (`:118-149`).
+4. **Escalate decision** (`:151-165`):
    ```
    escalate = severity == high
               or (severity == medium AND category in settings.medium_escalate_categories)
