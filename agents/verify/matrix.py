@@ -154,8 +154,25 @@ def main() -> int:
                     print(f"      {c.status:<6} {c.name}: {c.detail}")
 
     summary = report["summary"]
+    # Registry reentrancy gate: the lazy-singleton deadlock that wedged the
+    # router for 19h (Aug 30). Runs in a SUBPROCESS because it resets the
+    # registry singletons — must not clobber the matrix's own clients.
+    reg_ok = True
+    try:
+        import subprocess as _sp
+        rr = _sp.run(
+            [sys.executable, "-m", "verify.test_registry_reentrancy"],
+            capture_output=True, text=True, timeout=60)
+        reg_ok = rr.returncode == 0
+        print("registry reentrancy: " + ("ok" if reg_ok else "FAIL"))
+        if not reg_ok:
+            print(rr.stdout[-500:])
+            print(rr.stderr[-500:])
+    except Exception as e:  # noqa: BLE001 — gate must not crash the matrix
+        print(f"registry reentrancy: ERROR {e}")
+        reg_ok = False
     failed = (summary["failed"] > 0 or summary["blocked"] > 0
-              or (docs_problems and not docs_skip))
+              or (docs_problems and not docs_skip) or not reg_ok)
     return 1 if failed else 0
 
 

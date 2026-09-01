@@ -2,8 +2,11 @@
 Description=SSOP alert router every 3 minutes
 
 [Timer]
-OnCalendar=*:*:0/3
+# every 3 minutes (NOT every 3 seconds — the old `*:*:0/3` normalized to
+# `:00/3` = every 3 seconds, hammering the indexer and wedging the oneshot)
+OnCalendar=*-*-* *:0/3:00
 Persistent=true
+RandomizedDelaySec=15
 
 [Install]
 WantedBy=timers.target

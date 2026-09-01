@@ -14,7 +14,12 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-_lock = threading.Lock()
+# Reentrant lock: lazy singleton builds may themselves trigger nested
+# get_client() calls (SelfHeal.__init__ pulls get_ssh()). With a plain
+# Lock() that re-acquire deadlocks — this wedged the router for 19h on
+# Aug 30 (dispatch_infra -> get_selfheal -> SelfHeal -> get_ssh: same
+# thread re-enters the held lock; the process slept on a futex forever).
+_lock = threading.RLock()
 _clients: dict[str, Any] = {}
 
 # Lazy singletons (built on first access)

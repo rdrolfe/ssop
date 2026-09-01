@@ -9,3 +9,8 @@ User=rdrolfe
 Group=rdrolfe
 ExecStart=/home/rdrolfe/agent-runtime/ssop-router.sh
 Nice=10
+# A hung run must not pin the router forever (it wedged for 19h Aug 30-31).
+# Hard wall-clock cap; on timeout systemd kills the run and the next
+# timer tick proceeds.
+TimeoutStartSec=120
+TimeoutStopSec=15
