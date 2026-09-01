@@ -203,8 +203,16 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
             # alert (thread #1 + #2). Fingerprint-aware when the ledger stores
             # one; legacy entries fall back to the config-gated strong-TP gate.
             _cat = categorize_alert(alert)
-            if tuned_rule_suppresses(tuning, alert, category=_cat)[0]:
+            suppress, _reason = tuned_rule_suppresses(tuning, alert, category=_cat)
+            if suppress:
                 return "operational", None
+            # Material delta on a tuned rule: the override MUST reach a human.
+            # Falling through to the normal heuristics can DROP the override —
+            # a dpkg/syslog rule (2902) with a delta ends up (operational,
+            # None) and never dispatches, so the analyst never sees it. Force
+            # the analyst route so dispatch_security applies the tuning
+            # override and escalates for re-adjudication.
+            return "security", "analyst"
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
         import logging
         logging.getLogger(__name__).warning("tuning lookup failed for %s: %s", rid, e)

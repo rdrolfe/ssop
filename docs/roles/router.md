@@ -13,7 +13,7 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:501`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:509`); a repeat
 within the burst window returns `count > 1`.
 
 ### 2. Classify → (category, role) (`router.py:184-225`)
@@ -35,30 +35,30 @@ In priority order:
    - `suricata` / `ids` → security/analyst
    - `low_diskspace` → infra/infra
    - `syscheck` / `fim` → security/analyst
-5. **Default** → `(operational, None)` (`router.py:231`).
+5. **Default** → `(operational, None)` (`router.py:239`).
 
 ### 3. Dispatch (`router.py:432-456`)
 - `role is None` → `no_dispatch_needed` (log only).
 - `burst_count > 1` → `burst_deduped` — counted, not re-dispatched.
 - else route by role:
 
-**Security → analyst** (`dispatch_security`, `router.py:286-353`):
+**Security → analyst** (`dispatch_security`, `router.py:300-369`):
 - `verdict == escalate` OR `existing_chain` → attach to the existing
-  entity chain (`router.py:298-307`, no re-mint) or mint a case
-  (`router.py:308-321`), then escalate tier-2.
+  entity chain (`router.py:312-321`, no re-mint) or mint a case
+  (`router.py:322-335`), then escalate tier-2.
 - If the analyst recommended a playbook → hand to the responder
-  (`router.py:327-346`).
+  (`router.py:341-350`).
 
-**Pattern → hunt** (`dispatch_pattern`, `router.py:356-410`):
-- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:380-384`,
+**Pattern → hunt** (`dispatch_pattern`, `router.py:370-439`):
+- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:394`,
   `settings.pattern_rate_minutes = 60`) — a repeatedly-firing pattern rule
   (e.g. apparmor DENIED) can't mint a fresh case + ticket every dispatch.
 - runs the matching hunt; if `suspicious` → hunt-level recidivism: attach a
   `pattern_recheck` to an existing OPEN case for that hunt
-  (`router.py:393-404`, same guard `hunt.py` uses), else mint a case +
-  escalate tier-2 when the category is in the attack set (`router.py:385`).
+  (`router.py:407-418`, same guard `hunt.py` uses), else mint a case +
+  escalate tier-2 when the category is in the attack set (`router.py:426`).
 
-**Infra → infra-manager** (`dispatch_infra`, `router.py:249-283`):
+**Infra → infra-manager** (`dispatch_infra`, `router.py:263-299`):
 - `sense → decide → heal` fixable issues; escalate tier-1 anything outside
   the whitelist.
 
