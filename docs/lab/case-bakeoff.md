@@ -81,28 +81,39 @@ the liveness+drift enforcement is paying for itself.
 
 ---
 
-## Scoring axes (the rubric)
+## Scoring axes (the rubric) — SCORED 2026-09-01 (parity reached)
 
 Each axis: how well does the surface communicate the ontology + agent facts
-for the SAME decided incident?
+for the SAME decided incident? Scores 0–2 (absent / partial / faithful),
+computed by `deploy/lab/score_bakeoff.py` from the live capture
+(`capture_bakeoff.py` → `/tmp/bakeoff_capture.json`).
 
 | # | Axis | What we measure | SO native | Wazuh console |
 |---|---|---|---|---|
-| 1 | **Ontology fidelity** | Can an operator see category / verdict / decision-chain in the surface? | ops carry verdict/decision | adjudication field (when in window) |
-| 2 | **Agent-fact transparency** | Are the agent's actual findings visible — evidence count, kill-chain, severity score, recommendation? | comment ops carry evidence+chain+score | investigation object (when in window) |
-| 3 | **Negative-outcome clarity** | Does the surface show WHY an alert was NOT acted on (FP rationale)? | rationale in comment | rationale in adjudication |
-| 4 | **Case compilation** | How does each side assemble one incident from events? (SO: per-op activity log; Wazuh: spine timeline) | per-op log | spine timeline |
-| 5 | **Retention / queryability** | Can an older case be retrieved, or does it age out of view? | **YES — by case id** | **NO — last-50 window** |
-| 6 | **Report readiness** | Can the surface produce the final report deliverable for a larger audience? | **YES — `/report?case_id=&backend=so` compiles the same markdown/HTML from SO's native so-case store** | **YES — `/report?case_id=` renders the compiled report (md + html) from the spine** |
+| 1 | **Ontology fidelity** | Can an operator see category / verdict / decision-chain in the surface? | **2** — verdict+decision in comments; **category present on create op** (after the backfill fix) | **2** — verdict, decision, category, kill-chain all present |
+| 2 | **Agent-fact transparency** | Are the agent's actual findings visible — evidence count, kill-chain, severity score, recommendation? | **2** — evidence sources, chain, severity in comments | **2** — evidence + kill-chain in investigation |
+| 3 | **Negative-outcome clarity** | Does the surface show WHY an alert was NOT acted on (FP rationale)? | **2** — false_positive + rationale in comments | **2** — false_positive + rationale in adjudication |
+| 4 | **Case compilation** | How does each side assemble one incident from events? | **2** — 10 ops, ordered by @timestamp | **2** — 4 timeline events, ordered |
+| 5 | **Retention / queryability** | Can an older case be retrieved, or does it age out of view? | **2** — so-case ops retrievable by id | **2** — `/cases?case_id=` retrieves any case by id (Qdrant) |
+| 6 | **Report readiness** | Can the surface produce the final report deliverable? | **2** — `/report?case_id=&backend=so` renders the compiled report (1663 chars captured) | **2** — `/report?case_id=` renders md+html from spine (1888 chars captured) |
 
-Axes 1–4 are scored on a rubric (0–2: absent / partial / faithful) from the
-captured representations. Axis 5 is decided by the capture (SO yes, console
-no) — and fixed: `/cases?case_id=` now retrieves any spine case by id
-(adjudicate_api + console_proxy, both route on path-only and forward the
-query string). Axis 6 is built — and it is a **parity** deliverable: the SAME
-report compiler (`agents/tools/report_gen.py`) renders a decided case from
-either the spine (`backend=spine`, the Wazuh side) or SO's native so-case
-store (`backend=so`), so the two backends can be compared deliverable vs.
+**Totals: SO native 12/12 · Wazuh console 12/12 — PARITY.** The one scored
+gap (axis 1: the SO `so-case` create op carried `category: ""`) is closed:
+`publish_case_so.py` now backfills category from the first timeline verdict
+that carries one (mirroring the console reader — the spine source often
+leaves `source.category` unset on a router dispatch while the analyst verdict
+carries the ontology category). Re-published + re-captured + re-scored:
+SO axis 1 went 1 → 2. Both surfaces now communicate the same ontology facts
+for the same decided incident.
+
+Axes 1–4 are scored on the 0–2 rubric from the captured representations.
+Axis 5 is decided by the capture (SO yes, console no) — and fixed:
+`/cases?case_id=` now retrieves any spine case by id (adjudicate_api +
+console_proxy, both route on path-only and forward the query string).
+Axis 6 is built — and it is a **parity** deliverable: the SAME report
+compiler (`agents/tools/report_gen.py`) renders a decided case from either
+the spine (`backend=spine`, the Wazuh side) or SO's native so-case store
+(`backend=so`), so the two backends can be compared deliverable vs.
 deliverable on the same incident. Plus `/reports?days=N` compiles all decided
 cases in a window into one report for the larger audience (console "Reports"
 button).
@@ -112,13 +123,15 @@ button).
 ## Re-runs
 
 - `publish_case_so.py <case_id>` — map a spine case into SO's `so-case`/`so-casehistory`
-- `capture_bakeoff.py <case_id>` — dump both surfaces to `/tmp/bakeoff_capture.json`
+- `capture_bakeoff.py <case_id>` — dump both surfaces + both backends' reports to `/tmp/bakeoff_capture.json`
+- `score_bakeoff.py [capture_path]` — score all six axes (0–2) from the capture; writes `/tmp/bakeoff_scores.json`
 
 ## Next steps (when you want them)
 
 1. ✅ Fix the console recency window (axis 5) — `/cases?case_id=` retrieves any
    spine case by id; seed case now reachable through API and proxy.
-2. Score axes 1–4 formally from the two captured representations.
+2. ✅ Score axes 1–4 formally from the captured representations (now 1–6, and
+   the scorer is repeatable: `score_bakeoff.py` after any change).
 3. ✅ Design the **final report format** (axis 6) — one compiler, both
    backends: `/report?case_id=` (spine) and `/report?case_id=&backend=so`
    (SO native store) produce the same markdown/HTML deliverable; the console

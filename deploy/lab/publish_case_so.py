@@ -96,13 +96,27 @@ def _so_operations(case):
     """Map the spine case onto SO case operations."""
     ts = case.get("ts") or datetime.now(timezone.utc).isoformat()
     ops = []
+    # Category parity (bake-off axis 1): the spine's source.category is often
+    # unset (router dispatch), but the analyst verdict in the timeline carries
+    # the ontology category — the console reader derives it from there.
+    # Backfill it so the SO create op carries the same category the console
+    # shows, otherwise an SO-side operator sees verdict+decision without the
+    # ontology tie-in.
+    source_cat = (case.get("source") or {}).get("category", "")
+    category = source_cat
+    if not category:
+        for ev in case.get("timeline", []):
+            ev_cat = (ev.get("detail") or {}).get("category")
+            if ev_cat:
+                category = ev_cat
+                break
     # 1. case create
     so_case = {
         "id": case["case_id"],
         "title": case.get("title", ""),
         "status": case.get("status", "new"),
         "description": case.get("title", ""),
-        "category": (case.get("source") or {}).get("category", ""),
+        "category": category,
         "tags": [],
     }
     src = case.get("source") or {}
