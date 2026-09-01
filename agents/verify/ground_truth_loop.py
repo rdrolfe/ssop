@@ -89,7 +89,7 @@ try:
     check("supervisor used the investigation", bool(dec.get("used_investigation")),
           f"used_investigation={dec.get('used_investigation')}")
     # cleanup
-    try: cs.close_case(case["case_id"])
+    try: cs.close_case(case["case_id"], reason="ground-truth loop cleanup")
     except Exception: pass
 except Exception as e:
     check("supervision ran", False, f"ERR: {e}")

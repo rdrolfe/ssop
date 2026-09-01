@@ -14,4 +14,4 @@ for l in tail[:2]:
     print("  ", l[:200])
 found = cs.recent_hunt_cases("recidivism-probe", window_s=3600)
 print("recent_hunt_cases match:", len(found), [r.get("case_id") for r in found])
-cs.close_case(cid)
+cs.close_case(cid, reason="recidivism test cleanup")

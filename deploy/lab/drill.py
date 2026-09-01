@@ -176,7 +176,7 @@ def phase2_ground_truth() -> dict:
         recommend = dec.get("recommended_playbook")
         recommend_ok = bool(recommend)
         try:
-            cs.close_case(case["case_id"])
+            cs.close_case(case["case_id"], reason="drill throwaway case")
         except Exception:
             pass
 

@@ -126,7 +126,7 @@ def main() -> int:
         r = responder_run(alert, case_id=case["case_id"], dry_run=True)
         blocked = r.get("blocked", False)
         print(f"  4. respond: blocked={blocked} (dry-run)")
-        cases.close_case(case["case_id"])
+        cases.close_case(case["case_id"], reason="live spine cleanup")
         print(f"     case {case['case_id']} closed after live run")
 
     print("\n=== LIVE SPINE DONE ===")

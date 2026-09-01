@@ -101,7 +101,7 @@ def main() -> None:
     print(f"  4. respond: blocked={blocked}")
 
     try:
-        cs.close_case(case["case_id"])
+        cs.close_case(case["case_id"], reason="two-backend loop cleanup")
     except Exception:
         pass
 

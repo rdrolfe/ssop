@@ -166,7 +166,16 @@ class CaseStore:
         A first-class lifecycle op (not a deletion): the append-only receipt
         preserves the full history; the working Qdrant store marks it closed
         so it stops matching 'recent open' checks and entity-recidivism.
+
+        REQUIRES a non-blank `reason`: a closed case with no reason is a
+        dead end for post-incident review (writeup audit: 44/47 closed cases
+        had an empty reason). Blank reason raises ValueError — fail loud,
+        not silent, so callers that forget the reason get caught.
         """
+        if not (reason or "").strip():
+            raise ValueError(
+                "close_case requires a non-blank reason (a closed case with "
+                "no reason is a dead end for post-incident review)")
         case = self.get_case(case_id)
         if not case:
             logger.warning("close_case: case %s not found", case_id)
@@ -181,7 +190,7 @@ class CaseStore:
         case.setdefault("timeline", []).append(entry)
         case["updated_ts"] = entry["ts"]
         self._write_both(case, event="case_closed", role=role)
-        logger.info("case closed: %s (%s)", case_id, reason[:60] if reason else "no reason")
+        logger.info("case closed: %s (%s)", case_id, reason[:60])
         return case
 
     def get_case(self, case_id: str) -> dict[str, Any] | None:
