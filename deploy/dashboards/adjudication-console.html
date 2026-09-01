@@ -23,6 +23,8 @@
   .ticket, .case, .tune { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:10px; }
   .ticket .top, .case .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
   .id { font-family:monospace; color:var(--accent); font-size:12px; }
+  .report-link { font-size:11px; color:var(--accent); text-decoration:none; border:1px solid var(--border); border-radius:4px; padding:1px 6px; }
+  .report-link:hover { background:var(--accent); color:#fff; }
   .title { font-weight:600; flex:1; }
   .meta { color:var(--muted); font-size:12px; margin-top:4px; }
   .actions { display:flex; gap:6px; margin-top:10px; }
@@ -178,6 +180,7 @@ function renderCases(view) {
         <span class="badge sev-${sev}">${esc(sev)}</span>
         <span class="title">${esc(c.title || c.case_id)}</span>
         <span class="id">${esc(c.case_id || "")}</span>
+        <a class="report-link" target="_blank" href="/report?case_id=${encodeURIComponent(c.case_id || "")}&format=html">report</a>
       </div>
       <div class="meta">status: ${esc(c.status || "-")} · score: ${esc(inv.severity ?? "-")} · evidence: ${esc(evs.length ?? 0)} sources${adj.decision ? ' · decision: <span class="badge ' + (adj.decision === "approve" ? "approve" : "deny") + '">' + esc(adj.decision) + "</span>" : ""}${resp.blocked !== undefined ? ' · respond blocked: ' + esc(resp.blocked) : ""}</div>
       ${chain.length ? '<div class="chain">' + chain.map(st => '<span>' + esc(st) + '</span>').join("") + '</div>' : ""}

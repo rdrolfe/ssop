@@ -24,7 +24,7 @@ ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
 
 # GET paths proxied 1:1 to the adjudication API (read-through).
-GET_ROUTES = ("/tickets", "/tuning", "/cases", "/health")
+GET_ROUTES = ("/tickets", "/tuning", "/cases", "/report", "/health")
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -53,10 +53,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _proxy_get(self, path):
         # Forward a read path to the adjudication API (server-side, trusted).
+        # JSON responses are re-emitted as JSON; non-JSON (e.g. the markdown
+        # /report deliverable) is passed through with its content type intact.
         try:
             with urllib.request.urlopen(ADJUDICATE_API + path, timeout=15,
                                         context=ssl._create_unverified_context()) as r:
-                self._json(r.status, json.loads(r.read().decode()))
+                body = r.read()
+                ctype = r.headers.get("Content-Type", "")
+                if "application/json" in ctype:
+                    self._json(r.status, json.loads(body.decode()))
+                else:
+                    self.send_response(r.status)
+                    self._cors()
+                    self.send_header("Content-Type", ctype or "application/octet-stream")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
         except urllib.error.HTTPError as e:
             try:
                 self._json(e.code, json.loads(e.read().decode()))

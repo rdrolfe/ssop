@@ -93,11 +93,13 @@ for the SAME decided incident?
 | 3 | **Negative-outcome clarity** | Does the surface show WHY an alert was NOT acted on (FP rationale)? | rationale in comment | rationale in adjudication |
 | 4 | **Case compilation** | How does each side assemble one incident from events? (SO: per-op activity log; Wazuh: spine timeline) | per-op log | spine timeline |
 | 5 | **Retention / queryability** | Can an older case be retrieved, or does it age out of view? | **YES — by case id** | **NO — last-50 window** |
-| 6 | **Report readiness** | Can the surface produce the final report deliverable for a larger audience? | TBD (comments + history, export path unknown) | TBD (HTML view, no export) |
+| 6 | **Report readiness** | Can the surface produce the final report deliverable for a larger audience? | TBD (comments + history, export path unknown) | **YES — `/report?case_id=` renders the compiled report (md + html) from the spine** |
 
 Axes 1–4 are scored on a rubric (0–2: absent / partial / faithful) from the
-captured representations. Axis 5 is already decided by the capture (SO yes,
-console no). Axis 6 is the forward work: designing the report format.
+captured representations. Axis 5 is decided by the capture (SO yes, console
+no) — and fixed: `/cases?case_id=` now retrieves any spine case by id
+(adjudicate_api + console_proxy, both route on path-only and forward the
+query string). Axis 6 is built: the **final report deliverable** (`/report`).
 
 ---
 
@@ -108,10 +110,11 @@ console no). Axis 6 is the forward work: designing the report format.
 
 ## Next steps (when you want them)
 
-1. Fix the console recency window (axis 5) so an old fully-decided case stays
-   reachable — the first parity fix the experiment exposed.
+1. ✅ Fix the console recency window (axis 5) — `/cases?case_id=` retrieves any
+   spine case by id; seed case now reachable through API and proxy.
 2. Score axes 1–4 formally from the two captured representations.
-3. Design the **final report format** (axis 6): the executive deliverable that
-   compiles the investigation framework's outcome for a larger audience.
+3. ✅ Design the **final report format** (axis 6) — `/report?case_id=` renders
+   the executive deliverable (markdown + standalone HTML) compiled from the
+   spine; a `report` link sits on every console case card.
 4. If you can log into the SO SOC console once, capture how it *renders* the
    so-case ops (the true human experience) vs. the console's rendering.
