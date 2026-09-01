@@ -116,6 +116,15 @@ Store is now a single clean set (1 create + 4 comments per index), and the
 SOC renders exactly 1 case. `capture_bakeoff.py`/`score_bakeoff.py` unchanged
 — they read the cleaned shape and still score 12/12 both sides.
 
+**Human-experience verification (2026-09-01, user-confirmed in the SO SOC):**
+the operator logged into the actual Security Onion SOC console and confirmed
+the published case renders as **one coherent case** in the Cases page —
+single row, open status, Comments/History tabs driven by the 5 native
+so-case ops we wrote (create + 4 comments). This closes the final axis-1/2
+slice: the SO human experience is now directly verified, not inferred from
+the ES store — and it matches what our console shows for the same case
+(category, verdict chain, FP rationale all present).
+
 Axes 1–4 are scored on the 0–2 rubric from the captured representations.
 Axis 5 is decided by the capture (SO yes, console no) — and fixed:
 `/cases?case_id=` now retrieves any spine case by id (adjudicate_api +
@@ -149,7 +158,8 @@ button).
    (SO native store) produce the same markdown/HTML deliverable; the console
    adds a "Reports" button for `/reports?days=N` (all decided cases in a
    window).
-4. If you can log into the SO SOC console once, capture how it *renders* the
-   so-case ops (the true human experience) vs. the console's rendering —
-   that's the remaining axis-1/2 "human experience" comparison, and now we
-   have a ready-made `backend=so` report to compare against.
+4. ✅ Capture how the SO SOC console *renders* the so-case ops (the true
+   human experience) — done 2026-09-01: operator confirmed the case renders
+   as one coherent case in the SO Cases page, and it matches our console's
+   rendering of the same decided incident. The bake-off's six axes are all
+   now scored + the human experience directly verified on both sides.
