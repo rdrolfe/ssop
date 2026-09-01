@@ -11,38 +11,46 @@ SIEM — by construction it cannot change infrastructure.
 
 ## Decision flow
 
-### 1. Classify → category + severity (`analyst_tools.py:55-100`)
-Category heuristics on `rule.groups` + description tokens:
-- `authentication` / `authentication_failures` group → **authentication**
-  (`:71-72`)
+### 1. Classify → category + severity (`analyst_tools.py:55-85`)
+Category is the SINGLE shared source of truth — `tools/ontology.py`
+`categorize_alert()` — used identically by the analyst verdict and the router
+dispatch (no local re-derivation; that drift is what let a tuned-FP rule be
+treated differently by each path — the Sep 2026 dpkg flood). Heuristics on
+`rule.groups` + description tokens (`ontology.py:36-62`):
+- `authentication` / `authentication_failed` / `authentication_failures`
+  group → **authentication**
 - threat-class description token (`et malware`, `et c2`, `malicious`, …)
   or `attack`/`malware`/`threat`/`exfiltration`/`c2` group → **threat**
-  (`:73-77`)
-- `rootcheck`/`syscheck`/`pci_dss` → **integrity** (`:78-80`)
-- `policy`/`vulnerability` → **compliance** (`:81-82`)
-- else → **operational** (`:83`)
+- `rootcheck`/`syscheck`/`pci_dss` → **integrity**
+- `policy`/`vulnerability` → **compliance**
+- else → **operational**
 
-Severity: `level >= settings.high_level (7)` → high (`:84`).
+Severity: `level >= settings.high_level (7)` → high (`analyst_tools.py:66-71`).
 
-### 2. Verdict (`analyst_tools.py:103-234`)
+### 2. Verdict (`analyst_tools.py:87-218`)
 In priority order:
 1. **Known-FP rule** (`rule_id in settings.fp_rule_ids`, default `{510}`)
-   → `note` (`:117-124`).
-2. **Noise rule** (`rule_id in settings.noise_rules`) → `note` (`:125-133`).
+   → `note` (`:102-110`).
+2. **Noise rule** (`rule_id in settings.noise_rules`) → `note` (`:111-117`).
 3. **Tuned rule** (ledger `auto_fp`/`operational`) → `note`, BUT
-   `strong_tp_evidence(alert)` (threat-desc token or level ≥ high) lifts the
-   tuning → `escalate` with `tuning_override=True` so the tuning itself is
-   re-adjudicated (`:137-169`).
-4. **Escalate decision** (`:170-210`):
+   `strong_tp_evidence(alert, category)` (threat-desc token, or level ≥ the
+   per-category threshold for an override-allowed category — config-driven
+   `settings.strong_tp_override_categories` / `category_high_levels`) lifts
+   the tuning → `escalate` with `tuning_override=True` so the tuning itself
+   is re-adjudicated (`:118-164`).
+4. **Escalate decision** (`:152-165`):
    ```
    escalate = severity == high
               or (severity == medium AND category in settings.medium_escalate_categories)
+              or (category == threat AND threat-desc token)   # ET malware at low lvl
    ```
    `medium_escalate_categories = ("authentication", "threat")`
    (`config.py:111`).
 5. **Entity recidivism** — if the same `(srcip, dstip)` pair has a recent
    open case (`case_tools.recent_entity_cases`), the verdict surfaces
-   `existing_chain` so the router ATTACHES instead of re-minting (`:195`).
+   `existing_chain` so the router ATTACHES instead of re-minting (`:166-181`).
+6. **SOAR enrichment** — matching playbook attached for the responder
+   (`:182-193`); MITRE ATT&CK techniques surfaced (`:198-203`).
 
 ### 3. Write path (`analyst.py::process_alert`)
 On escalate: mint/attach case, append verdict + investigation events,

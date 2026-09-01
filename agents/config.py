@@ -50,6 +50,27 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _env_tuple(name: str, default: str = "") -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    return tuple(x.strip() for x in raw.split(",") if x.strip())
+
+
+def _env_dict(name: str, default: str = "") -> dict[str, int]:
+    """Parse `K1=V1,K2=V2` (int values) from env; empty -> {}."""
+    raw = os.getenv(name, default)
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        try:
+            out[k.strip()] = int(v.strip())
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 # ---- runtime paths (the agent-runtime directory) --------------------------
 
 RUNTIME_DIR = Path(_env("SSOP_RUNTIME_DIR", str(Path.home() / "agent-runtime")))
@@ -121,6 +142,19 @@ class Settings:
     pattern_rate_minutes: int = _env_int("ROUTER_PATTERN_RATE_MINUTES", 60)
     noise_rules: frozenset[str] = frozenset(_env("ROUTER_NOISE_RULES", "5501,5502,5715").split(","))
     default_category: str = _env("ROUTER_DEFAULT_CATEGORY", "operational")
+
+    # --- strong-TP override policy (config-driven, ops-tunable) ---
+    # Categories allowed to lift a human's auto_fp tuning on the severity leg
+    # of strong_tp_evidence. Threat-description tokens override regardless of
+    # category (the clear-exception path). Tuning this list is an OPS action,
+    # not a code change.
+    strong_tp_override_categories: tuple[str, ...] = _env_tuple(
+        "STRONG_TP_OVERRIDE_CATEGORIES", "threat,authentication,security")
+    # Per-category high-level threshold for the severity leg. An integrity
+    # checksum at level 7 is routine maintenance, not a strong TP; a threat
+    # at level 7 is. Ops can raise the bar per category without code.
+    category_high_levels: dict[str, int] = field(default_factory=lambda: _env_dict(
+        "CATEGORY_HIGH_LEVELS", "threat=7,authentication=7,security=7,integrity=12,compliance=12,operational=12"))
 
     # --- data-driven definitions (hunt library + self-heal checks) ---
     hunts_dir: Path = Path(_env("HUNTS_DIR", str(Path(__file__).resolve().parent / "hunts")))

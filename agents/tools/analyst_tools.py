@@ -59,28 +59,12 @@ class AnalystClient:
         groups = rule.get("groups", [])
         description = rule.get("description", "")
         agent = alert.get("agent", {})
-        groups_l = [g.lower() for g in groups]
-        desc_l = description.lower()
-        # Suricata/ET signatures carry the threat class in the DESCRIPTION
-        # (rule.groups is just ['ids','suricata']), so also signal on desc.
-        _threat_desc = any(k in desc_l for k in (
-            "et malware", "et trojan", "et rat", "et c2", "et botnet",
-            "malicious", "malware dns", "cnc", "command and control",
-            "mimikatz", "meterpreter", "cobalt strike"))
-        # Category heuristics (extensible — the ontology's job)
-        if "authentication" in groups_l or "authentication_failures" in groups_l:
-            category = "authentication"
-        elif (_threat_desc or "attack" in groups_l or "malware" in groups_l
-              or "virustotal" in groups_l or "threat" in groups_l
-              or "exfiltration" in groups_l or "c2" in groups_l
-              or "command_and_control" in groups_l):
-            category = "threat"
-        elif "rootcheck" in groups_l or "syscheck" in groups_l or "pci_dss" in groups_l:
-            category = "integrity"
-        elif "policy" in groups_l or "vulnerability" in groups_l:
-            category = "compliance"
-        else:
-            category = "operational"
+        # Category is the SINGLE shared source of truth (tools.ontology) —
+        # the router and the analyst must never re-derive it independently
+        # (that drift is what let a tuned-FP rule be treated differently by
+        # each path — the Sep 2026 dpkg flood).
+        from tools.ontology import categorize_alert
+        category = categorize_alert(alert)
         if level >= self.high_level:
             severity = "high"
         elif level >= self.medium_level:
@@ -107,12 +91,12 @@ class AnalystClient:
         graduate this to a model-assisted triage with RAG context later.
         """
         c = self.classify(alert)
-        # Recompute the description threat signal (classify's is scoped locally)
+        # Recompute the description threat signal from the SHARED token list
+        # (tools.ontology — single source; the classifier + tuning override
+        # read the same tokens).
+        from tools.ontology import THREAT_DESC_TOKENS
         desc_l = str((alert.get("rule") or {}).get("description", "")).lower()
-        _threat_desc = any(k in desc_l for k in (
-            "et malware", "et trojan", "et rat", "et c2", "et botnet",
-            "malicious", "malware dns", "cnc", "command and control",
-            "mimikatz", "meterpreter", "cobalt strike"))
+        _threat_desc = any(k in desc_l for k in THREAT_DESC_TOKENS)
         # False-positive classes never auto-escalate (config-driven)
         rule_id = str((alert.get("rule") or {}).get("id", ""))
         if rule_id in settings.fp_rule_ids:

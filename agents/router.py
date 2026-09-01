@@ -195,16 +195,16 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
     # tuning override (a tuned-FP rule must not blind the SOC to a real TP).
     try:
         from tools.tuning_tools import TuningLedger, strong_tp_evidence
+        from tools.ontology import categorize_alert
         tuning = TuningLedger().lookup(rid)
         if tuning and tuning.get("decision") in ("auto_fp", "operational"):
-            # Category-gated override: the severity leg of strong_tp_evidence
-            # only counts for attack classes. syscheck/dpkg (2902/2904/550)
-            # classify as security in the router taxonomy but are routine
-            # maintenance — pass the narrowed attack_class so their static
-            # level-7 does NOT lift the human's auto_fp tuning.
-            attack_class = any(g in ("suricata", "ids", "authentication_failed",
-                                     "invalid_login") for g in groups)
-            if not strong_tp_evidence(alert, category="security" if attack_class else "operational"):
+            # Category from the SHARED ontology categorizer — the same source
+            # the analyst verdict uses, so both paths reach the identical
+            # override decision on the same alert (single source of truth;
+            # the old ad-hoc attack_class narrowing here could diverge from
+            # the analyst). The severity leg only lifts tuning for categories
+            # in settings.strong_tp_override_categories.
+            if not strong_tp_evidence(alert, category=categorize_alert(alert)):
                 return "operational", None
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
         import logging

@@ -28,15 +28,10 @@ TUNING_COLLECTION = "tuning"
 FINAL_DECISIONS = {"auto_fp", "operational", "escalate"}
 
 # Threat-class description tokens: a tuned-FP rule must not silently swallow
-# a strong true-positive signal. If a tuned rule fires carrying one of these
-# (or at high severity), the tuning is overridden and the alert escalates to
-# a human with a tuning_override flag (re-adjudication), instead of being
-# auto-suppressed. Single source of truth for the analyst + router.
-THREAT_DESC_TOKENS = (
-    "et malware", "et trojan", "et rat", "et c2", "et botnet",
-    "malicious", "malware dns", "cnc", "command and control",
-    "mimikatz", "meterpreter", "cobalt strike",
-)
+# a strong true-positive signal. Single source of truth lives in
+# tools.ontology (shared with the analyst + router classifiers) — this
+# module imports it rather than redefining.
+from tools.ontology import THREAT_DESC_TOKENS  # noqa: E402
 
 
 def strong_tp_evidence(alert: dict, category: str | None = None) -> bool:
@@ -46,33 +41,33 @@ def strong_tp_evidence(alert: dict, category: str | None = None) -> bool:
     shows a threat-class description token, the suppression is lifted
     (evidence overrides tuning — the "clear exception").
 
-    The severity leg (level >= high_level) ONLY counts for genuine
-    security/threat categories. Wazuh rule `level` is a STATIC property of
-    the rule, not per-alert evidence — dpkg installs (2902), integrity
-    checksums (550), and package-manager events (2904/533) are all level 7
-    by rule definition. Treating their static level as strong TP evidence
-    defeats the human's auto_fp tuning on those rules and firehoses routine
-    maintenance into the queue. Severity only lifts tuning when the alert is
-    actually threat/authentication-class.
+    The severity leg (level >= per-category threshold) ONLY counts for
+    categories in settings.strong_tp_override_categories (config-driven —
+    default threat/authentication/security). Wazuh rule `level` is a STATIC
+    property of the rule, not per-alert evidence — dpkg installs (2902),
+    integrity checksums (550), and package-manager events (2904/533) are all
+    level 7 by rule definition. Treating their static level as strong TP
+    evidence defeats the human's auto_fp tuning on those rules and firehoses
+    routine maintenance into the queue. The per-category threshold
+    (settings.category_high_levels) makes that tunable per category without
+    code. When category is None (legacy caller), do NOT lift on severity —
+    we can't prove it's attack class, and lifting on an unknown category
+    reintroduces the flood. Only the description-token leg above overrides.
     """
     rule = alert.get("rule") or {}
     desc = str(rule.get("description", "")).lower()
     if any(t in desc for t in THREAT_DESC_TOKENS):
         return True
-    # Severity leg — only for genuine attack categories. Accept either the
-    # analyst taxonomy (threat/authentication) or the router taxonomy
-    # (security). Integrity/compliance/operational at a static high level is
-    # routine maintenance, not a strong TP. When category is None (legacy
-    # caller), do NOT lift on severity — we can't prove it's attack class,
-    # and lifting on an unknown category reintroduces the flood. Only the
-    # description-token leg above overrides in that case.
-    if category not in ("threat", "authentication", "security"):
+    # Severity leg — config-driven allowlist (which categories may lift on
+    # severity) + config-driven per-category threshold.
+    if category not in settings.strong_tp_override_categories:
         return False
     try:
         level = int(rule.get("level", 0))
     except (TypeError, ValueError):
         level = 0
-    return level >= settings.high_level
+    threshold = settings.category_high_levels.get(category, settings.high_level)
+    return level >= threshold
 
 
 class TuningError(RuntimeError):
