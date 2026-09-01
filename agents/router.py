@@ -372,9 +372,35 @@ def dispatch_pattern(alert: dict[str, Any]) -> dict[str, Any]:
             hunt_id = "rootcheck-anomalies"
         else:
             hunt_id = "auth-success-from-unusual-src"
+        # Rate limit the hunt BEFORE running it. The old code checked
+        # pattern_due() in run() AFTER dispatch had already executed the
+        # hunt and escalated — so the rate limit never gated anything, and
+        # a repeatedly-firing pattern rule (e.g. apparmor DENIED, which
+        # floods) minted a fresh case + tier-2 ticket every dispatch.
+        if not pattern_due(hunt_id, datetime.now(timezone.utc).isoformat()):
+            result["action"] = "hunt_rate_limited"
+            result["hunt_id"] = hunt_id
+            result["reason"] = f"{hunt_id} ran recently (pattern rate-limit)"
+            return result
         r = hunter.run_hunt(hunt_id, days=7)
         result["hunt_id"] = hunt_id
         if r.get("finding") == "suspicious":
+            # Hunt-level recidivism: a persistent finding ATTACHES a recheck
+            # to an existing OPEN case for this hunt (same guard hunt.py
+            # uses) — never re-mint + re-escalate the same signal every
+            # dispatch. Without this, the once-per-hour rate-limited hunt
+            # still minted a fresh case + tier-2 ticket each time.
+            existing = cases.recent_hunt_cases(hunt_id, window_s=30 * 86400)
+            if existing:
+                cid = existing[0]["case_id"]
+                cases.append_event(cid, "router", "pattern_recheck", {
+                    "finding": r["finding"], "summary": r.get("summary", ""), "hunt_id": hunt_id,
+                })
+                result["case_id"] = cid
+                result["attached"] = "true"
+                result["finding"] = r["finding"]
+                result["action"] = "pattern_attached_recheck"
+                return result
             case = cases.open_case(
                 source={"hunt_id": hunt_id, "trigger_alert": rid, "finding": r["finding"]},
                 title=f"[ROUTER] PATTERN: {name[:50]}",
@@ -470,10 +496,6 @@ def run(limit: int = 50, dry_run: bool = False) -> dict[str, Any]:
             burst = cursor.burst_count(burst_key, ts)
             if not dry_run:
                 result = dispatch(source, burst_count=burst)
-                if result.get("role") == "hunt" and result.get("dispatch", {}).get("action", "").startswith("dispatched_to"):
-                    hunt_id = result.get("dispatch", {}).get("hunt_id") or "apparmor-denials"
-                    if not pattern_due(hunt_id, ts):
-                        result["dispatch"] = {"action": "hunt_rate_limited", "reason": f"{hunt_id} ran recently"}
             else:
                 result = {"alert_id": alert_id, "category": classify(source)[0], "role": classify(source)[1],
                           "burst": burst, "dispatch": {"action": "dry_run_skip"}}

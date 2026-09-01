@@ -13,7 +13,7 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:469-470`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:495`); a repeat
 within the burst window returns `count > 1`.
 
 ### 2. Classify → (category, role) (`router.py:184-225`)
@@ -47,11 +47,14 @@ In priority order:
 - If the analyst recommended a playbook → hand to the responder
   (`router.py:327-346`).
 
-**Pattern → hunt** (`dispatch_pattern`, `router.py:356-397`):
-- runs the matching hunt; if `suspicious` → case + escalate tier-2 when the
-  category is in the attack set (`router.py:385`).
-- rate-limited by `pattern_due` (`router.py:430-440`,
-  `settings.pattern_rate_minutes = 60`).
+**Pattern → hunt** (`dispatch_pattern`, `router.py:356-410`):
+- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:380-384`,
+  `settings.pattern_rate_minutes = 60`) — a repeatedly-firing pattern rule
+  (e.g. apparmor DENIED) can't mint a fresh case + ticket every dispatch.
+- runs the matching hunt; if `suspicious` → hunt-level recidivism: attach a
+  `pattern_recheck` to an existing OPEN case for that hunt
+  (`router.py:393-404`, same guard `hunt.py` uses), else mint a case +
+  escalate tier-2 when the category is in the attack set (`router.py:385`).
 
 **Infra → infra-manager** (`dispatch_infra`, `router.py:249-283`):
 - `sense → decide → heal` fixable issues; escalate tier-1 anything outside
