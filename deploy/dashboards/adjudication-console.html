@@ -182,6 +182,7 @@ function renderCases(view) {
         <span class="title">${esc(c.title || c.case_id)}</span>
         <span class="id">${esc(c.case_id || "")}</span>
         <a class="report-link" target="_blank" href="/report?case_id=${encodeURIComponent(c.case_id || "")}&format=html">report</a>
+        <a class="report-link" target="_blank" href="/advisory?case_id=${encodeURIComponent(c.case_id || "")}&format=html">advisory</a>
       </div>
       <div class="meta">status: ${esc(c.status || "-")} · score: ${esc(inv.severity ?? "-")} · evidence: ${esc(evs.length ?? 0)} sources${adj.decision ? ' · decision: <span class="badge ' + (adj.decision === "approve" ? "approve" : "deny") + '">' + esc(adj.decision) + "</span>" : ""}${resp.blocked !== undefined ? ' · respond blocked: ' + esc(resp.blocked) : ""}</div>
       ${chain.length ? '<div class="chain">' + chain.map(st => '<span>' + esc(st) + '</span>').join("") + '</div>' : ""}

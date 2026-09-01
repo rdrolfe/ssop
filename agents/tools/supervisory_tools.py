@@ -149,6 +149,48 @@ class SupervisoryClient:
         self._cases._write_both(case, event="adjudication", role="supervisory")
         return case
 
+def compose_rationale(inv: dict[str, Any] | None, decision: str) -> str:
+    """Compose a human-actionable adjudication rationale from what the case
+    actually holds — never a hollow "investigation: ; ...".
+
+    The writeup-quality fix: the old template interpolated the hypothesis
+    verbatim, so a case whose investigation lacked `hypothesis` (e.g. the
+    drill path, which never wrote it) produced "investigation: ; 3 evidence
+    sources, score 9.35 (high)" — a broken sentence a human can't act on.
+    This builds the rationale from entity -> kill-chain -> evidence sources
+    -> score, with graceful fallback when fields are absent.
+
+    Parameters mirror the investigation detail on the case timeline.
+    """
+    if not inv:
+        return "no investigation on case — adjudicating on title only"
+    severity = inv.get("severity", 0)
+    sev_label = inv.get("severity_label", "low")
+    chain = inv.get("kill_chain", [])
+    evidence = inv.get("evidence", [])
+    ev_count = len(evidence) or inv.get("evidence_count", 0)
+    entity = inv.get("entity") or inv.get("entities") or ""
+    hypothesis = (inv.get("hypothesis") or "").strip()
+
+    # Story-first: what engaged, on which stages, backed by what volume.
+    parts = []
+    if hypothesis:
+        parts.append(hypothesis[:180])
+    else:
+        story = []
+        if entity:
+            story.append(f"entity {entity}")
+        if chain:
+            story.append("chain: " + " -> ".join(str(s) for s in chain[:4]))
+        elif evidence:
+            srcs = sorted({e.get("source", "?") for e in evidence})
+            story.append(f"sources: {', '.join(srcs)}")
+        if story:
+            parts.append("investigation engaged " + "; ".join(story))
+    parts.append(f"{ev_count} evidence source(s), score {severity} ({sev_label})")
+    return f"{decision}: " + " — ".join(parts)
+
+
     def adjudicate_with_investigation(self, case_id: str) -> dict[str, Any]:
         """Evidence-aware adjudication: use the case's investigation.
 
@@ -179,12 +221,9 @@ class SupervisoryClient:
         # Decision policy: high severity OR (medium + 2+ kill-chain stages)
         if sev_label == "high" or (sev_label == "medium" and len(chain) >= 2):
             decision = "approve"
-            rationale = (f"investigation: {inv.get('hypothesis','')[:120]}; "
-                         f"{evidence_count} evidence sources, score {severity} ({sev_label})")
         else:
             decision = "deny"
-            rationale = (f"investigation weak: score {severity} ({sev_label}), "
-                         f"{evidence_count} evidence, chain={len(chain)} stage(s)")
+        rationale = compose_rationale(inv, decision)
         # Record the verdict + rationale on the case
         self.case_verdict(case_id, decision, rationale)
         # SOAR handoff: on approve, recommend a matching playbook for the

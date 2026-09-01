@@ -168,7 +168,9 @@ def phase2_ground_truth() -> dict:
             "entity": srcip, "evidence_count": n_ev,
             "kill_chain": ires.get("kill_chain", []),
             "severity": ires.get("severity", 0),
-            "severity_label": sev, "evidence": ires.get("evidence", [])})
+            "severity_label": sev, "evidence": ires.get("evidence", []),
+            "hypothesis": ires.get("hypothesis", ""),
+        })
         dec = sup.adjudicate_with_investigation(case["case_id"])
         supervise_ok = dec["decision"] == "approve"
         recommend = dec.get("recommended_playbook")

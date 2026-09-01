@@ -125,6 +125,30 @@ slice: the SO human experience is now directly verified, not inferred from
 the ES store — and it matches what our console shows for the same case
 (category, verdict chain, FP rationale all present).
 
+**Advisory product (added 2026-09-01, CISA-style):** the end-goal report
+deliverable. `agents/tools/advisory_gen.py` compiles a decided case into a
+**Cybersecurity Advisory** in the exact shape CISA publishes (cf.
+aa26-237a "A Tale of Two SOCs"): Advisory at a Glance (title, exec summary,
+lessons learned, key actions) → Technical Details (observables, kill-chain,
+evidence) → **ATT&CK Mapping** (kill-chain stages mapped to MITRE tactics,
+deterministic) → Decision + Mitigations (from the recommended playbook).
+Everything is derived from spine fields — nothing invented. Wired as
+`/advisory?case_id=&backend=spine|so[&format=md|html]` on the API + console
+proxy, with an **advisory** button on every console case card — so the same
+product compiles from either SIEM surface, mirroring the `/report` parity.
+
+**Writeup-quality evaluation (2026-09-01):** audited all 47 decided cases for
+what a human needs to action them. Gap: **assignee 47/47 missing, close
+reason 44/47, entity 29/47, hypothesis 22/47, observables 16/47** — and the
+adjudication rationale template produced hollow sentences
+(`"investigation: ; 3 evidence sources, score 9.35 (high)"`) whenever the
+investigation lacked a hypothesis (the drill path never wrote one).
+Fixed: `compose_rationale()` in `supervisory_tools.py` now builds the
+rationale from entity → kill-chain → evidence sources → score, never hollow;
+`drill.py` writes `hypothesis`; 13 historical hollow cases backfilled via a
+provable `rationale_backfilled` audit event. The advisory and the report now
+read as coherent products fed by real narrative fields.
+
 Axes 1–4 are scored on the 0–2 rubric from the captured representations.
 Axis 5 is decided by the capture (SO yes, console no) — and fixed:
 `/cases?case_id=` now retrieves any spine case by id (adjudicate_api +

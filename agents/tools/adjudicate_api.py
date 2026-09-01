@@ -313,6 +313,33 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
+            elif path == "/advisory":
+                # CISA-style advisory (the end-goal report product): compiles
+                # a decided case into an executive-facing advisory with
+                # ATT&CK mapping, lessons, and mitigations — derived from the
+                # spine evidence, never invented.
+                #   /advisory?case_id=<id>[&backend=spine|so][&format=md|html]
+                q = parse_qs(urlparse(self.path).query)
+                rid = (q.get("case_id") or [""])[0].strip()
+                fmt = (q.get("format") or ["md"])[0].strip().lower()
+                backend = (q.get("backend") or ["spine"])[0].strip().lower()
+                if not rid:
+                    self._send(400, {"ok": False, "error": "case_id required"})
+                    return
+                try:
+                    from tools.advisory_gen import render_advisory, render_advisory_html
+                    if fmt == "html":
+                        self._send_html(render_advisory_html(rid, backend))
+                    else:
+                        data = render_advisory(rid, backend).encode()
+                        self.send_response(200)
+                        self._cors_headers()
+                        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                except KeyError:
+                    self._send(404, {"ok": False, "error": f"case {rid} not found ({backend} backend)"})
             elif path in ("/", "/console"):
                 # Serve the adjudication console HTML (hosted here so the
                 # Wazuh dashboard can iframe it over HTTP).
