@@ -18,6 +18,7 @@ import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
@@ -70,7 +71,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = self.path.rstrip("/")
+        # Route on the path WITHOUT the query string, but forward the full
+        # path (including ?query) to the backend so ?case_id= survives.
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
         if path in ("/", "/console"):
             try:
                 self._html(CONSOLE_HTML.read_text())
@@ -78,7 +82,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": "console html missing"})
             return
         if path in GET_ROUTES:
-            self._proxy_get(path)
+            self._proxy_get(self.path)
             return
         self._json(404, {"ok": False, "error": f"unknown {path}"})
 

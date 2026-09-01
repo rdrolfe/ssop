@@ -59,10 +59,25 @@ console's `/cases` response: the endpoint returns the **last 50 receipt lines**
    and the SOC UI rendering is unverified (no web-console creds).
 
 2. **The Wazuh console surfaces only recent cases** — the `last 50 receipt
-   lines` window means an older fully-decided case disappears from the human
-   view entirely, even though it's complete in the spine. **That is a real
-   parity gap: the Wazuh-side human cannot see the full case picture for
-   anything but the most recent activity.**
+   lines` window meant an older fully-decided case disappeared from the human
+   view entirely, even though it's complete in the spine. **RESOLVED 2026-09-01:**
+   the console `/cases?case_id=<id>` endpoint now returns ANY case by id from
+   the spine (Qdrant holds all cases; the 50-line receipt window was the
+   artificial limit), including its full timeline. The proxy on `.75` forwards
+   the query param. Verified live: `case-26b166ce32` (Aug 29) is retrievable
+   through `https://192.168.1.75:5602/cases?case_id=case-26b166ce32` with all
+   4 timeline events.
+
+**Bonus finding (the fix exposed a live break):** while testing the case fix,
+the router was discovered flooding the queue with 642 duplicate tickets —
+the 19h deadlock wedge left the cursor's `last_ts` stuck at Aug 22, so the
+router resumed chewing a ~56k-alert backlog 50 per run while the 5000-cap
+`seen_ids` evicted old alert IDs → the same old alerts re-dispatched forever.
+Fixed: `repair_router_cursor.py` fast-forwards the cursor past the backlog
+(verified: only NEW alerts dispatch going forward), `purge_router_flood.py`
+closed the 642 duplicates (no tuning writes). The timer-liveness gate
+(`check_timers.py`) would have caught this class on the next matrix run —
+the liveness+drift enforcement is paying for itself.
 
 ---
 

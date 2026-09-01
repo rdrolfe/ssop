@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 # Explicit .env path — a background/harness process may not inherit the
 # shell's cwd, so never rely on the cwd default.
@@ -165,8 +166,11 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        """GET /health — liveness + open-ticket count. GET /tickets — open tier-2 queue."""
-        path = self.path.rstrip("/")
+        """GET /health — liveness + open-ticket count. GET /tickets — open tier-2 queue.
+        GET /cases[?case_id=id] — recent cases, or ONE case by id."""
+        # Route on the path WITHOUT the query string; handlers that want
+        # query params (e.g. /cases?case_id=) parse self.path themselves.
+        path = urlparse(self.path).path.rstrip("/")
         try:
             if path == "/health":
                 open_t = len(_sup.list_tickets(status="open"))
@@ -188,11 +192,56 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 # (hypothesis, severity, kill_chain, evidence) and the
                 # supervisor's adjudication — the human sees the whole chain
                 # (recognize -> investigate -> adjudicate -> respond).
+                #
+                # Supports ?case_id=<id> to return ONE case by id from the
+                # spine (Qdrant holds all cases; the old code only scanned the
+                # last 50 receipt lines, so an older fully-decided case was
+                # invisible to the human — the bake-off parity finding #2).
+                # Default (no case_id) keeps the recent-cases view.
                 import json as _json
 
                 from tools.case_tools import CaseStore
                 cs = CaseStore()
-                out = []
+                q = parse_qs(urlparse(self.path).query)
+                want_id = (q.get("case_id") or [""])[0].strip()
+
+                def _view(cid: str) -> dict | None:
+                    case = cs.get_case(cid)
+                    if not case:
+                        return None
+                    inv = adj = resp = None
+                    for ev in case.get("timeline", []):
+                        d = ev.get("detail", {})
+                        if ev.get("type") == "investigation":
+                            inv = d
+                        elif ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
+                            adj = d
+                        elif ev.get("role") == "responder":
+                            resp = d
+                    return {
+                        "case_id": cid,
+                        "title": case.get("title", ""),
+                        "status": case.get("status", ""),
+                        "supervisory": case.get("supervisory"),
+                        "investigation": inv,
+                        "adjudication": adj,
+                        "responder": resp,
+                        "observables": case.get("observables", []),
+                        "timeline": [
+                            {"role": e.get("role"), "type": e.get("type"),
+                             "ts": e.get("ts"), "detail": e.get("detail")}
+                            for e in case.get("timeline", [])
+                        ],
+                    }
+
+                out: list[dict] = []
+                if want_id:
+                    v = _view(want_id)
+                    if v is None:
+                        self._send(404, {"ok": False, "error": f"case {want_id} not found in spine"})
+                        return
+                    self._send(200, {"ok": True, "case": v})
+                    return
                 try:
                     with open(cs.cases_file, encoding="utf-8") as f:
                         lines = list(f)[-50:]  # last 50 receipt lines
@@ -205,28 +254,9 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                     except _json.JSONDecodeError:
                         continue
                     cid = rec.get("case_id") or rec.get("id")
-                    case = cs.get_case(cid) if cid else None
-                    if not case:
-                        continue
-                    inv = adj = resp = None
-                    for ev in case.get("timeline", []):
-                        d = ev.get("detail", {})
-                        if ev.get("type") == "investigation":
-                            inv = d
-                        elif ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
-                            adj = d
-                        elif ev.get("role") == "responder":
-                            resp = d
-                    out.append({
-                        "case_id": cid,
-                        "title": case.get("title", ""),
-                        "status": case.get("status", ""),
-                        "supervisory": case.get("supervisory"),
-                        "investigation": inv,
-                        "adjudication": adj,
-                        "responder": resp,
-                        "observables": case.get("observables", []),
-                    })
+                    v = _view(cid) if cid else None
+                    if v:
+                        out.append(v)
                 self._send(200, {"ok": True, "cases": out})
             elif path in ("/", "/console"):
                 # Serve the adjudication console HTML (hosted here so the
