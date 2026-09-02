@@ -171,6 +171,39 @@ cases in a window into one report for the larger audience (console "Reports"
 button).
 
 ---
+## Positive-outcome case — SCORED 2026-09-02 (parity holds both directions)
+
+The seed scores the **negative outcome** (deny/FP). The bake-off is only
+complete if the **positive outcome** (escalate → approve → playbook) holds
+the same parity — that's the second row of the "adaptable to any SOC"
+claim. Gated case: `case-204a8dc4f9` — "[ROUTER] THREAT alert lvl=12 on
+vault-secrets", ET MALWARE DNS tunneling (NIMLOC) from 10.6.6.66,
+escalate → investigate (2 sources, kill-chain, sev high 9.1) → **APPROVE**
+→ responder assigned (block-src-ip). Full chain + consolidated report/
+advisory published to SO native store with per-role identities.
+
+Scored 2026-09-02 from a live capture (`capture_bakeoff.py case-204a8dc4f9`
+→ `score_bakeoff.py`):
+
+| # | Axis | SO native | Wazuh console |
+|---|---|---|---|
+| 1 | Ontology fidelity | **2** — category=threat on create op, verdict+decision in comments | **2** — verdict, decision, category, chain |
+| 2 | Agent-fact transparency | **2** — evidence, kill-chain, severity in comments | **2** — evidence + kill-chain + severity in investigation |
+| 3 | Negative-outcome clarity | **2** — first-pass deny + rationale present (transparency: the approve case honestly carries the earlier deny) | **2** — same, in adjudication events |
+| 4 | Case compilation | **2** — 10 ops, ordered by @timestamp | **2** — 8 timeline events, ordered |
+| 5 | Retention / queryability | **2** — so-case ops retrievable by id | **2** — `/cases?case_id=` retrieves the case |
+| 6 | Report readiness | **2** — `/report?backend=so` renders (1487 chars) | **2** — `/report` renders (2944 chars) |
+
+**Totals: SO native 12/12 · Wazuh console 12/12 — PARITY on the positive
+outcome.** Both surfaces communicate the ontology + decision chain for an
+*approved* incident exactly as they do for the denied one.
+
+**Gate (added 2026-09-02):** `agents/verify/check_bakeoff.py` now runs the
+capture + score for BOTH cases (`case-26b166ce32` seed + `case-204a8dc4f9`
+positive) and asserts 12/12 on each, every matrix run — parity is enforced
+in both outcome directions, fail-closed.
+
+---
 
 ## Re-runs
 
