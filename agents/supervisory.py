@@ -110,6 +110,14 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
                     ev["recommended_playbook"] = dec["recommended_playbook"]
                     lines.append(f"      -> playbook: {dec['recommended_playbook']}")
                 cases.append_event(case_id, "supervisory", "adjudication", ev)
+                # Attach the generated report + advisory INTO the case on
+                # the SO surface (the meatsuit-facing report). Best-effort —
+                # never breaks the timer loop.
+                try:
+                    from tools.attach_case_report import attach_case_artifacts
+                    attach_case_artifacts(case_id)
+                except Exception:  # noqa: BLE001
+                    logger.warning("report attach skipped in timer loop for %s", case_id)
         state["result"] = "\n".join(lines)
         return state
     except Exception as e:

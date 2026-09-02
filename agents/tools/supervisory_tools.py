@@ -191,6 +191,14 @@ class SupervisoryClient:
             "detail": {"decision": decision, "rationale": rationale},
         })
         self._cases._write_both(case, event="adjudication", role="supervisory")
+        # Attach the generated report + advisory INTO the case on the SO
+        # surface (meatsuit sees the full report as part of the case, not a
+        # separate link). Best-effort — never breaks adjudication.
+        try:
+            from tools.attach_case_report import attach_case_artifacts
+            attach_case_artifacts(case_id)
+        except Exception:  # noqa: BLE001 — attach must never break adjudication
+            logger.warning("report attach skipped after case_verdict %s", case_id)
         return case
 
     def adjudicate_with_investigation(self, case_id: str) -> dict[str, Any]:

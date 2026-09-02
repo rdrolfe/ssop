@@ -453,6 +453,11 @@ def render_so_case_report(case_id: str) -> str:
         s = h["_source"]
         op = s.get("so_operation")
         rel = s.get("so_related") or {}
+        # Skip the attached report/advisory artifact ops (role=report) —
+        # they ARE the deliverable, not decision-chain timeline events.
+        # Without this the report would render itself inside itself.
+        if rel.get("role") == "report":
+            continue
         sc = s.get("so_case") or {}
         ts = s.get("@timestamp") or case["ts"]
         if op == "create":
