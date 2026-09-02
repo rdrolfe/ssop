@@ -51,6 +51,14 @@
   .ev.override-note { border-left-color:var(--accent); color:var(--accent); font-weight:600; }
   details.case-report { margin-top:8px; border:1px solid var(--border); border-radius:6px; }
   details.case-report summary { cursor:pointer; padding:6px 10px; font-size:12px; color:var(--accent); user-select:none; }
+  details.case-thread { margin-top:8px; border:1px solid var(--border); border-radius:6px; }
+  details.case-thread summary { cursor:pointer; padding:6px 10px; font-size:12px; color:var(--accent); user-select:none; }
+  .thread { padding:8px 10px; background:#1b1b1b; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:8px; max-height:340px; overflow-y:auto; }
+  .tstep { display:flex; gap:8px; align-items:flex-start; font-size:12px; }
+  .tstep .tauth { min-width:86px; font-weight:700; font-size:11px; color:var(--accent); white-space:nowrap; }
+  .tstep .tmeta { min-width:112px; color:var(--muted); font-size:11px; font-family:monospace; white-space:nowrap; }
+  .tstep .ttext { color:var(--fg); line-height:1.45; word-break:break-word; }
+  .tstep .ttext .tlbl { color:var(--muted); }
   .report-body { padding:8px; background:#1b1b1b; border-top:1px solid var(--border); }
   .report-frame { width:100%; height:420px; border:0; border-radius:4px; background:#fff; margin-bottom:8px; }
   .rationale { font-size:12px; margin-top:6px; color:var(--fg); background:#262626; border-radius:6px; padding:8px; }
@@ -171,6 +179,48 @@ function renderTickets(view) {
   });
 }
 
+function threadLine(ev) {
+  const d = ev.detail || {};
+  const t = ev.type || "";
+  const ts = (ev.ts || "").replace("T", " ").slice(0, 19);
+  const auth = roleAuthor(ev.role);
+  switch (t) {
+    case "investigation":
+      return { a: auth, ts, html: `<span class="tlbl">investigation</span> — ${esc(d.hypothesis || "")} <span class="tlbl">· ${d.evidence_count ?? (d.evidence||[]).length} sources · sev ${d.severity_label||""} (${d.severity??""})</span>` };
+    case "verdict":
+      return { a: auth, ts, html: `<span class="tlbl">verdict</span> — <strong>${esc(d.verdict || d.decision || "")}</strong> ${d.level ? "<span class='tlbl'>lvl " + esc(d.level) + "</span>" : ""} ${d.category ? "<span class='tlbl'>" + esc(d.category) + "</span>" : ""}` };
+    case "adjudication":
+      return { a: auth, ts, html: `<span class="tlbl">adjudication</span> — <strong>${esc((d.decision||"").toUpperCase())}</strong> ${d.rationale ? "— " + esc(d.rationale) : ""}` };
+    case "finding":
+      return { a: auth, ts, html: `<span class="tlbl">finding</span> — ${esc(d.finding||"")} <span class="tlbl">(conf ${esc(d.confidence||"")})</span> ${d.summary ? esc(d.summary).slice(0,140) : ""}` };
+    case "assigned":
+      return { a: auth, ts, html: `<span class="tlbl">assigned</span> — ${esc(d.assignee||"")}${d.note ? " (" + esc(d.note) + ")" : ""}` };
+    case "escalated":
+      return { a: auth, ts, html: `<span class="tlbl">escalated</span> — ${esc(d.finding||"")} ${esc(d.hunt_id||"")}` };
+    case "case_closed":
+    case "close":
+      return { a: auth, ts, html: `<span class="tlbl">closed</span> — ${esc(d.reason || "")}` };
+    case "dispatch":
+      return { a: auth, ts, html: `<span class="tlbl">routed</span> — ${esc(d.category || "")} ${d.level ? "lvl " + esc(d.level) : ""}` };
+    default:
+      return { a: auth, ts, html: `<span class="tlbl">${esc(t||"event")}</span> — ${esc(JSON.stringify(d).slice(0,140))}` };
+  }
+}
+
+function roleAuthor(role) {
+  const m = { analyst: "John Q Analyst", supervisory: "John Q Supervisor", responder: "John Q Responder", hunt: "John Q Hunt", router: "automation", "case-spine": "automation", infra: "automation" };
+  return m[role] || esc(role || "?");
+}
+
+function renderThread(c) {
+  const tl = c.timeline || [];
+  if (!tl.length) return '<div class="empty">No timeline events.</div>';
+  return '<div class="thread">' + tl.map(ev => {
+    const l = threadLine(ev);
+    return `<div class="tstep"><span class="tauth">${esc(l.a)}</span><span class="tmeta">${esc(l.ts)}</span><span class="ttext">${l.html}</span></div>`;
+  }).join("") + '</div>';
+}
+
 function renderCases(view) {
   const hits = data.cases.filter(c =>
     matches((c.title||"") + " " + (c.case_id||"") + " " + (c.observables||[]).join(" ")));
@@ -198,6 +248,10 @@ function renderCases(view) {
       ${inv.hypothesis ? '<div class="rationale">' + esc(inv.hypothesis) + '</div>' : ""}
       ${adj.rationale ? '<div class="ev"><span class="src">supervisor</span>: ' + esc(adj.rationale) + '</div>' : ""}
       ${evs.length ? '<div class="ev"><span class="src">evidence</span>: ' + evs.map(e => esc((e.label || e.source || "?") + "×" + (e.count ?? "?"))).join(" · ") + '</div>' : ""}
+      <details class="case-thread">
+        <summary>🧵 decision thread (${esc((c.timeline||[]).length)} events)</summary>
+        ${renderThread(c)}
+      </details>
       <details class="case-report" data-cid="${esc(c.case_id || "")}">
         <summary>📄 report + advisory (inline)</summary>
         <div class="report-body">
