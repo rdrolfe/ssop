@@ -125,9 +125,38 @@ def publish_artifacts_to_so(case_id: str) -> bool:
     import datetime as _dt
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat()
     create_id = _create_id(case_id)
+
+    # ONE consolidated closing comment: case-outcome header -> report ->
+    # advisory. Two separate blobs back-to-back read as fragmentation; a
+    # single final package ties the thread off (the header states the
+    # decision, then the full report + advisory follow).
+    from tools.case_tools import CaseStore
+    _case = CaseStore().get_case(case_id) or {}
+    _sup = _case.get("supervisory") or {}
+    _decision = (_sup.get("decision") or "").upper()
+    _rationale = (_sup.get("rationale") or "").strip()
+    if not _decision:
+        # verdict may ride the timeline (hunt/router cases): adjudication or
+        # verdict event on a supervisory role, newest first — same fallback
+        # the report reader uses.
+        for ev in reversed(_case.get("timeline") or []):
+            if ev.get("role") != "supervisory":
+                continue
+            _d = ev.get("detail") or {}
+            if ev.get("type") in ("adjudication", "verdict"):
+                _decision = (_d.get("decision") or _d.get("verdict") or "").upper()
+                if not _rationale:
+                    _rationale = (_d.get("rationale") or "").strip()
+                break
+    _decision = _decision or "UNDER REVIEW"
+    header = (
+        f"## Case Outcome — **{_decision}**\n\n"
+        f"{_rationale}\n\n"
+        "---\n\n"
+    )
+    combined = header + report_md + "\n\n---\n\n" + advisory_md
     ops = [
-        ("report", _comment_op(create_id, report_md, ts, _REPORT_REL)),
-        ("advisory", _comment_op(create_id, advisory_md, ts, _ADVISORY_REL)),
+        ("report", _comment_op(create_id, combined, ts, _REPORT_REL)),
     ]
     bulk: list[dict[str, Any]] = []
     for kind, op in ops:
