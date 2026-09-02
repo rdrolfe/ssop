@@ -55,14 +55,34 @@ def _killchain_tactic(stage: str) -> str:
     return _KILLCHAIN_TO_TACTIC.get(key, "Other")
 
 
+def _decision(case: dict[str, Any]) -> tuple[str, str]:
+    """Resolve the supervisory decision + rationale, falling back to the
+    timeline when the verdict rides an event instead of the top-level
+    `supervisory` block (hunt findings and router-dispatched cases). The
+    report already scans the timeline; the advisory must not report
+    "under review" for a human-denied case."""
+    sup = case.get("supervisory") or {}
+    decision = sup.get("decision") or ""
+    rationale = (sup.get("rationale") or "").strip()
+    if not decision:
+        for ev in reversed(case.get("timeline", [])):
+            if ev.get("role") != "supervisory":
+                continue
+            d = ev.get("detail") or {}
+            if ev.get("type") in ("adjudication", "verdict"):
+                decision = d.get("decision") or d.get("verdict") or ""
+                if not rationale:
+                    rationale = (d.get("rationale") or "").strip()
+                break
+    return (decision or "under review"), rationale
+
+
 def _exec_summary(case: dict[str, Any]) -> str:
     """One-paragraph summary from the spine (status, trigger, decision)."""
     src = case.get("source") or {}
-    sup = case.get("supervisory") or {}
     what = (src.get("rule_desc") or "").strip() or f"hunt {src.get('hunt_id')}" or "an incident"
     status = case.get("status", "open")
-    decision = sup.get("decision", "under review")
-    rationale = (sup.get("rationale") or "").strip()
+    decision, rationale = _decision(case)
     chain = []
     for ev in case.get("timeline", []):
         kc = (ev.get("detail") or {}).get("kill_chain")
@@ -82,13 +102,12 @@ def _exec_summary(case: dict[str, Any]) -> str:
 
 def _lessons_learned(case: dict[str, Any]) -> list[str]:
     """Derive lessons from the decision + kill-chain (deterministic)."""
-    sup = case.get("supervisory") or {}
-    decision = sup.get("decision")
+    decision, rationale = _decision(case)
     lessons = []
-    if decision == "deny" and "false_positive" in json_dumps_lower(sup):
+    if decision == "deny" and "false_positive" in json_dumps_lower(case):
         lessons.append("The detection pattern fired on non-actionable data — "
                        "tune the rule/query rather than respond.")
-    if decision == "deny" and "weak" in (sup.get("rationale") or "").lower():
+    if decision == "deny" and "weak" in (rationale or "").lower():
         lessons.append("Thin evidence (few sources / low score) is itself a "
                        "finding: enrichment before escalation.")
     if decision == "approve":
@@ -113,7 +132,7 @@ def _key_actions(case: dict[str, Any]) -> list[str]:
     pb = sup.get("recommended_playbook")
     if pb:
         actions.append(f"Execute playbook `{pb}` (per supervisory decision).")
-    decision = sup.get("decision")
+    decision, _rat = _decision(case)
     if decision == "approve":
         actions.append("Contain the affected entity and preserve evidence for "
                        "post-incident analysis.")
@@ -236,10 +255,11 @@ def render_advisory(case_id: str, backend: str = "spine") -> str:
     # --- Decision & Mitigations ---
     L.append("## Decision")
     L.append("")
-    L.append(f"**{sup.get('decision', 'under review').upper()}**")
-    if sup.get("rationale"):
+    decision, rationale = _decision(case)
+    L.append(f"**{decision.upper()}**")
+    if rationale:
         L.append("")
-        L.append(sup["rationale"])
+        L.append(rationale)
     L.append("")
     L.append("## Mitigations")
     L.append("")

@@ -109,10 +109,16 @@ def _exec_summary(case: dict[str, Any]) -> str:
     """One-paragraph TL;DR for the top of the report."""
     sup = case.get("supervisory") or {}
     decision = sup.get("decision")
+    rationale = (sup.get("rationale") or "").strip()
     if not decision:
         for ev in reversed(case.get("timeline", [])):
-            if ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
-                decision = (ev.get("detail") or {}).get("decision")
+            if ev.get("role") != "supervisory":
+                continue
+            d = ev.get("detail") or {}
+            if ev.get("type") in ("adjudication", "verdict"):
+                decision = d.get("decision") or d.get("verdict") or ""
+                if not rationale:
+                    rationale = (d.get("rationale") or "").strip()
                 break
     src = case.get("source") or {}
     status = case.get("status", "open")
@@ -135,12 +141,6 @@ def _exec_summary(case: dict[str, Any]) -> str:
     if inv_count:
         summary += f"The investigation engaged {inv_count} evidence source(s). "
     if decision:
-        rationale = (sup.get("rationale") or "").strip()
-        if not rationale:
-            for ev in reversed(case.get("timeline", [])):
-                if ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
-                    rationale = ((ev.get("detail") or {}).get("rationale") or "").strip()
-                    break
         summary += f"Decision: **{decision.upper()}**"
         if rationale:
             summary += f" — {rationale}"
@@ -287,9 +287,9 @@ def _md_core(case: dict[str, Any]) -> list[str]:
             L.append(f"Recommended playbook: **`{sup['recommended_playbook']}`**")
     else:
         for ev in reversed(timeline):
-            if ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
+            if ev.get("role") == "supervisory" and ev.get("type") in ("adjudication", "verdict"):
                 d = ev.get("detail", {})
-                L.append(f"**{(d.get('decision') or '?').upper()}** — {_ts(ev.get('ts'))}")
+                L.append(f"**{(d.get('decision') or d.get('verdict') or '?').upper()}** — {_ts(ev.get('ts'))}")
                 if d.get("rationale"):
                     L.append("")
                     L.append(d["rationale"])

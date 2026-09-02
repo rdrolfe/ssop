@@ -1,0 +1,75 @@
+<!DOCTYPE html><html><head><meta charset='utf-8'><title>SO-native Report case-2d9c6106e3</title><style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#111;line-height:1.5}h1{font-size:1.4em}h2{font-size:1.15em;margin-top:1.6em}ul{margin:0.35em 0;padding-left:20px}li{margin:0.35em 0}code{background:#f0f0f0;padding:1px 4px;border-radius:3px}hr{margin:2em 0;border:0;border-top:1px solid #ddd}</style></head><body><h1>Incident Report — [HUNT] DEFENSE-EVASION finding in AppArmor denials</h1>
+<ul>
+<li><strong>Case</strong>: <code>case-2d9c6106e3</code></li>
+<li><strong>Status</strong>: closed</li>
+<li><strong>Opened</strong>: 2026-08-19 19:42:06</li>
+</ul>
+<h2>Summary</h2>
+<p><strong>CLOSED</strong> case for [hunt] defense-evasion finding in apparmor denials. Decision: <strong>DENY</strong>.</p>
+<h2>2. Trigger</h2>
+<ul>
+<li>Alert: <code>[HUNT] DEFENSE-EVASION finding in AppArmor denials</code></li>
+</ul>
+<p><strong>Observables</strong>: hunt <code>apparmor-denials</code></p>
+<h2>3. Decision Chain</h2>
+<ul>
+<li><strong>2026-08-19 19:42:06</strong> — Routed</li>
+<li><strong>2026-08-19 19:48:37</strong> — Pattern finding</li>
+<li><strong>2026-08-19 19:56:22</strong> — Supervisor verdict<br></li>
+<br>verdict <strong>false_positive</strong> (level=None, category=None)
+<li><strong>2026-08-31 06:15:20</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 06:15:20</strong> — Hunt escalation</li>
+<li><strong>2026-08-31 06:16:45</strong> — Supervisor verdict<br></li>
+<br>verdict <strong>false_positive</strong> (level=None, category=None)
+<li><strong>2026-08-31 06:16:45</strong> — supervisory/case_closed<br></li>
+<br>{&quot;raw&quot;: &quot;{\&quot;reason\&quot;: \&quot;Nth recurrence of the chronic apparmor-denials hunt FP (rule 52002, volume-only threshold, query size-capped at 100 - &#x27;100&#x27; is the cap,
+<li><strong>2026-08-31 06:45:30</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 07:00:31</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 07:15:27</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 07:30:38</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 07:45:20</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 08:00:32</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 08:15:26</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 08:30:28</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 08:45:31</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 09:00:06</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 09:15:37</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 09:30:29</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 09:45:26</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 10:00:17</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 10:15:36</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 10:30:32</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 10:45:11</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 11:00:29</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 11:15:26</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 11:30:06</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 11:45:12</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 12:00:35</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 12:15:33</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 12:30:16</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 12:45:33</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 13:00:32</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 13:15:09</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 13:30:35</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 13:45:37</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 14:00:33</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 14:15:29</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 14:30:34</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 14:45:37</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:00:24</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:15:38</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:30:16</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:36:43</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:38:48</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:40:48</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 15:45:21</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 16:00:06</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 16:15:09</strong> — Hunt recheck (repeat signal)</li>
+<li><strong>2026-08-31 16:30:30</strong> — Hunt recheck (repeat signal)</li>
+</ul>
+<h2>5. Decision</h2>
+<p><strong>DENY</strong> — 2026-08-31 06:16:45</p>
+<h2>6. Disposition</h2>
+<p>Adjudicated as: <strong>false_positive</strong></p>
+<hr>
+<p>*Generated by the SSOP investigation framework · case <code>case-2d9c6106e3</code>*</p></body></html>

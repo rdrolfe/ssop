@@ -139,7 +139,7 @@ def _so_operations(case):
         d = ev.get("detail", {})
         msg = f"[{ev.get('role','?')}/{ev.get('type','?')}] "
         if ev.get("type") == "verdict":
-            msg += f"verdict={d.get('verdict')} level={d.get('level')} cat={d.get('category')}"
+            msg += f"decision={d.get('decision') or d.get('verdict')} verdict={d.get('verdict')} level={d.get('level')} cat={d.get('category')}"
         elif ev.get("type") == "investigation":
             msg += (f"{d.get('evidence_count')} evidence sources, "
                     f"severity={d.get('severity_label')} ({d.get('severity')}), "
