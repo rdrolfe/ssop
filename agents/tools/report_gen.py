@@ -433,12 +433,33 @@ def render_so_case_report(case_id: str) -> str:
     (Wazuh side) and SO's native case model compile to the same deliverable.
     Raises KeyError if no SO case exists for this id.
     """
-    q = {"query": {"term": {"so_related.case_id": case_id}}, "size": 50,
+    # Native store query: case docs carry so_audit_doc_id=<spine case id>;
+    # comments link via so_comment.caseId=<create-doc _id> (the SOC's model).
+    # Query both: direct so_audit_doc_id match, and comments by resolving the
+    # create doc's _id from so_audit_doc_id.
+    q = {"query": {"bool": {"should": [
+        {"term": {"so_audit_doc_id": case_id}},
+        {"term": {"so_comment.caseId": case_id}},
+        {"term": {"so_related.caseId": case_id}},
+    ], "minimum_should_match": 1}}, "size": 100,
          "sort": [{"@timestamp": "asc"}]}
     res = _so_search("so-case", q)
     hits = res.get("hits", {}).get("hits", [])
     if not hits:
         raise KeyError(f"case {case_id} not found in SO native store")
+    # Resolve the create-doc _id (the case identity) — comments link here.
+    create_id = None
+    for h in hits:
+        if (h.get("_source") or {}).get("so_kind") == "case":
+            create_id = h.get("_id")
+            break
+    if not create_id:
+        create_id = case_id
+    # Fetch comment docs linked via so_comment.caseId=create_id (native).
+    q2 = {"query": {"term": {"so_comment.caseId": create_id}}, "size": 100,
+          "sort": [{"@timestamp": "asc"}]}
+    res2 = _so_search("so-case", q2)
+    hits = hits + res2.get("hits", {}).get("hits", [])
 
     case: dict[str, Any] = {
         "case_id": case_id,
@@ -479,7 +500,7 @@ def render_so_case_report(case_id: str) -> str:
                 "detail": {"category": sc.get("category") or ""},
             })
         else:
-            comment = (s.get("so_comment") or {}).get("message", "")
+            comment = (s.get("so_comment") or {}).get("description") or (s.get("so_comment") or {}).get("message", "")
             d = _so_parse_comment(comment)
             role = rel.get("role", "?")
             typ = rel.get("type") or (("adjudication" if "decision=" in comment else "comment"))

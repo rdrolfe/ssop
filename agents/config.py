@@ -90,7 +90,34 @@ class Settings:
     indexer_user: str = _env("WAZUH_INDEXER_USER", _env("WAZUH_INDEXER_USERNAME", "admin"))
     indexer_password: str = _env("WAZUH_INDEXER_PASSWORD", "")
     so_indexer_password: str = _env("SO_INDEXER_PASSWORD", "")
+    # Per-role SO identities: real Kratos user ids (from `so-user add` on the
+    # SO manager) so case comments attribute to the ROLE that acted, not a
+    # synthetic agent id (which the SOC can't resolve -> null author crash).
+    # Set in the runtime .env after creating the accounts.
+    so_user_id_analyst: str = _env("SO_USER_ID_ANALYST", "ssop-agent-0000-0000-000000000001")
+    so_user_id_supervisor: str = _env("SO_USER_ID_SUPERVISOR", "ssop-agent-0000-0000-000000000001")
+    so_user_id_responder: str = _env("SO_USER_ID_RESPONDER", "ssop-agent-0000-0000-000000000001")
+    so_user_id_hunt: str = _env("SO_USER_ID_HUNT", "ssop-agent-0000-0000-000000000001")
+    so_user_id_automation: str = _env("SO_USER_ID_AUTOMATION", "ssop-agent-0000-0000-000000000001")
     alerts_index: str = _env("WAZUH_ALERTS_INDEX", "wazuh-alerts-4.x-*")
+
+    def so_user_id_for_role(self, role: str | None) -> str:
+        """Map a spine timeline role to its real SO identity (Kratos user id).
+
+        analyst -> analyst account, supervisory -> supervisor, responder ->
+        responder, hunt -> hunt; router/case-spine/system events attribute to
+        the automation account. Falls back to the synthetic agent id until
+        the accounts exist (renders as unresolved in the SOC)."""
+        key = (role or "").lower()
+        if key in ("analyst",):
+            return self.so_user_id_analyst
+        if key in ("supervisory", "supervisor", "adjudicator"):
+            return self.so_user_id_supervisor
+        if key in ("responder",):
+            return self.so_user_id_responder
+        if key in ("hunt", "hunter"):
+            return self.so_user_id_hunt
+        return self.so_user_id_automation
 
     # --- Hermes escalation API ---
     hermes_api_url: str = _env("HERMES_API_URL", "http://localhost:8642")

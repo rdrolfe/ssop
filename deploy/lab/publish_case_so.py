@@ -110,31 +110,45 @@ def _so_operations(case):
             if ev_cat:
                 category = ev_cat
                 break
-    # 1. case create
+    # 1. case create — NATIVE schema (verified against the SOC's own docs
+    #    + case-mappings.json): so_kind: "case", NO so_operation on the
+    #    create, so_case carries the real fields (createTime/userId/priority/
+    #    severity/status/tlp/pap/assigneeId...). The case identity is the
+    #    CREATE DOC's _id — comments link via so_comment.caseId = create _id.
+    now_iso = datetime.now(timezone.utc).isoformat()
     so_case = {
-        "id": case["case_id"],
+        "createTime": now_iso,
+        "startTime": None,
+        "completeTime": None,
         "title": case.get("title", ""),
-        "status": case.get("status", "new"),
         "description": case.get("title", ""),
+        "priority": 0,
+        "severity": "medium",
+        "status": "new",
+        "template": "",
+        "tlp": "",
+        "pap": "",
         "category": category,
-        "tags": [],
+        "assigneeId": "",
+        "userId": settings.so_user_id_for_role(None),  # automation (create)
+        "tags": [f"{obs.get('type')}:{obs.get('value')}" for obs in case.get("observables", [])],
     }
     src = case.get("source") or {}
     if src.get("hunt_id"):
-        so_case["tags"].append(f"hunt:{src['hunt_id']}")
+        so_case["tags"] = (so_case["tags"] or []) + [f"hunt:{src['hunt_id']}"]
     if src.get("rule_desc"):
         so_case["description"] = f"{case.get('title','')}\n\n{src['rule_desc']}"
-    for obs in case.get("observables", []):
-        so_case["tags"].append(f"{obs.get('type')}:{obs.get('value')}")
     ops.append({
-        "@timestamp": ts,
+        "@timestamp": now_iso,
         "so_case": so_case,
         "so_kind": "case",
-        "so_operation": "create",
         "so_audit_doc_id": case["case_id"],
-        "so_related": {"case_id": case["case_id"]},
     })
-    # 2. timeline events -> comments (each role step is a comment on the case)
+    create_id = _op_ids(case["case_id"], 1)[0]  # the create doc's deterministic _id
+
+    # 2. timeline events -> NATIVE comment docs: so_kind "comment",
+    #    so_comment {createTime, userId, caseId=create_id, description, hours},
+    #    and so_related.caseId (camelCase) so the SOC links them to the case.
     for ev in case.get("timeline", []):
         d = ev.get("detail", {})
         msg = f"[{ev.get('role','?')}/{ev.get('type','?')}] "
@@ -150,15 +164,20 @@ def _so_operations(case):
             msg += f"decision={d.get('decision')} rationale={d.get('rationale','')[:100]}"
         else:
             msg += json.dumps(d)[:150]
+        ev_ts = (ev.get("ts") or now_iso).replace("+00:00", "Z").replace("Z", "+00:00")
         ops.append({
-            "@timestamp": ev.get("ts") or ts,
-            "so_case": {"id": case["case_id"]},
-            "so_kind": "timeline",
-            "so_operation": "comment",
-            "so_comment": {"message": msg},
-            "so_related": {"case_id": case["case_id"], "role": ev.get("role"), "type": ev.get("type")},
+            "@timestamp": ev_ts,
+            "so_kind": "comment",
+            "so_comment": {
+                "createTime": ev_ts,
+                "userId": settings.so_user_id_for_role(ev.get("role")),
+                "caseId": create_id,
+                "description": msg,
+                "hours": 0,
+            },
+            "so_related": {"caseId": create_id, "role": ev.get("role"), "type": ev.get("type")},
         })
-    return ops
+    return ops, create_id
 
 
 def _op_ids(case_id: str, n: int) -> list[str]:
@@ -182,8 +201,11 @@ def main() -> int:
     auth = "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()
 
     # Build + write the SO operations (bulk into so-case, then so-casehistory)
-    ops = _so_operations(case)
+    ops, create_id = _so_operations(case)
     ids = _op_ids(case_id, len(ops))
+    # the create doc's _id is the deterministic create id; comments already
+    # link via so_comment.caseId=create_id, so any _id works for comments
+    ids[0] = create_id
     bulk = []
     for op, oid in zip(ops, ids):
         bulk.append({"index": {"_index": "so-case", "_id": oid}})
@@ -202,18 +224,18 @@ def main() -> int:
 
     # Capture SO-side: read back what SO stores for this case
     print("\n=== SO-SIDE (native so-case store) ===")
-    q = {"query": {"term": {"so_related.case_id": case_id}}, "size": 20,
+    q = {"query": {"term": {"so_audit_doc_id": case_id}}, "size": 20,
          "sort": [{"@timestamp": "asc"}]}
     res = _es("POST", host, port, auth, "so-case/_search", q)
     hits = res.get("hits", {}).get("hits", [])
     print(f"so-case docs for {case_id}: {len(hits)}")
     for h in hits:
         s = h["_source"]
-        op = s.get("so_operation", "?")
-        if op == "create":
+        kind = s.get("so_kind", "?")
+        if kind == "case":
             print("  CREATE:", s.get("so_case", {}).get("title", "")[:60])
         else:
-            print("  ", op, "|", (s.get("so_comment") or {}).get("message", "")[:90])
+            print("  ", kind, "|", (s.get("so_comment") or {}).get("description", "")[:90])
 
     # Capture Wazuh-side (console API reads the spine)
     print("\n=== WAZUH-SIDE (console API) ===")

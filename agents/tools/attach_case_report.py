@@ -80,15 +80,31 @@ def _render_artifacts(case_id: str) -> tuple[str, str] | None:
         return None
 
 
-def _comment_op(case_id: str, message: str, ts: str, rel: dict[str, str]) -> dict[str, Any]:
+def _comment_op(create_id: str, description: str, ts: str, rel: dict[str, str]) -> dict[str, Any]:
+    """Native comment doc: so_kind 'comment', so_comment {createTime,
+    userId, caseId=create _id, description, hours}, so_related.caseId
+    (camelCase) — verified against the SOC's own comment writes."""
+    from config import settings
     return {
         "@timestamp": ts,
-        "so_case": {"id": case_id},
-        "so_kind": "timeline",
-        "so_operation": "comment",
-        "so_comment": {"message": message},
-        "so_related": {"case_id": case_id, **rel},
+        "so_kind": "comment",
+        "so_comment": {
+            "createTime": ts,
+            "userId": settings.so_user_id_for_role(None),  # automation
+            "caseId": create_id,
+            "description": description,
+            "hours": 0,
+        },
+        "so_related": {"caseId": create_id, **rel},
     }
+
+
+def _create_id(case_id: str) -> str:
+    """The deterministic create-doc _id for a case — comments link to the
+    case via so_comment.caseId = create _id (the case identity). Must match
+    publish_case_so._op_ids(case_id, 1)[0] = sha1("<case_id>-0")."""
+    import hashlib
+    return "ssop-" + hashlib.sha1(f"{case_id}-0".encode()).hexdigest()[:20]
 
 
 def publish_artifacts_to_so(case_id: str) -> bool:
@@ -108,9 +124,10 @@ def publish_artifacts_to_so(case_id: str) -> bool:
 
     import datetime as _dt
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    create_id = _create_id(case_id)
     ops = [
-        ("report", _comment_op(case_id, report_md, ts, _REPORT_REL)),
-        ("advisory", _comment_op(case_id, advisory_md, ts, _ADVISORY_REL)),
+        ("report", _comment_op(create_id, report_md, ts, _REPORT_REL)),
+        ("advisory", _comment_op(create_id, advisory_md, ts, _ADVISORY_REL)),
     ]
     bulk: list[dict[str, Any]] = []
     for kind, op in ops:
