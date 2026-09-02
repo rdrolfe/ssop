@@ -76,6 +76,20 @@ fixtures:
       no_new_case: true    # no new case minted
       router_role: analyst # router driver: dispatch to analyst is the correct outcome
 
+  - id: repeated-host-attaches
+    description: "Same agent+rule as an open case, no entity pair — analyst must ATTACH (host recidivism), not mint a new case"
+    probe: false
+    alert:
+      rule: {id: 9003, level: 12, groups: [sysmon, malware, process_creation], description: "ET MALWARE Cerber ransomware process-exec"}
+      agent: {id: "007", name: we8105desk.waynecorpinc.local}
+      timestamp: "2026-08-23T12:00:02.000Z"
+    expect:
+      verdict: note        # analyst: escalation suppressed — attaching to host chain
+      category: threat
+      attach: true         # analyst: verdict() must return existing_chain for the host+rule
+      no_new_case: true    # no new case minted
+      router_role: analyst
+
   - id: novel-untuned-escalates
     description: "Genuinely new alert, unseen pair, untuned class — MUST mint a case (the novel gate)"
     probe: false

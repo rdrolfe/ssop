@@ -13,10 +13,10 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:509`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:524`); a repeat
 within the burst window returns `count > 1`.
 
-### 2. Classify → (category, role) (`router.py:184-225`)
+### 2. Classify → (category, role) (`router.py:184-254`)
 In priority order:
 1. **Noise rules** → `(operational, None)` — no dispatch (`router.py:189-190`,
    `settings.noise_rules = {5501, 5502, 5715}`).
@@ -28,16 +28,22 @@ In priority order:
    re-adjudicates.
 3. **Transport rule map** first (`router.py:214`), then the Wazuh
    `RULE_MAP` (`router.py:51-80`, `216`) — backend-specific rules win.
-4. **Group-string heuristics** (`router.py:218-229`):
+4. **Group-string heuristics** (`router.py:218-238`):
    - `authentication_failed` / `invalid_login` → security/analyst
    - `rootcheck` → security/analyst
    - `apparmor` → pattern/hunt
    - `suricata` / `ids` → security/analyst
    - `low_diskspace` → infra/infra
    - `syscheck` / `fim` → security/analyst
-5. **Default** → `(operational, None)` (`router.py:239`).
+5. **Ontology fallback** (`router.py:240-253`): an unmatched rule/group is
+   categorized via `tools.ontology.categorize_alert` (the single source of
+   truth) — `threat`/`authentication`/`integrity` → security/analyst,
+   `compliance`/`operational` → no dispatch. The router must never silently
+   drop a threat-category alert the analyst would call threat (same input,
+   same outcome).
+6. **Default** → `(operational, None)` (`router.py:254`).
 
-### 3. Dispatch (`router.py:432-456`)
+### 3. Dispatch (`router.py:455-479`)
 - `role is None` → `no_dispatch_needed` (log only).
 - `burst_count > 1` → `burst_deduped` — counted, not re-dispatched.
 - else route by role:
@@ -50,7 +56,7 @@ In priority order:
   (`router.py:341-350`).
 
 **Pattern → hunt** (`dispatch_pattern`, `router.py:370-439`):
-- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:394`,
+- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:409`,
   `settings.pattern_rate_minutes = 60`) — a repeatedly-firing pattern rule
   (e.g. apparmor DENIED) can't mint a fresh case + ticket every dispatch.
 - runs the matching hunt; if `suspicious` → hunt-level recidivism: attach a

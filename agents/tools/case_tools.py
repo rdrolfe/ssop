@@ -306,7 +306,8 @@ class CaseStore:
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
             mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000):
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+                                       scroll_limit=10000):
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
                     continue
@@ -340,7 +341,8 @@ class CaseStore:
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
             mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000):
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+                                       scroll_limit=10000):
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
                     continue
@@ -361,6 +363,47 @@ class CaseStore:
             logger.warning("recent_entity_cases scan failed: %s", e)
         return out
 
+    def recent_host_cases(self, host: str, rule_id: str | None = None,
+                          window_s: int = 3600) -> list[dict[str, Any]]:
+        """Find open/recent cases on the SAME HOST (and optionally rule).
+
+        Host-based recidivism: alerts without an entity pair (srcip/dstip —
+        e.g. sysmon host events) have nothing to chain on, so every event
+        minted its own case (the BOTS Cerber replay: 133 cases for one
+        campaign on we8105desk). Same host + same rule within the window =
+        one campaign chain, not N cases. Mirrors recent_entity_cases.
+
+        Scans Qdrant (the receipt spine carries no `source`). Keeps cases
+        with matching source.agent (+ source.rule_id when given), status !=
+        closed, and a recent ts.
+        """
+        out: list[dict[str, Any]] = []
+        cutoff = datetime.now(timezone.utc).timestamp() - window_s
+        try:
+            mem = self._get_memory()
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+                                       scroll_limit=10000):
+                payload = self._parse_content(r.get("content", ""))
+                if not payload:
+                    continue
+                if payload.get("status") == "closed":
+                    continue
+                src = payload.get("source", {})
+                if str(src.get("agent")) != str(host):
+                    continue
+                if rule_id and str(src.get("rule_id")) != str(rule_id):
+                    continue
+                try:
+                    ts = payload.get("ts", "")
+                    if datetime.fromisoformat(ts).timestamp() < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                out.append(payload)
+        except Exception as e:  # noqa: BLE001 — recidivism must never break triage
+            logger.warning("recent_host_cases scan failed: %s", e)
+        return out
+
     def reconcile(self, heal: bool = True) -> dict[str, Any]:
         """Compare Qdrant vs JSONL for each case. Returns mismatches.
 
@@ -373,7 +416,8 @@ class CaseStore:
         """
         qdrant_ids: set[str] = set()
         try:
-            for r in self._get_memory().search_memory(CASE_COLLECTION, "case-", limit=1000):
+            for r in self._get_memory().search_memory(CASE_COLLECTION, "case-", limit=10000,
+                                                      scroll_limit=10000):
                 cid = (r.get("metadata") or {}).get("case_id") or r.get("content", "").split(" ", 1)[0]
                 if cid.startswith("case-"):
                     qdrant_ids.add(cid)

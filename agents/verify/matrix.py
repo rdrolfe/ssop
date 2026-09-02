@@ -179,21 +179,36 @@ def main() -> int:
             exp = f.get("expect", {})
             if not (exp.get("attach") or exp.get("no_new_case")):
                 continue
-            pair = entity_pair(f.get("alert", {}))
-            if not pair:
+            alert = f.get("alert", {})
+            pair = entity_pair(alert)
+            if pair:
+                srcip, dstip = pair
+                # Close any existing open case for the pair (stale or current) so
+                # the seed below is the ONLY open one and is guaranteed fresh.
+                stale = _cs.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
+                for c in stale:
+                    if (c.get("source") or {}).get("verify_seed"):
+                        _cs.close_case(c["case_id"], reason="verify seed refresh")
+                _cs.open_case(
+                    source={"srcip": srcip, "dstip": dstip, "verify_seed": True},
+                    title=f"VERIFY SEED repeated-entity {srcip}:{dstip}",
+                )
+                logger.info("verify seed: fresh open case for entity %s:%s", srcip, dstip)
                 continue
-            srcip, dstip = pair
-            # Close any existing open case for the pair (stale or current) so
-            # the seed below is the ONLY open one and is guaranteed fresh.
-            stale = _cs.recent_entity_cases(srcip, dstip, window_s=30 * 86400)
-            for c in stale:
-                if (c.get("source") or {}).get("verify_seed"):
-                    _cs.close_case(c["case_id"], reason="verify seed refresh")
-            _cs.open_case(
-                source={"srcip": srcip, "dstip": dstip, "verify_seed": True},
-                title=f"VERIFY SEED repeated-entity {srcip}:{dstip}",
-            )
-            logger.info("verify seed: fresh open case for entity %s:%s", srcip, dstip)
+            # Host-recidivism fixture (repeated-host-attaches): seed on
+            # (agent, rule_id) — same shape recent_host_cases matches.
+            agent = (alert.get("agent") or {}).get("name")
+            rule_id = str((alert.get("rule") or {}).get("id", ""))
+            if agent and rule_id:
+                stale = _cs.recent_host_cases(agent, rule_id, window_s=30 * 86400)
+                for c in stale:
+                    if (c.get("source") or {}).get("verify_seed"):
+                        _cs.close_case(c["case_id"], reason="verify seed refresh")
+                _cs.open_case(
+                    source={"agent": agent, "rule_id": rule_id, "verify_seed": True},
+                    title=f"VERIFY SEED repeated-host {agent} {rule_id}",
+                )
+                logger.info("verify seed: fresh open case for host %s rule %s", agent, rule_id)
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("entity seed skipped — attach fixtures may fail as BLOCKED")
 

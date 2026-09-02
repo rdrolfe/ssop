@@ -52,21 +52,50 @@ def _es(method, host, port, auth, path, body=None, ctx=None):
 
 
 def _so_ops(case_id, host, port, auth):
-    """SO native so-case docs for the case (fixed query: no .keyword subfield)."""
-    q = {"query": {"bool": {"filter": [
-        {"term": {"so_related.case_id": case_id}}]}},
+    """SO native so-case docs for the case (fixed query: no .keyword subfield).
+
+    NATIVE schema (verified against the SOC's own writes + case-mappings):
+    the create doc carries so_audit_doc_id=<spine case id>; comments link
+    via so_comment.caseId=<create-doc _id> and carry so_comment.description.
+    so_operation is absent on native creates (so_kind marks the type), so
+    derive operation from so_kind for the scorer.
+    """
+    q = {"query": {"bool": {"should": [
+        {"term": {"so_audit_doc_id": case_id}},
+    ], "minimum_should_match": 1}},
          "size": 50, "sort": [{"@timestamp": "asc"}]}
     so = _es("POST", host, port, auth, "so-case/_search", q)
+    hits = so.get("hits", {}).get("hits", [])
+    # The create doc's _id IS the case identity — comments link via
+    # so_comment.caseId=<create-doc _id>, not the spine case id. Resolve it,
+    # then fetch the comment ops linked to it (native schema).
+    create_id = None
+    for h in hits:
+        if (h.get("_source") or {}).get("so_kind") == "case":
+            create_id = h.get("_id")
+            break
+    if create_id:
+        q2 = {"query": {"term": {"so_comment.caseId": create_id}},
+              "size": 100, "sort": [{"@timestamp": "asc"}]}
+        c2 = _es("POST", host, port, auth, "so-case/_search", q2)
+        hits = hits + c2.get("hits", {}).get("hits", [])
     ops = []
-    for h in so.get("hits", {}).get("hits", []):
+    for h in hits:
         s = h["_source"]
+        kind = s.get("so_kind")
+        # Native schema: so_kind is 'case' (create) or 'comment'; so_operation
+        # is absent on native docs. Normalize to the scorer's vocabulary.
+        op = s.get("so_operation")
+        if not op:
+            op = "create" if kind == "case" else (kind or "comment")
         ops.append({
-            "operation": s.get("so_operation"),
+            "operation": op,
             "ts": s.get("@timestamp"),
             "case_title": (s.get("so_case") or {}).get("title"),
             "category": (s.get("so_case") or {}).get("category"),
             "tags": (s.get("so_case") or {}).get("tags", []),
-            "comment": (s.get("so_comment") or {}).get("message"),
+            "comment": (s.get("so_comment") or {}).get("description")
+                       or (s.get("so_comment") or {}).get("message"),
             "related": (s.get("so_related") or {}),
         })
     return ops, so.get("hits", {}).get("total", {}).get("value")

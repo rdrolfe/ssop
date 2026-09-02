@@ -87,7 +87,7 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
         return out
     case = cases.open_case(
         source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
-                "rule_id": (v.get("rule") or {}).get("id"),
+                "rule_id": v.get("rule_id"),
                 "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
         title=f"{v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
         observables=obs,

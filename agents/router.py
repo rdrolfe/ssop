@@ -236,6 +236,21 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
         return "infra", "infra"
     if "syscheck" in groups_str or "fim" in groups_str:
         return "security", "analyst"
+    # Ontology fallback — the single source of truth (thread #1). Unmatched
+    # rule ids/groups MUST NOT silently fall to (operational, None): the
+    # analyst verdict() categorizes via tools.ontology.categorize_alert, so
+    # a threat-category alert (e.g. sysmon/malware groups, ET MALWARE desc)
+    # would be "threat" to the analyst but dropped here. Same input, same
+    # outcome — map the ontology category to the dispatch role.
+    try:
+        from tools.ontology import categorize_alert
+        cat = categorize_alert(alert)
+        if cat in ("threat", "authentication", "integrity"):
+            return "security", "analyst"
+        if cat in ("compliance", "operational"):
+            return DEFAULT_CATEGORY, DEFAULT_ROLE
+    except Exception:  # noqa: BLE001 — ontology fallback must never break dispatch
+        pass
     return DEFAULT_CATEGORY, DEFAULT_ROLE
 
 
@@ -322,7 +337,7 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
             else:
                 case = cases.open_case(
                     source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
-                            "category": v["category"], "level": v["level"],
+                            "rule_id": v.get("rule_id"), "category": v["category"], "level": v["level"],
                             "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
                     title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
                 )

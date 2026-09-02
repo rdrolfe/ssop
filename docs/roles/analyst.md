@@ -50,6 +50,11 @@ In priority order:
 5. **Entity recidivism** — if the same `(srcip, dstip)` pair has a recent
    open case (`case_tools.recent_entity_cases`), the verdict surfaces
    `existing_chain` so the router ATTACHES instead of re-minting (`:166-181`).
+   **Host recidivism fallback** — alerts with NO entity pair (sysmon host
+   events, no srcip/dstip) chain on `(agent, rule_id)` via
+   `case_tools.recent_host_cases` (same window): one campaign = one case
+   per host, not N cases per event (the BOTS Cerber replay finding — 133
+   cases for one campaign). Cases must carry `source.rule_id` at mint.
 6. **SOAR enrichment** — matching playbook attached for the responder
    (`:182-193`); MITRE ATT&CK techniques surfaced (`:198-203`).
 

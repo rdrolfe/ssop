@@ -120,14 +120,22 @@ class QdrantMemory:
             raise QdrantError(f"store_memory failed: {e}") from e
         return {"stored": True, "point_id": point_id, "collection": collection}
 
-    def search_memory(self, collection: str, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """Search memory entries by text content."""
+    def search_memory(self, collection: str, query: str, limit: int = 5,
+                      scroll_limit: int = 1000) -> list[dict[str, Any]]:
+        """Search memory entries by text content.
+
+        scroll_limit caps how many records the SCROLL pulls before the
+        substring filter — callers that need the whole store (recidivism
+        scans) must raise it: the default 1000 silently drops the freshest
+        cases once the store exceeds 1000 points (the BOTS replay pushed it
+        to 1176, breaking entity/host recidivism seeding).
+        """
         self.ensure_collection(collection)
         try:
             records = _retry_call(
                 self.client.scroll,
                 collection_name=collection,
-                limit=1000,
+                limit=scroll_limit,
                 with_payload=True,
                 with_vectors=False,
             )[0]

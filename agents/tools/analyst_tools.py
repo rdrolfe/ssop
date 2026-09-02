@@ -172,8 +172,16 @@ class AnalystClient:
                 if pair:
                     entity_srcip, entity_dstip = pair
                     existing_chain = get_cases().recent_entity_cases(entity_srcip, entity_dstip)
-                    if existing_chain:
-                        escalate = False  # attach to chain below, don't mint a new escalation
+                elif c.get("agent"):
+                    # HOST-based recidivism (BOTS Cerber replay finding): alerts
+                    # without an entity pair — sysmon host events, no srcip/dstip —
+                    # have nothing to chain on, so every event minted its own
+                    # case (133 cases for one campaign on a host). Same host +
+                    # same rule within the window = ONE campaign chain.
+                    existing_chain = get_cases().recent_host_cases(
+                        c["agent"], rule_id=c.get("rule_id"))
+                if existing_chain:
+                    escalate = False  # attach to chain below, don't mint a new escalation
             except Exception:  # noqa: BLE001 — recidivism check must never break triage
                 existing_chain = None
         # SOAR enrichment: attach a recommended playbook if one matches this
