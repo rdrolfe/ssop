@@ -25,6 +25,39 @@ from logging_setup import get_logger
 
 logger = get_logger(__name__)
 
+# Kill-chain stage -> MITRE technique IDs, derived from the evidence source
+# set (deterministic, data-driven). Each stage is annotated with the
+# technique(s) MITRE maps to that behavior so cases carry real technique
+# IDs (TXXXX) — the advisory renders them as a CISA-style per-technique
+# table instead of falling back to the kill-chain->tactic heuristic.
+# Grounded in attack.mitre.org v19 (verified 2026-09-02):
+#   T1059      Command and Scripting Interpreter (Execution)
+#   T1110      Brute Force (Credential Access)
+#   T1041      Exfiltration Over C2 Channel (Exfiltration)
+#   T1048.003  Exfiltration Over Unencrypted Non-C2 Protocol (Exfiltration)
+#   T1071.004  Application Layer Protocol: DNS (Command and Control)
+#   T1572      Protocol Tunneling (Command and Control)
+#   T1046      Network Service Discovery (Discovery)
+#   T1021      Remote Services (Lateral Movement)
+_SOURCE_TECHNIQUES: dict[str, tuple[str, ...]] = {
+    "winsec": ("T1059",),
+    "live_brute": ("T1110",),
+    "http": ("T1041", "T1048.003"),
+    "live_http": ("T1041", "T1048.003"),
+    "dns": ("T1071.004", "T1572"),
+    "suricata": ("T1046",),
+    "live_scan": ("T1046",),
+    "live_net": ("T1021",),
+}
+
+
+def _tag(stage: str, *tids: str) -> str:
+    """Append MITRE technique IDs to a stage label, e.g.
+    'C2: DNS queries/tunneling [T1071.004, T1572]'."""
+    if not tids:
+        return stage
+    return f"{stage} [{', '.join(tids)}]"
+
 
 class Investigator:
     """Correlate entities across sources and build kill-chain hypotheses."""
@@ -245,24 +278,36 @@ class Investigator:
         for e in ents:
             all_evidence.extend(self.correlate_entity(e))
 
-        # Build the kill-chain from which sources have evidence
+        # Build the kill-chain from which sources have evidence. Each stage
+        # carries the MITRE technique ID(s) for that behavior (see
+        # _SOURCE_TECHNIQUES) so cases persist real technique IDs and the
+        # advisory renders a per-technique table instead of the stage->
+        # tactic heuristic. C2/MALWARE (live_threat) and NO CORRELATION
+        # stay untagged: a class-level signal and an absence of evidence
+        # have no honest single technique.
         src_set = {ev["source"] for ev in all_evidence}
         stages = []
         # rough kill-chain ordering: process exec (execution) -> http (exfil) -> dns (c2)
         if "winsec" in src_set:
-            stages.append("EXECUTION: process artifacts in Windows security logs")
+            stages.append(_tag("EXECUTION: process artifacts in Windows security logs",
+                               *_SOURCE_TECHNIQUES["winsec"]))
         if "live_brute" in src_set:
-            stages.append("INITIAL ACCESS: brute-force / login-failure pattern")
+            stages.append(_tag("INITIAL ACCESS: brute-force / login-failure pattern",
+                               *_SOURCE_TECHNIQUES["live_brute"]))
         if "http" in src_set or "live_http" in src_set:
-            stages.append("EXFILTRATION: HTTP upload/exfil traffic")
+            stages.append(_tag("EXFILTRATION: HTTP upload/exfil traffic",
+                               *_SOURCE_TECHNIQUES["http"]))
         if "dns" in src_set:
-            stages.append("C2: DNS queries/tunneling")
+            stages.append(_tag("C2: DNS queries/tunneling",
+                               *_SOURCE_TECHNIQUES["dns"]))
         if "live_threat" in src_set:
             stages.append("C2/MALWARE: threat-class live alert")
         if "suricata" in src_set or "live_scan" in src_set:
-            stages.append("RECON: network scan / suricata flow observed")
+            stages.append(_tag("RECON: network scan / suricata flow observed",
+                               *_SOURCE_TECHNIQUES["suricata"]))
         if "live_net" in src_set:
-            stages.append("NETWORK: live alert activity on entity")
+            stages.append(_tag("NETWORK: live alert activity on entity",
+                               *_SOURCE_TECHNIQUES["live_net"]))
         if not stages:
             stages.append("NO CORRELATION: entity not observed across sources (isolated signal)")
 

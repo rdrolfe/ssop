@@ -77,14 +77,18 @@ class CaseStore:
 
     def open_case(self, source: dict[str, Any], title: str, observables: list[dict[str, str]] | None = None,
                   enrichments: list[dict[str, Any]] | None = None,
+                  techniques: list[str] | None = None,
                   assignee: str | None = None) -> dict[str, Any]:
         """Mint a new incident and write it to both stores.
 
         `observables` (optional) is the extracted IOC list [{type, value}] —
         a first-class case field per the adopted SO concept (Concept 1 of the
         two-example doctrine). `enrichments` (optional) is the threat-intel
-        verdict list from EnrichmentClient (Concept 2). Both ride in the case
-        payload — backend-agnostic, not in any SIEM index. `assignee` (optional)
+        verdict list from EnrichmentClient (Concept 2). `techniques` (optional)
+        is the MITRE ATT&CK technique ID list from the analyst verdict
+        (Concept 6) — persisted so the supervisor + advisory render real
+        technique IDs, not just derived tactics. All ride in the case payload —
+        backend-agnostic, not in any SIEM index. `assignee` (optional)
         is the role that owns/handles the case from the start (auto-assign;
         defaults to None = unowned until the escalation/adjudication path
         assigns it).
@@ -97,6 +101,7 @@ class CaseStore:
             "source": source,  # original alert/trigger
             "observables": observables or [],  # [{type, value}, ...]
             "enrichments": enrichments or [],  # [{provider, status, raw, ts}, ...]
+            "techniques": techniques or [],  # ["T1041", ...] — MITRE ATT&CK IDs
             "checklist": None,  # case-template markdown (adopted SO concept 5)
             "timeline": [],  # append-only events (verdicts, actions)
             "assignee": assignee,  # role currently handling it (auto-assign)

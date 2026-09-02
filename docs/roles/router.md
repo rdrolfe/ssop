@@ -13,7 +13,7 @@ lands on the case spine.
 
 ### 1. Cursor dedupe (`router.py:147-153`)
 An alert id already in `seen_ids` is skipped (never dispatched twice).
-Burst tracking keys on `rule.id|agent.name` (`router.py:524`); a repeat
+Burst tracking keys on `rule.id|agent.name` (`router.py:525`); a repeat
 within the burst window returns `count > 1`.
 
 ### 2. Classify → (category, role) (`router.py:184-254`)
@@ -56,7 +56,7 @@ In priority order:
   (`router.py:341-350`).
 
 **Pattern → hunt** (`dispatch_pattern`, `router.py:370-439`):
-- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:409`,
+- rate-limited by `pattern_due` BEFORE running the hunt (`router.py:410`,
   `settings.pattern_rate_minutes = 60`) — a repeatedly-firing pattern rule
   (e.g. apparmor DENIED) can't mint a fresh case + ticket every dispatch.
 - runs the matching hunt; if `suspicious` → hunt-level recidivism: attach a

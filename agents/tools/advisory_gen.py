@@ -23,6 +23,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,6 +54,19 @@ def _killchain_tactic(stage: str) -> str:
     """Map a kill-chain stage token to an ATT&CK tactic label."""
     key = stage.split(":", 1)[0].strip().upper()
     return _KILLCHAIN_TO_TACTIC.get(key, "Other")
+
+
+# Technique IDs embedded in kill-chain stage labels, e.g.
+# 'C2: DNS queries/tunneling [T1071.004, T1572]' (investigator-injected).
+_TECH_TAG_RE = re.compile(r"\[([T\d][\dA-Za-z.]*(?:, *[T\d][\dA-Za-z.]*)*)\]")
+
+
+def _stage_techniques(stage: str) -> list[str]:
+    """Extract MITRE technique IDs from a tagged kill-chain stage label."""
+    m = _TECH_TAG_RE.search(stage)
+    if not m:
+        return []
+    return [t.strip() for t in m.group(1).split(",")]
 
 
 def _decision(case: dict[str, Any]) -> tuple[str, str]:
@@ -235,8 +249,61 @@ def render_advisory(case_id: str, backend: str = "spine") -> str:
     # --- ATT&CK Mapping ---
     L.append("## ATT&CK Mapping")
     L.append("")
-    if chain:
-        seen: set[str] = set()
+    # Real technique IDs persisted on the case (analyst verdict -> open_case)
+    # win: ID + name + tactic, exactly like CISA's per-technique tables. Only
+    # when the case carries no technique IDs do we fall back to the derived
+    # kill-chain stage -> tactic mapping (the pre-technique behavior).
+    techniques = case.get("techniques") or []
+    if not techniques:
+        for ev in case.get("timeline", []):
+            d = ev.get("detail") or {}
+            for k in ("techniques", "mitre_techniques"):
+                if d.get(k):
+                    techniques = [str(x) for x in d[k]]
+                    break
+            if techniques:
+                break
+    # Investigated cases carry technique IDs on the kill-chain stage labels
+    # themselves ('C2: DNS queries/tunneling [T1071.004, T1572]') — extract
+    # them so every correlated case renders a real per-technique table.
+    if not techniques and chain:
+        stage_tids: set[str] = set()
+        for c in chain:
+            for tid in _stage_techniques(str(c)):
+                if tid not in stage_tids:
+                    stage_tids.add(tid)
+                    techniques.append(tid)
+    if techniques:
+        from tools.techniques import technique_meta
+        seen_tids: set[str] = set()
+        L.append("| Technique | Name | MITRE ATT&CK tactic |")
+        L.append("|---|---|---|")
+        for tid in techniques:
+            tid = str(tid)
+            if tid in seen_tids:
+                continue
+            seen_tids.add(tid)
+            m = technique_meta(tid)
+            L.append(f"| `{m['id']}` | {m['name']} | {m['tactic']} |")
+        # When the technique IDs came from the kill-chain stage labels, also
+        # render the stage -> tactic table so the reader sees WHICH behavior
+        # each technique attached to (CISA advisories keep both views).
+        if any(_stage_techniques(str(c)) for c in chain):
+            L.append("")
+            L.append("_Technique-to-stage association_")
+            L.append("")
+            L.append("| Kill-chain stage | MITRE ATT&CK tactic |")
+            L.append("|---|---|")
+            seen_stages: set[str] = set()
+            for c in chain:
+                s = str(c)
+                tactic = _killchain_tactic(s)
+                if tactic in seen_stages:
+                    continue
+                seen_stages.add(tactic)
+                L.append(f"| {s} | {tactic} |")
+    elif chain:
+        seen = set()
         L.append("| Kill-chain stage | MITRE ATT&CK tactic |")
         L.append("|---|---|")
         for c in chain:
@@ -248,8 +315,7 @@ def render_advisory(case_id: str, backend: str = "spine") -> str:
             seen.add(key)
             L.append(f"| {s} | {tactic} |")
     else:
-        L.append("_No kill-chain recorded on this case — no ATT&CK mapping "
-                 "derivable._")
+        L.append("_No technique mapping recorded on this case._")
     L.append("")
 
     # --- Decision & Mitigations ---

@@ -340,6 +340,7 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                             "rule_id": v.get("rule_id"), "category": v["category"], "level": v["level"],
                             "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
                     title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
+                    techniques=v.get("techniques") or [],
                 )
                 case_id = case["case_id"]
                 cases.append_event(case_id, "router", "dispatch", {

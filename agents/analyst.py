@@ -92,6 +92,7 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
         title=f"{v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
         observables=obs,
         enrichments=enrichments,
+        techniques=v.get("techniques") or [],
         assignee="analyst",  # auto-assign: the analyst owns the case from minting
     )
     out["case_id"] = case["case_id"]
