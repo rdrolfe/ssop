@@ -201,7 +201,13 @@ class CaseStore:
     def get_case(self, case_id: str) -> dict[str, Any] | None:
         """Fetch case from Qdrant (working store)."""
         try:
-            results = self._get_memory().search_memory(CASE_COLLECTION, case_id, limit=1)
+            # scroll_limit must exceed the store size: the default 1000
+            # silently drops the freshest cases once the store grows past
+            # 1000 points (BOTS replay pushed it to ~1200), making get_case
+            # return None for cases that exist — same class as the
+            # recidivism-scan cap fixed earlier.
+            results = self._get_memory().search_memory(
+                CASE_COLLECTION, case_id, limit=1, scroll_limit=10000)
             for r in results:
                 if case_id in r.get("content", ""):
                     payload = self._parse_content(r.get("content", ""))

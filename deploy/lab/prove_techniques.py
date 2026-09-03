@@ -22,9 +22,9 @@ def main() -> int:
         "timestamp": __import__("datetime").datetime.now(
             __import__("datetime").timezone.utc).isoformat(),
         "rule": {
-            "id": "20203",
+            "id": "2045417",
             "level": 12,
-            "description": "ET MALWARE Possible DNS Tunneling (NIMLOC)",
+            "description": "ET MALWARE Raspberry Robin",
             "groups": ["suricata", "malware", "dns"],
             "mitre": {"id": ["T1041", "T1078"], "tactic": ["Exfiltration", "Defense Evasion"]},
         },
