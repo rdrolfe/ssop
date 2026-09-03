@@ -222,8 +222,11 @@ def main() -> int:
     errs = sum(1 for item in out.get("items", []) if "error" in (item.get("index") or {}))
     print(f"wrote {len(ops)} SO operations x2 (case+history, deterministic ids), {errs} errors")
 
-    # Capture SO-side: read back what SO stores for this case
+    # Capture SO-side: read back what SO stores for this case (refresh first —
+    # NRT means a term query right after bulk can return 0 until the refresh
+    # interval elapses, which made the read-back misleadingly report 0 docs).
     print("\n=== SO-SIDE (native so-case store) ===")
+    _es("POST", host, port, auth, "so-case/_refresh")
     q = {"query": {"term": {"so_audit_doc_id": case_id}}, "size": 20,
          "sort": [{"@timestamp": "asc"}]}
     res = _es("POST", host, port, auth, "so-case/_search", q)

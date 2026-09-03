@@ -37,7 +37,24 @@ def main() -> int:
             headers={"Authorization": auth})
         urllib.request.urlopen(req, timeout=20, context=_ctx())
 
-    q = {"query": {"term": {"so_related.case_id": case_id}}, "size": 300,
+    # Native schema: comments link via so_comment.caseId = the CREATE doc's
+    # _id, NOT the spine case id. Resolve the create _id first (the create
+    # carries so_audit_doc_id = spine case id), then query comments by it.
+    create_id = None
+    q0 = {"query": {"term": {"so_audit_doc_id": case_id}}, "size": 1}
+    req = urllib.request.Request(
+        f"https://{host}:{port}/so-case/_search", data=json.dumps(q0).encode(),
+        method="POST", headers={"Authorization": auth, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30, context=_ctx()) as r:
+        res0 = json.loads(r.read().decode())
+    hits0 = res0.get("hits", {}).get("hits", [])
+    if hits0:
+        create_id = hits0[0]["_id"]
+    if not create_id:
+        print(f"total so-case docs: 0 (no create op for {case_id})")
+        return 1
+
+    q = {"query": {"term": {"so_related.caseId": create_id}}, "size": 300,
          "sort": [{"@timestamp": "asc"}]}
     req = urllib.request.Request(
         f"https://{host}:{port}/so-case/_search", data=json.dumps(q).encode(),
@@ -45,12 +62,13 @@ def main() -> int:
     with urllib.request.urlopen(req, timeout=30, context=_ctx()) as r:
         res = json.loads(r.read().decode())
     hits = res.get("hits", {}).get("hits", [])
-    print("total so-case docs:", res["hits"]["total"]["value"])
+    print("total so-case docs:", res["hits"]["total"]["value"] + 1,
+          f"(create {create_id[:18]} + {len(hits)} comments)")
     art = [h["_source"] for h in hits if (h["_source"].get("so_related") or {}).get("role") == "report"]
     print("artifact ops (role=report):", len(art))
     for s in art:
         rel = s.get("so_related") or {}
-        msg = (s.get("so_comment") or {}).get("message", "")
+        msg = (s.get("so_comment") or {}).get("description", "")
         print(f"  [{rel.get('type')}] op={s.get('so_operation')} len={len(msg)} "
               f"head={msg[:60]!r}")
     # idempotency: re-run attach should NOT duplicate
