@@ -1,0 +1,18 @@
+[Unit]
+Description=SSOP human console proxy (telemetry host .75 -> adjudication API .29:8787)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ssop-console
+ExecStart=/usr/bin/python3 %h/ssop-console/console_proxy.py
+Restart=always
+RestartSec=3
+# Keep the existing log file (start-console-proxy.sh used it); journald
+# also captures via StandardOutput=journal by default for user services.
+StandardOutput=append:%h/ssop-console/console_proxy.log
+StandardError=append:%h/ssop-console/console_proxy.log
+
+[Install]
+WantedBy=default.target
