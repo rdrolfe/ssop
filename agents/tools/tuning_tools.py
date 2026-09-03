@@ -70,9 +70,24 @@ def strong_tp_evidence(alert: dict, category: str | None = None) -> bool:
     return level >= threshold
 
 
+def _alert_host(alert: dict) -> str:
+    """Extract the agent hostname from an alert, best-effort."""
+    agent = alert.get("agent") or {}
+    if isinstance(agent, dict):
+        return str(agent.get("name") or agent.get("id") or "")
+    return str(agent or "")
+
+
 def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
     """Decide whether a tuned rule should suppress THIS alert (verdict note /
     no dispatch), or lift the tuning (override -> re-adjudication).
+
+    HOST-SCOPED EXCEPTION (option-C support): a tuning entry may carry
+    `exclude_hosts` — agent names the human explicitly wants to KEEP
+    dispatching on despite the tuned-FP decision (e.g. package-change
+    rules auto_fp fleet-wide EXCEPT on the secrets host, where package
+    drift is high-stakes). An alert from an excluded host NEVER suppresses:
+    it dispatches normally, so the analyst still reviews it there.
 
     Fingerprint-aware (thread #2): if the tuning entry carries the
     decision-relevant fingerprint of the alert the human originally tuned,
@@ -86,6 +101,15 @@ def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None
     reason (for the rationale). suppress=False -> the alert should override
     the tuning (escalate with tuning_override for re-adjudication).
     """
+    # Host-scoped exception: excluded hosts are never suppressed by the
+    # tuning — the human wants those surfaces reviewed regardless.
+    host = _alert_host(alert)
+    excluded = tuning.get("exclude_hosts") if isinstance(tuning, dict) else None
+    if excluded and host and host in {str(h) for h in excluded}:
+        return False, (
+            f"rule {tuning.get('rule_id')} tuned {tuning.get('decision')} "
+            f"({tuning.get('source')}) BUT host {host} is excluded from the "
+            f"tuning (exclude_hosts) — dispatching for review")
     stored_fp = tuning.get("fingerprint") if isinstance(tuning, dict) else None
     if isinstance(stored_fp, dict) and stored_fp.get("rule_id"):
         # Fingerprint-aware path.

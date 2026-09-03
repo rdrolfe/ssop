@@ -144,6 +144,29 @@ def main() -> int:
     if s:
         fails += 1
 
+    # 8. HOST-SCOPED EXCEPTION (option-C): a tuning with exclude_hosts must
+    #    NEVER suppress an alert from an excluded host — even an IDENTICAL
+    #    fingerprint — while other hosts still suppress.
+    led.write("2901", "auto_fp", "user option-C: dpkg noise, keep secrets host",
+              source="human", fingerprint=fingerprint_from_verdict(
+                  {"rule_id": "2901", "groups": ["dpkg", "syslog"], "level": 3,
+                   "category": "security", "description": "New dpkg (Debian Package) requested to install."}))
+    t2901 = led.lookup("2901")
+    assert t2901 is not None
+    t2901["exclude_hosts"] = ["vault-secrets"]
+    on_secrets = _mk("2901", 3, "New dpkg (Debian Package) requested to install.", ["dpkg", "syslog"])
+    on_secrets["agent"] = {"name": "vault-secrets"}
+    s, reason = tuned_rule_suppresses(t2901, on_secrets, category="security")
+    print(f"excluded host vault-secrets: suppress={s} (want False) — {reason[:55]}")
+    if s:
+        fails += 1
+    on_other = _mk("2901", 3, "New dpkg (Debian Package) requested to install.", ["dpkg", "syslog"])
+    on_other["agent"] = {"name": "ubuntu-target"}
+    s, _ = tuned_rule_suppresses(t2901, on_other, category="security")
+    print(f"non-excluded host: suppress={s} (want True)")
+    if not s:
+        fails += 1
+
     print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")
     return 0 if fails == 0 else 1
 
