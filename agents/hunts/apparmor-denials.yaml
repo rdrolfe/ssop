@@ -1,5 +1,6 @@
 name: AppArmor denials
 category: defense-evasion
+technique_id: T1068
 hypothesis: "Processes being denied by AppArmor may indicate attempts to bypass policy or misconfig."
 analyze: apparmor
 query:

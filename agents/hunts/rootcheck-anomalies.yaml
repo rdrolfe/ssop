@@ -1,5 +1,6 @@
 name: Rootcheck host anomalies
 category: integrity
+technique_id: T1547.001
 hypothesis: "Rootkit/trojan indicators flagged by rootcheck; recurring flags on the same path suggest FP noise, new flags suggest real tampering."
 analyze: rootcheck
 query:

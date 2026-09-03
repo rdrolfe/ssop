@@ -1,5 +1,6 @@
 name: BOTS HTTP exfiltration to upload endpoint
 category: defense-evasion
+technique_id: T1048.003
 hypothesis: "The APT exfiltrates stolen data via repeated POSTs to an upload endpoint (/UploadData.aspx). Ground truth: the infected workstation 192.168.250.100 uploads via HTTP."
 analyze: bots_attack
 query:

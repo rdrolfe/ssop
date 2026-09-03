@@ -39,6 +39,31 @@ escalator = get_escalation()
 ESCALATE_CATEGORIES = {"lateral-movement", "defense-evasion", "privilege-escalation"}
 
 
+def _persist_hunt_technique(cases, case_id: str, result: dict) -> None:
+    """Idempotently merge the hunt's technique_id onto a case's techniques.
+
+    Used on the recheck path (existing open case): the case may predate the
+    hunt's technique_id, and a recheck must still upgrade it to render a
+    real ATT&CK table. Reads current, merges without duplicates, writes
+    back through the normal dual-write path. Never raises — a persistence
+    hiccup must not break the sweep.
+    """
+    tid = result.get("technique_id")
+    if not tid:
+        return
+    try:
+        case = cases.get_case(case_id)
+        if not case:
+            return
+        cur = [str(t) for t in (case.get("techniques") or [])]
+        if str(tid) in cur:
+            return
+        case["techniques"] = cur + [str(tid)]
+        cases._write_both(case, event="technique_merge", role="hunt")
+    except Exception:  # noqa: BLE001 — merge is best-effort
+        logger.warning("technique merge failed for %s", case_id)
+
+
 # --- Nodes ---
 
 def node_run_sweep(state: HuntState) -> HuntState:
@@ -102,6 +127,10 @@ def node_run_sweep(state: HuntState) -> HuntState:
                 cases.append_event(cid, "hunt", "recheck", {
                     "finding": finding, "confidence": result["confidence"],
                     "summary": result.get("summary", ""), "hunt_id": hid})
+                # Persist the hunt's technique on the case (idempotent merge)
+                # so a case that pre-dates the hunt technique_id still
+                # renders a real ATT&CK table after a recheck.
+                _persist_hunt_technique(cases, cid, result)
                 # Escalate once per case (re-arms on close). Check timeline.
                 already = any(
                     ev.get("role") == "hunt" and ev.get("type") == "escalated"
@@ -137,7 +166,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
             # New finding: mint a case, file, escalate if warranted.
             case = cases.open_case(
                 source={"hunt_id": hid, "category": result["category"], "finding": finding},
-                title=f"HUNT {result['category'].upper()}: {result['name'][:50]}")
+                title=f"HUNT {result['category'].upper()}: {result['name'][:50]}",
+                techniques=[result["technique_id"]] if result.get("technique_id") else None)
             cid = case["case_id"]
             cases.append_event(cid, "hunt", "finding", {
                 "finding": finding, "confidence": result["confidence"],
@@ -184,6 +214,7 @@ def node_run_hunt(state: HuntState) -> HuntState:
         case = cases.open_case(
             source={"hunt_id": hunt_id, "category": result["category"], "finding": finding},
             title=f"HUNT {result['category'].upper()}: {result['name'][:50]}",
+            techniques=[result["technique_id"]] if result.get("technique_id") else None,
         )
         cases.append_event(case["case_id"], "hunt", "finding", {
             "finding": finding, "confidence": result["confidence"], "summary": result.get("summary", ""),

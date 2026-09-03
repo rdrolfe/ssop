@@ -87,6 +87,7 @@ class HuntClient:
             "name": spec["name"],
             "category": spec["category"],
             "hypothesis": spec["hypothesis"],
+            "technique_id": spec.get("technique_id"),  # optional MITRE ID on the hunt definition
             "window_days": days,
             "events_scanned": data.get("hits", {}).get("total", {}).get("value", len(docs)),
             "ts": datetime.now(timezone.utc).isoformat(),

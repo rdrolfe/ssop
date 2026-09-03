@@ -1,5 +1,6 @@
 name: Authentication success from unusual source
 category: lateral-movement
+technique_id: T1078
 hypothesis: "An attacker with valid creds authenticates from a source IP outside the normal set."
 analyze: srcip_frequency
 query:
