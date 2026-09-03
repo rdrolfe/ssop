@@ -145,6 +145,11 @@ class Settings:
 
     # --- case spine ---
     case_collection: str = _env("CASE_COLLECTION", "cases")
+    # Aging policy (SO parity — the SOC doesn't accumulate decided cases):
+    # a case left in a decided state for this many days is auto-closed by
+    # the supervisory duty (decided-but-unclosed was the 73-case backlog
+    # class). 0 disables auto-close.
+    auto_close_decided_days: int = _env_int("AUTO_CLOSE_DECIDED_DAYS", 7)
 
     # --- Qdrant ---
     # Deployment convention: QDRANT_URL (full URL). Generic _HOST/_PORT also supported.

@@ -209,6 +209,25 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 from tools.tuning_tools import TuningLedger
                 entries = TuningLedger().list_all()
                 self._send(200, {"ok": True, "tuning": entries})
+            elif path == "/cases/stale":
+                # Aging as a managed thing: open cases untouched for the
+                # window (SO parity — a SOC sees its backlog, not a wall).
+                # ?days=7 default; ?include_decided=0 hides decided-but-open.
+                from tools.case_tools import CaseStore
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    days = float((q.get("days") or ["7"])[0])
+                except ValueError:
+                    days = 7.0
+                include_decided = (q.get("include_decided") or ["1"])[0] not in ("0", "false", "False")
+                stale = CaseStore().list_stale(window_days=days,
+                                               include_decided=include_decided)
+                self._send(200, {"ok": True, "stale": [
+                    {"case_id": c.get("case_id"), "title": c.get("title", ""),
+                     "state": c.get("_state"), "assignee": c.get("assignee"),
+                     "age_days": c.get("_age_days"),
+                     "last_touched_ts": c.get("last_touched_ts", "")}
+                    for c in stale]})
             elif path == "/cases":
                 # Closed-loop view: recent cases with their investigation
                 # (hypothesis, severity, kill_chain, evidence) and the
@@ -244,6 +263,11 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         "case_id": cid,
                         "title": case.get("title", ""),
                         "status": case.get("status", ""),
+                        "state": case.get("state", "new"),
+                        "assignee": case.get("assignee"),
+                        "assignment_history": case.get("assignment_history", []),
+                        "last_touched_ts": case.get("last_touched_ts", ""),
+                        "techniques": case.get("techniques", []),
                         "supervisory": case.get("supervisory"),
                         "investigation": inv,
                         "adjudication": adj,
@@ -372,36 +396,100 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
             self._send(500, {"ok": False, "error": str(e)})
 
     def do_POST(self) -> None:
-        """POST /adjudicate — approve/deny a ticket by id."""
-        if self.path.rstrip("/") != "/adjudicate":
-            self._send(404, {"ok": False, "error": f"unknown path {self.path}"})
-            return
+        """POST /adjudicate — approve/deny a ticket by id (ticket queue).
+        POST /case-decision — approve/deny/fp ON a case (the case workbench:
+        the decision happens where the case is, not on a detached ticket).
+        POST /case-assign — assign/reassign a case to a role."""
+        path = self.path.rstrip("/")
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode() or "{}")
         except (ValueError, json.JSONDecodeError) as e:
             self._send(400, {"ok": False, "error": f"bad json: {e}"})
             return
-        ticket_id = payload.get("ticket_id", "")
-        decision = payload.get("decision", "")
-        rationale = payload.get("rationale", "")
-        if not ticket_id or decision not in ("approve", "deny", "fp"):
-            self._send(400, {"ok": False,
-                             "error": "ticket_id + decision (approve|deny|fp) required"})
-            return
-        try:
-            tickets = {t["ticket_id"]: t for t in _sup.list_tickets()}
-            ticket = tickets.get(ticket_id)
-            if not ticket:
-                self._send(404, {"ok": False, "error": f"ticket {ticket_id} not found"})
+
+        if path == "/adjudicate":
+            ticket_id = payload.get("ticket_id", "")
+            decision = payload.get("decision", "")
+            rationale = payload.get("rationale", "")
+            if not ticket_id or decision not in ("approve", "deny", "fp"):
+                self._send(400, {"ok": False,
+                                 "error": "ticket_id + decision (approve|deny|fp) required"})
                 return
-            _sup.adjudicate(ticket, decision, rationale)
-            logger.info("adjudicated %s -> %s via API", ticket_id, decision)
-            self._send(200, {"ok": True, "ticket_id": ticket_id,
-                             "decision": decision, "status": "adjudicated"})
-        except Exception as e:
-            logger.exception("adjudicate API failed for %s", ticket_id)
-            self._send(500, {"ok": False, "error": str(e)})
+            try:
+                tickets = {t["ticket_id"]: t for t in _sup.list_tickets()}
+                ticket = tickets.get(ticket_id)
+                if not ticket:
+                    self._send(404, {"ok": False, "error": f"ticket {ticket_id} not found"})
+                    return
+                _sup.adjudicate(ticket, decision, rationale)
+                logger.info("adjudicated %s -> %s via API", ticket_id, decision)
+                self._send(200, {"ok": True, "ticket_id": ticket_id,
+                                 "decision": decision, "status": "adjudicated"})
+            except Exception as e:
+                logger.exception("adjudicate API failed for %s", ticket_id)
+                self._send(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/case-decision":
+            case_id = payload.get("case_id", "")
+            decision = payload.get("decision", "")
+            rationale = payload.get("rationale", "")
+            if not case_id or decision not in ("approve", "deny", "fp"):
+                self._send(400, {"ok": False,
+                                 "error": "case_id + decision (approve|deny|fp) required"})
+                return
+            try:
+                case = _sup.case_verdict(case_id, decision, rationale or "via console")
+                if not case:
+                    self._send(404, {"ok": False, "error": f"case {case_id} not found"})
+                    return
+                # The linked tier-2 ticket must not linger open in the Tickets
+                # tab after the case is decided — adjudicate it with the same
+                # decision (writes the tuning entry for the rule, matching the
+                # supervisory-duty semantics).
+                try:
+                    for t in _sup.list_tickets(status="open"):
+                        det = t.get("detail") or {}
+                        if det.get("case_id") == case_id or det.get("case") == case_id:
+                            _sup.adjudicate(t, decision, rationale or "via console")
+                            logger.info("case-decision closed ticket %s for %s",
+                                        t.get("ticket_id"), case_id)
+                            break
+                except Exception:  # noqa: BLE001 — ticket close must never break the decision
+                    logger.warning("ticket close after case-decision failed for %s", case_id)
+                logger.info("case-decision %s -> %s via API", case_id, decision)
+                self._send(200, {"ok": True, "case_id": case_id,
+                                 "decision": decision,
+                                 "state": case.get("state"),
+                                 "status": case.get("status")})
+            except Exception as e:
+                logger.exception("case-decision API failed for %s", case_id)
+                self._send(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/case-assign":
+            case_id = payload.get("case_id", "")
+            role = payload.get("role", "")
+            note = payload.get("note", "")
+            if not case_id or not role:
+                self._send(400, {"ok": False, "error": "case_id + role required"})
+                return
+            try:
+                from tools.case_tools import CaseStore
+                case = CaseStore().assign_case(case_id, role, note=note)
+                if not case:
+                    self._send(404, {"ok": False, "error": f"case {case_id} not found"})
+                    return
+                logger.info("case-assign %s -> %s via API", case_id, role)
+                self._send(200, {"ok": True, "case_id": case_id,
+                                 "assignee": role, "state": case.get("state")})
+            except Exception as e:
+                logger.exception("case-assign API failed for %s", case_id)
+                self._send(500, {"ok": False, "error": str(e)})
+            return
+
+        self._send(404, {"ok": False, "error": f"unknown path {self.path}"})
 
     def log_message(self, format: str, *args: Any) -> None:  # route to our logger
         logger.info("adjudicate-api: " + format, *args)

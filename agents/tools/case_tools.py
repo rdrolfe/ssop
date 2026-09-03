@@ -8,6 +8,15 @@ DUAL-WRITE CONTRACT:
   - Qdrant collection "cases" = working memory (roles collaborate here)
   - JSONL audit/cases.jsonl = signed, append-only receipt (provable record)
 Cross-referencing the two is the supervisory agent's audit-integrity duty.
+
+CASE LIFECYCLE (SO parity — real case management):
+  A case moves through an enforced state machine — new -> triage ->
+  investigating -> awaiting_decision -> decided -> closed (-> archived) —
+  every move logged as a timeline event with the acting role. `status`
+  (open/closed) is DERIVED from state for compatibility with recidivism
+  scans; `state` is the authoritative lifecycle position. Assignment
+  history and last_touched_ts make the case a managed object, not a queue
+  row.
 """
 
 from __future__ import annotations
@@ -57,8 +66,60 @@ def load_case_template(rule_id: Any) -> str | None:
         return None
 
 
+# --- Case lifecycle state machine (SO parity: real case management) ---
+#
+# A SOC case moves through states; every move is enforced, logged as a
+# first-class timeline event with the acting role, and stamps
+# last_touched_ts. `status` (open/closed) is DERIVED from state for
+# compatibility with recidivism scans and existing call sites.
+CASE_STATES = (
+    "new", "triage", "investigating", "awaiting_decision",
+    "decided", "closed", "archived",
+)
+
+# Allowed transitions: state -> {next states}. Anything else is rejected
+# (loudly) — a decided case can't silently drift back to triage, a closed
+# case is terminal unless explicitly reopened.
+_CASE_TRANSITIONS: dict[str, set[str]] = {
+    # new -> decided is legal: a SOC triage-deny (or quick approve) a fresh
+    # case without a full investigation.
+    "new": {"triage", "investigating", "decided", "closed"},
+    "triage": {"investigating", "awaiting_decision", "decided", "closed"},
+    "investigating": {"awaiting_decision", "decided", "closed"},
+    "awaiting_decision": {"decided", "closed"},
+    "decided": {"closed", "reopened"},   # reopened -> back into the flow
+    "closed": {"archived", "reopened"},
+    "archived": set(),
+    "reopened": {"triage", "investigating", "awaiting_decision", "decided", "closed"},
+}
+
+# States that read as "open" for the derived status + recidivism checks.
+_OPEN_STATES = {"new", "triage", "investigating", "awaiting_decision",
+                "decided", "reopened"}
+
+
+class CaseStateError(RuntimeError):
+    """Raised when a case transition is invalid (the machine is enforced)."""
+
+
+def _derive_status(state: str) -> str:
+    return "open" if state in _OPEN_STATES else "closed"
+
+
+def _normalize_state(state: str) -> str:
+    """Backfill legacy cases: map the old two-value status onto the machine."""
+    if not state or state not in CASE_STATES:
+        return "closed" if state == "closed" else "new"
+    return state
+
+
 class CaseStore:
-    """Incident spine backed by Qdrant (working) + JSONL (receipt)."""
+    """Incident spine backed by Qdrant (working) + JSONL (receipt).
+
+    Owns the case lifecycle state machine (transition/decide/reopen/close),
+    assignment history, aging (list_stale), recidivism scans, and the
+    dual-write to Qdrant + the append-only receipt spine.
+    """
 
     def __init__(self, memory=None) -> None:
         self.audit_dir: Path = settings.audit_dir
@@ -98,6 +159,12 @@ class CaseStore:
             "ts": datetime.now(timezone.utc).isoformat(),
             "title": title,
             "status": "open",
+            # Real case-management state (SO parity): the state machine a SOC
+            # actually runs — new -> triage -> investigating ->
+            # awaiting_decision -> decided -> closed (-> archived). `status`
+            # stays derived (open/closed) so recidivism scans and existing
+            # call sites keep working; `state` is the authoritative lifecycle.
+            "state": "new",
             "source": source,  # original alert/trigger
             "observables": observables or [],  # [{type, value}, ...]
             "enrichments": enrichments or [],  # [{provider, status, raw, ts}, ...]
@@ -105,7 +172,13 @@ class CaseStore:
             "checklist": None,  # case-template markdown (adopted SO concept 5)
             "timeline": [],  # append-only events (verdicts, actions)
             "assignee": assignee,  # role currently handling it (auto-assign)
+            "assignment_history": [],  # [{assignee, ts, by}] — who held it, when
+            "last_touched_ts": datetime.now(timezone.utc).isoformat(),
         }
+        # The human who mints a case IS the acting role: assignment + history.
+        if assignee:
+            case["assignment_history"].append({
+                "assignee": assignee, "ts": case["ts"], "by": "mint"})
         # Prepopulate the case checklist from the rule's case-template, if any
         # (adopted SO concept: rule.case_template -> auto-populated checklist).
         try:
@@ -122,7 +195,15 @@ class CaseStore:
         return case
 
     def append_event(self, case_id: str, role: str, event_type: str, detail: dict[str, Any]) -> dict[str, Any] | None:
-        """Append a timeline event to an existing case (by case_id)."""
+        """Append a timeline event to an existing case (by case_id).
+
+        Stamps last_touched_ts and — where the event is a lifecycle signal —
+        advances the state machine opportunistically (investigation ->
+        investigating; escalate/verdict -> awaiting_decision), so real flows
+        move the case through the machine without every call site needing to
+        know the transitions. Adjudication is NOT handled here: use
+        decide()/case_verdict (it writes the decision + transition).
+        """
         case = self.get_case(case_id)
         if not case:
             logger.warning("append_event: case %s not found", case_id)
@@ -135,6 +216,18 @@ class CaseStore:
         }
         case.setdefault("timeline", []).append(entry)
         case["updated_ts"] = entry["ts"]
+        case["last_touched_ts"] = entry["ts"]
+        # Opportunistic machine advance (enforced — illegal moves are skipped
+        # silently here: a signal on a decided case must not yank it back).
+        cur = _normalize_state(case.get("state", "new"))
+        want = None
+        if event_type == "investigation" and cur in ("new", "triage"):
+            want = "investigating"
+        elif event_type in ("escalate", "verdict") and cur in ("triage", "investigating"):
+            want = "awaiting_decision"
+        if want and want in _CASE_TRANSITIONS.get(cur, set()):
+            case["state"] = want
+            case["status"] = _derive_status(want)
         self._write_both(case, event=event_type, role=role)
         return case
 
@@ -145,7 +238,7 @@ class CaseStore:
         tell who's responsible. Every escalation and every supervisory
         verdict assigns the case to the role that should act next (writeup
         audit: 47/47 cases had no assignee). Sets `assignee`, records an
-        `assigned` timeline event, dual-writes.
+        `assigned` timeline event + assignment-history entry, dual-writes.
         """
         case = self.get_case(case_id)
         if not case:
@@ -161,9 +254,117 @@ class CaseStore:
         }
         case.setdefault("timeline", []).append(entry)
         case["updated_ts"] = entry["ts"]
+        case["last_touched_ts"] = entry["ts"]
+        # Assignment history — who held the case, when, by whom (the SOC
+        # audit trail for handoffs between roles).
+        case.setdefault("assignment_history", []).append({
+            "assignee": role, "ts": entry["ts"], "by": "assign"})
         self._write_both(case, event="assigned", role=role)
         logger.info("case assigned: %s -> %s (%s)", case_id, role, note or "no note")
         return case
+
+    # --- lifecycle: transitions -------------------------------------------------
+
+    def transition(self, case_id: str, to_state: str, role: str = "case-spine",
+                   rationale: str = "") -> dict[str, Any] | None:
+        """Move a case through the state machine (enforced).
+
+        Validates the transition, updates `state` + derived `status`, stamps
+        `last_touched_ts`, appends a `transition` timeline event (the audit
+        trail of WHO moved the case and why), and dual-writes. Raises
+        CaseStateError on an illegal move — fail loud, not silent.
+        """
+        case = self.get_case(case_id)
+        if not case:
+            logger.warning("transition: case %s not found", case_id)
+            return None
+        cur = _normalize_state(case.get("state", "new"))
+        if to_state not in _CASE_TRANSITIONS.get(cur, set()):
+            raise CaseStateError(
+                f"illegal case transition {cur} -> {to_state} (case {case_id})")
+        case["state"] = to_state
+        case["status"] = _derive_status(to_state)
+        case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "type": "transition",
+            "detail": {"from": cur, "to": to_state, "rationale": rationale or ""},
+        }
+        case.setdefault("timeline", []).append(entry)
+        case["updated_ts"] = entry["ts"]
+        self._write_both(case, event=f"transition:{to_state}", role=role)
+        logger.info("case %s transition: %s -> %s (%s)", case_id, cur, to_state, role)
+        return case
+
+    def decide(self, case_id: str, decision: str, rationale: str,
+               role: str = "supervisory") -> dict[str, Any] | None:
+        """Record a supervisory decision — the case leaves the decision queue.
+
+        Sets state=decided (approve/deny/auto_fp all land here — the OUTCOME
+        is carried by the decision field, the lifecycle position is uniform),
+        writes the top-level `supervisory` block AND the adjudication
+        timeline event (the console reads the timeline), and stamps the
+        case. Callers that previously set status directly now ride the
+        machine: an approved case stays OPEN until the responder/close step
+        closes it (real SOC semantics — approve ≠ close).
+        """
+        case = self.transition(case_id, "decided", role=role,
+                               rationale=f"{decision}: {rationale[:80]}")
+        if not case:
+            return None
+        case["supervisory"] = {"decision": decision, "rationale": rationale,
+                               "ts": datetime.now(timezone.utc).isoformat()}
+        case.setdefault("timeline", []).append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "type": "adjudication",
+            "detail": {"decision": decision, "rationale": rationale},
+        })
+        case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+        self._write_both(case, event="adjudication", role=role)
+        return case
+
+    def reopen(self, case_id: str, role: str = "case-spine",
+               rationale: str = "") -> dict[str, Any] | None:
+        """Reopen a closed case (transition via the machine)."""
+        return self.transition(case_id, "reopened", role=role,
+                               rationale=rationale or "case reopened")
+
+    def list_stale(self, window_days: float = 7.0,
+                   include_decided: bool = True) -> list[dict[str, Any]]:
+        """Open cases that have NOT been touched in `window_days`.
+
+        Aging as a managed thing (SO parity): a case with no activity for
+        the window is stale — it needs a supervisory ping or auto-close.
+        `include_decided` adds decided-but-unclosed cases (the class that
+        accumulated 73 deep in the backlog audit). Returns the stale cases
+        with age + state for the duty to act on.
+        """
+        from datetime import datetime as _dt
+        cutoff = _dt.now(timezone.utc).timestamp() - window_days * 86400
+        out = []
+        mem = self._get_memory()
+        for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
+                                   scroll_limit=10000):
+            p = self._parse_content(r.get("content", ""))
+            if not p:
+                continue
+            if p.get("status") == "closed":
+                continue
+            state = _normalize_state(p.get("state", "new"))
+            if not include_decided and state == "decided":
+                continue
+            touched = p.get("last_touched_ts") or p.get("updated_ts") or p.get("ts") or ""
+            try:
+                age_d = (_dt.now(timezone.utc).timestamp()
+                         - _dt.fromisoformat(touched).timestamp()) / 86400
+            except (ValueError, TypeError):
+                age_d = 999.0
+            if age_d >= window_days:
+                out.append({**p, "_age_days": round(age_d, 1),
+                            "_state": state})
+        return out
 
     def close_case(self, case_id: str, role: str = "case-spine", reason: str = "") -> dict[str, Any] | None:
         """Close a case (status -> closed) and record the lifecycle event.
@@ -181,11 +382,15 @@ class CaseStore:
             raise ValueError(
                 "close_case requires a non-blank reason (a closed case with "
                 "no reason is a dead end for post-incident review)")
-        case = self.get_case(case_id)
+        # Route through the state machine: validates the move, sets state +
+        # derived status, stamps last_touched, dual-writes.
+        case = self.transition(case_id, "closed", role=role,
+                               rationale=reason)
         if not case:
             logger.warning("close_case: case %s not found", case_id)
             return None
-        case["status"] = "closed"
+        # Keep the explicit case_closed event (existing consumers/audit read
+        # it) in addition to the machine's transition event.
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "role": role,

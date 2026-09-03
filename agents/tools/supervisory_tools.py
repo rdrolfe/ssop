@@ -169,28 +169,19 @@ class SupervisoryClient:
         return self._cases.reconcile()
 
     def case_verdict(self, case_id: str, decision: str, rationale: str) -> dict[str, Any] | None:
-        """Record a supervisory verdict on a case.
+        """Record a supervisory verdict on a case — via the lifecycle machine.
 
         Writes BOTH the top-level `supervisory` field AND a timeline
         adjudication event (so the /cases console view surfaces the decision —
         it reads the timeline, not the top-level field). Keeps receipt +
-        timeline consistent.
+        timeline consistent. The case leaves the queue (state=decided) but
+        stays OPEN until the responder/close step closes it — approve is a
+        decision, not a close (real SOC semantics).
         """
-        case = self._cases.get_case(case_id)
+        case = self._cases.decide(case_id, decision, rationale, role="supervisory")
         if not case:
-            logger.warning("case_verdict: %s not found", case_id)
+            logger.warning("case_verdict: %s not found or transition failed", case_id)
             return None
-        case["status"] = "closed" if decision == "approve" else "open"
-        case["supervisory"] = {"decision": decision, "rationale": rationale,
-                               "ts": datetime.now(timezone.utc).isoformat()}
-        # Append a timeline event so the human console's /cases view sees it.
-        case.setdefault("timeline", []).append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "role": "supervisory",
-            "type": "adjudication",
-            "detail": {"decision": decision, "rationale": rationale},
-        })
-        self._cases._write_both(case, event="adjudication", role="supervisory")
         # Attach the generated report + advisory INTO the case on the SO
         # surface (meatsuit sees the full report as part of the case, not a
         # separate link). Best-effort — never breaks adjudication.

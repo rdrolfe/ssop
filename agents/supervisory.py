@@ -128,7 +128,13 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
 
 
 def node_reconcile(state: SupervisoryState) -> SupervisoryState:
-    """Audit-integrity check: Qdrant vs JSONL."""
+    """Audit-integrity check: Qdrant vs JSONL + aging policy.
+
+    Aging as a managed thing (SO parity): decided-but-unclosed cases older
+    than settings.auto_close_decided_days are auto-closed here — the SOC
+    doesn't accumulate decided cases (the 73-case backlog class). Disabled
+    when the setting is 0.
+    """
     try:
         r = sup.reconcile()
         lines = [
@@ -137,6 +143,34 @@ def node_reconcile(state: SupervisoryState) -> SupervisoryState:
             f"  qdrant_only: {len(r.get('qdrant_only', []))}",
             f"  receipt_only: {len(r.get('receipt_only', []))}",
         ]
+        # Aging policy: auto-close decided-but-unclosed stale cases.
+        try:
+            from config import settings as _settings
+            days = int(getattr(_settings, "auto_close_decided_days", 0))
+            if days > 0:
+                stale = sup._cases.list_stale(
+                    window_days=days, include_decided=True)
+                decided_stale = [c for c in stale if c.get("_state") == "decided"]
+                if decided_stale:
+                    closed_n = 0
+                    for c in decided_stale:
+                        try:
+                            sup._cases.close_case(
+                                c["case_id"], role="supervisory",
+                                reason=f"auto-close: decided {c.get('_age_days')}d "
+                                       f"untouched (policy {days}d)")
+                            closed_n += 1
+                        except Exception:  # noqa: BLE001 — one bad close must not stop the sweep
+                            logger.warning("auto-close failed for %s", c["case_id"])
+                    lines.append(f"  aging: auto-closed {closed_n} decided-stale "
+                                 f"cases (>={days}d untouched)")
+                else:
+                    lines.append(f"  aging: no decided-stale cases (policy {days}d)")
+            else:
+                lines.append("  aging: auto-close disabled (AUTO_CLOSE_DECIDED_DAYS=0)")
+        except Exception as e:  # noqa: BLE001 — aging must never break reconcile
+            logger.warning("aging policy step failed: %s", e)
+            lines.append(f"  aging: policy step failed ({e})")
         # Append (not overwrite) so the adjudication output survives the chain.
         prev = state.get("result") or ""
         state["result"] = (prev + "\n" if prev else "") + "\n".join(lines)

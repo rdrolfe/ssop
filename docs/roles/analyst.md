@@ -71,7 +71,7 @@ optionally `existing_chain`, `tuning_override`, `recommended_playbook`.
 |---|---|---|
 | `ANALYST_HIGH_LEVEL` | 7 | level ≥ 7 → severity high |
 | `ANALYST_MEDIUM_LEVEL` | 4 | level ≥ 4 → severity medium |
-| `medium_escalate_categories` | auth, threat | categories that escalate at medium (`config.py:159`) |
+| `medium_escalate_categories` | auth, threat | categories that escalate at medium (`config.py:164`) |
 | `ANALYST_FP_RULE_IDS` | 510 | never auto-escalate (rootcheck) |
 | `noise_rules` | 5501,5502,5715 | baseline events → note |
 

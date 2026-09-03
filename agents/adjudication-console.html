@@ -48,18 +48,22 @@
 <div class="sub">Tier-2 adjudication + managed tuning. Decisions become durable analyst policy. Case data shows observables, enrichment, checklist, and MITRE techniques (adopted from the SO human-workflow concepts).</div>
 
 <div class="toolbar">
-  <input type="text" id="adjudicate" placeholder="Adjudication API (e.g. http://192.168.1.29:8787)" value="http://192.168.1.29:8787">
+  <input type="text" id="adjudicate" placeholder="same-origin (console proxy) or full API URL" value="same-origin">
   <button class="primary" onclick="refreshAll()">Refresh</button>
 </div>
 
 <div class="tabs">
   <div class="tab active" id="tab-tickets" onclick="showTab('tickets')">Tickets</div>
+  <div class="tab" id="tab-cases" onclick="showTab('cases')">Cases</div>
   <div class="tab" id="tab-tuning" onclick="showTab('tuning')">Tuned Rules</div>
   <div class="tab" id="tab-loop" onclick="showTab('loop')">Closed Loop</div>
 </div>
 
 <div class="panel active" id="panel-tickets">
   <div id="list"><div class="empty">Loading open tier-2 tickets…</div></div>
+</div>
+<div class="panel" id="panel-cases">
+  <div id="caselist"><div class="empty">Loading case workbench…</div></div>
 </div>
 <div class="panel" id="panel-tuning">
   <div id="tuning"><div class="empty">Loading tuning ledger…</div></div>
@@ -79,13 +83,22 @@ function showTab(name) {
   document.getElementById("panel-" + name).classList.add("active");
   if (name === "tuning") loadTuning();
   else if (name === "loop") loadLoop();
+  else if (name === "cases") loadCases();
   else refresh();
 }
 
 async function refreshAll() { refresh(); loadTuning(); }
 
+function apiBase() {
+  // Empty field or "same-origin" -> relative fetches ride the console proxy
+  // (same host, same cert — the embedded-iframe pattern). A full URL is
+  // honored for the standalone case.
+  const v = document.getElementById("adjudicate").value.trim();
+  return (!v || v === "same-origin") ? "" : v.replace(/\/+$/, "");
+}
+
 async function refresh() {
-  const api = document.getElementById("adjudicate").value.trim();
+  const api = apiBase();
   const list = document.getElementById("list");
   list.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -136,7 +149,7 @@ async function refresh() {
 }
 
 async function loadTuning() {
-  const api = document.getElementById("adjudicate").value.trim();
+  const api = apiBase();
   const el = document.getElementById("tuning");
   el.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -164,7 +177,7 @@ async function loadTuning() {
 }
 
 async function loadLoop() {
-  const api = document.getElementById("adjudicate").value.trim();
+  const api = apiBase();
   const el = document.getElementById("loop");
   el.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -204,7 +217,7 @@ async function loadLoop() {
 }
 
 async function act(id, decision, btn) {
-  const api = document.getElementById("adjudicate").value.trim();
+  const api = apiBase();
   const status = document.getElementById("status");
   status.className = "status"; status.style.display = "none";
   btn.disabled = true;
@@ -220,6 +233,83 @@ async function act(id, decision, btn) {
     if (!resp.ok || !d.ok) throw new Error((d.error || "HTTP " + resp.status));
     status.className = "status ok"; status.textContent = "✅ " + id + " → " + decision + " (tuning written)";
     setTimeout(refresh, 800);
+  } catch (e) {
+    status.className = "status err"; status.textContent = "❌ " + e.message;
+    btn.disabled = false;
+  }
+}
+
+// --- Case workbench: the decision surface lives ON the case ---
+async function loadCases() {
+  const api = apiBase();
+  const el = document.getElementById("caselist");
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const resp = await fetch(api + "/cases");
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const d = await resp.json();
+    const cases = d.cases || [];
+    if (!cases.length) { el.innerHTML = '<div class="empty">No cases in the spine yet.</div>'; return; }
+    el.innerHTML = "";
+    cases.forEach(c => {
+      const inv = c.investigation || {};
+      const adj = c.adjudication || c.supervisory || {};
+      const tech = (c.techniques || []).map(x => `<span class="badge tech">${esc(x)}</span>`).join(" ");
+      const sev = inv.severity_label || "?";
+      const sevClass = sev === "high" ? "bad" : sev === "medium" ? "warn" : "ok";
+      const state = c.state || "new";
+      const assignee = c.assignee || "unassigned";
+      const timeline = (c.timeline || []).map(ev =>
+        `<div class="ev"><b>${esc(ev.role || "?")}</b>/<b>${esc(ev.type || "?")}</b> <span class="muted">${esc((ev.ts || "").slice(0, 19))}</span><br><span class="muted">${esc(JSON.stringify(ev.detail || {}))}</span></div>`).join("");
+      const t = document.createElement("div");
+      t.className = "ticket";
+      t.innerHTML = `
+        <div class="top">
+          <span class="badge t2" style="color:var(--${sevClass})">${esc(sev)}</span>
+          <span class="title">${esc(c.title || "(no title)")}</span>
+          <span class="id">${esc(c.case_id || "")}</span>
+        </div>
+        <div class="meta">state: <b>${esc(state)}</b> · status: ${esc(c.status || "-")} · assignee: <b>${esc(assignee)}</b> · touched: ${esc((c.last_touched_ts || "").slice(0, 19))} · ${(inv.evidence || []).length} evidence</div>
+        ${tech ? `<div class="details"><span class="lbl">MITRE:</span> ${tech}</div>` : ""}
+        <div class="details"><span class="lbl">Kill-chain:</span> ${esc((inv.kill_chain || []).join(" → ") || "-")}</div>
+        <div class="details"><span class="lbl">Hypothesis:</span> ${esc(inv.hypothesis || "-")}</div>
+        ${adj.rationale ? `<div class="details"><span class="lbl">Adjudication:</span> ${esc(adj.rationale)}</div>` : ""}
+        <div class="details" style="cursor:pointer" onclick="toggleThread('thread-${esc(c.case_id)}')"><span class="lbl">▸ Case thread (${(c.timeline || []).length} events)</span></div>
+        <div id="thread-${esc(c.case_id)}" class="thread" style="display:none">${timeline}</div>
+        <div class="actions">
+          <button class="approve" onclick="caseAct('${esc(c.case_id)}','approve',this)">Approve</button>
+          <button class="deny" onclick="caseAct('${esc(c.case_id)}','deny',this)">Deny</button>
+          <button class="fp" onclick="caseAct('${esc(c.case_id)}','fp',this)">False Positive</button>
+        </div>`;
+      el.appendChild(t);
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function toggleThread(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+async function caseAct(case_id, decision, btn) {
+  const api = apiBase();
+  const status = document.getElementById("status");
+  status.className = "status"; status.style.display = "none";
+  btn.disabled = true;
+  try {
+    const rationale = prompt("Rationale for " + decision + " on case " + case_id + ":", "operator decision");
+    if (rationale === null) { btn.disabled = false; return; }
+    const resp = await fetch(api + "/case-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case_id, decision, rationale })
+    });
+    const d = await resp.json();
+    if (!resp.ok || !d.ok) throw new Error((d.error || "HTTP " + resp.status));
+    status.className = "status ok"; status.textContent = "✅ " + case_id + " → " + decision + " (state " + (d.state || "?") + ")";
+    setTimeout(loadCases, 800);
   } catch (e) {
     status.className = "status err"; status.textContent = "❌ " + e.message;
     btn.disabled = false;
