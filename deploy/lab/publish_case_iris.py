@@ -27,8 +27,11 @@ from pathlib import Path
 sys.path.insert(0, ".")
 
 # IRIS service-account key + endpoint live in the runtime .env (host-only).
+# Per-role keys: IRIS_KEY_ANALYST / _SUPERVISOR / _RESPONDER / _HUNT
+# (fall back to IRIS_API_KEY = the automation account).
 _IRIS_URL = ""
 _IRIS_KEY = ""
+_ROLE = "automation"
 
 
 def _load_env() -> None:
@@ -39,7 +42,9 @@ def _load_env() -> None:
         if not env.exists():
             continue
         for line in env.read_text().splitlines():
-            if line.startswith("IRIS_API_KEY=") and not _IRIS_KEY:
+            if _ROLE != "automation" and line.startswith(f"IRIS_KEY_{_ROLE.upper()}="):
+                _IRIS_KEY = line.split("=", 1)[1].strip()
+            elif line.startswith("IRIS_API_KEY=") and not _IRIS_KEY:
                 _IRIS_KEY = line.split("=", 1)[1].strip()
             elif line.startswith("IRIS_URL=") and not _IRIS_URL:
                 _IRIS_URL = line.split("=", 1)[1].strip()
@@ -88,12 +93,18 @@ def _chain_summary(case: dict) -> str:
 
 
 def main() -> int:
+    global _ROLE
+    # --role selects which IRIS service account attributes the write
+    # (analyst|supervisor|responder|hunt|automation). Must be parsed BEFORE
+    # _load_env() so the right key is picked.
+    if "--role" in sys.argv:
+        _ROLE = sys.argv[sys.argv.index("--role") + 1].lower()
     _load_env()
     if not _IRIS_KEY or not _IRIS_URL:
         print("IRIS_API_KEY / IRIS_URL not found (looked in ~/iris-web/.env)")
         return 1
     if len(sys.argv) < 2:
-        print("usage: publish_case_iris.py <case_id> [--customer N]")
+        print("usage: publish_case_iris.py <case_id> [--customer N] [--role analyst|supervisor|responder|hunt|automation]")
         return 1
     case_id = sys.argv[1]
     customer = 1
