@@ -229,6 +229,71 @@ def enrich_case_timeline(case_id: str, iris_case_id: int, customer: int = 1) -> 
     return added
 
 
+_IRIS_ALT = {"ip": "ip-src", "domain": "domain", "hash": "sha256",
+             "url": "url", "hostname": "hostname", "uri": "uri"}
+# Verified against a live IRIS 2.4.29 DB (ioc_type table).
+_IOC_TYPE_IDS = {"ip-src": 79, "ip-dst": 77, "domain": 20, "hostname": 69,
+                 "sha256": 113, "sha1": 111, "md5": 90, "uri": 140, "url": 141}
+
+
+def _ioc_type_id(otype: str) -> int | None:
+    """Resolve an SSOP observable type to an IRIS ioc_type_id."""
+    name = _IRIS_ALT.get(str(otype).lower())
+    return _IOC_TYPE_IDS.get(name or "")
+
+
+def _add_note(iris_id: int, title: str, content: str) -> bool:
+    """Write a real IRIS note on the case (Notes tab). Returns success.
+
+    IRIS notes require a directory_id that exists for the case (note_directory
+    is NOT auto-seeded). Create an "SSOP" directory on first use and reuse it.
+    """
+    dir_id = None
+    try:
+        dirs = _req("GET", f"/case/notes/groups/list?cid={iris_id}")
+        for d in dirs.get("data", []) or []:
+            if (d.get("group_title") or d.get("name")) == "SSOP":
+                dir_id = d.get("id")
+                break
+    except Exception:
+        dir_id = None
+    if not dir_id:
+        try:
+            r = _req("POST", f"/case/notes/directories/add?cid={iris_id}",
+                     {"name": "SSOP", "parent_id": None})
+            dir_id = (r.get("data") or {}).get("id")
+        except urllib.error.HTTPError as e:
+            print(f"  note dir create failed: {e.code} {e.read().decode()[:150]}")
+            return False
+    try:
+        _req("POST", f"/case/notes/add?cid={iris_id}",
+             {"note_title": title[:155], "note_content": content,
+              "directory_id": dir_id})
+        print("  note added:", title[:50])
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"  note failed: {e.code} {e.read().decode()[:150]}")
+        return False
+
+
+def _add_iocs(iris_id: int, case: dict) -> int:
+    """Map spine observables -> IRIS IOCs. Returns count added."""
+    obs = case.get("observables", []) or []
+    added = 0
+    for o in obs:
+        tid = _ioc_type_id(o.get("type", ""))
+        if not tid:
+            continue
+        try:
+            _req("POST", f"/case/ioc/add?cid={iris_id}",
+                 {"ioc_value": o.get("value", ""), "ioc_type_id": tid,
+                  "ioc_description": f"SSOP spine observable ({o.get('type')})"})
+            added += 1
+        except urllib.error.HTTPError as e:
+            print(f"  ioc failed ({o.get('value')}): {e.code} {e.read().decode()[:120]}")
+    return added
+
+
 def main() -> int:
     global _ROLE
     # --role selects which IRIS service account attributes the write
@@ -255,6 +320,21 @@ def main() -> int:
         return 1
 
     src = case.get("source", {}) or {}
+    # Phase 2 (case-list columns): surface engine/decision/playbook/agent in
+    # the IRIS case's custom_attributes so manage_cases.js can render them.
+    sup = case.get("supervisory") or {}
+    decision = sup.get("decision")
+    for e in reversed(case.get("timeline", []) or []):
+        if decision:
+            break
+        if e.get("role") == "supervisory" and e.get("type") in ("adjudication", "verdict"):
+            decision = (e.get("detail") or {}).get("decision")
+    ssop_summary = {
+        "engine": "wazuh" if str(src.get("rule_id", "")).isdigit() else "securityonion",
+        "decision": decision or "",
+        "playbook": sup.get("recommended_playbook") or "",
+        "agent": src.get("agent") or case.get("assignee") or "",
+    }
     desc = (f"{case.get('title', '')}\n\nsource: {src.get('rule_desc') or src.get('rule_id') or 'n/a'}\n"
             f"state: {case.get('state')} | assignee: {case.get('assignee')}\n\n{_chain_summary(case)}")
     payload = {
@@ -272,6 +352,16 @@ def main() -> int:
         print(f"case create failed: {e.code} {e.read().decode()[:300]}")
         return 1
 
+    # Phase 2 (case-list columns): write the SSOP summary into the case's
+    # custom_attributes via the SSOP meta endpoint (bypasses CaseSchema which
+    # drops custom_attributes on create on this IRIS version).
+    try:
+        _req("POST", f"/case/ssop/meta?cid={iris_id}",
+             {"custom_attributes": {"ssop": ssop_summary}})
+        print("ssop meta saved")
+    except urllib.error.HTTPError as e:
+        print(f"ssop meta failed: {e.code} {e.read().decode()[:200]}")
+
     # Append the decision chain as a task log entry (the human timeline).
     # Tasklog is case-scoped: use the CREATED case's id, not the default.
     try:
@@ -280,6 +370,16 @@ def main() -> int:
         print("task log appended")
     except urllib.error.HTTPError as e:
         print(f"tasklog failed: {e.code} {e.read().decode()[:200]}")
+
+    # Phase 2: real IRIS note (Notes tab) carrying the decision chain.
+    _add_note(iris_id,
+              f"SSOP decision chain — {case.get('state')}",
+              f"{case.get('title', '')}\n\n{_chain_summary(case)}")
+
+    # Phase 2: map spine observables -> IRIS IOCs.
+    n_ioc = _add_iocs(iris_id, case)
+    if n_ioc:
+        print(f"iocs added: {n_ioc}")
 
     # Write each spine timeline event as an IRIS timeline event, attributed
     # per role (the calling key determines event.user_id).

@@ -63,10 +63,14 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
     if not (v["verdict"] == "escalate" or v.get("existing_chain")):
         return out
     # Extract IOCs (adopted SO concept — first-class observables on the case).
+    # Extract from the ALERT (raw/normalized fields srcip/dstip/etc.), NOT
+    # the verdict dict — the verdict carries entity_srcip/entity_dstip which
+    # extract_observables doesn't read, so extract_observables(v) returns []
+    # on every alert (the case was minted with empty observables).
     from tools.enrichment import EnrichmentClient
     from tools.observables import extract_observables
 
-    obs = extract_observables(v)
+    obs = extract_observables(alert)
     out["observables"] = obs
     enrichments = []
     if obs:

@@ -18,6 +18,10 @@ FROM ghcr.io/dfir-iris/iriswebapp_app:v2.4.29
 COPY case_ssop_routes.py /iriswebapp/app/blueprints/case/case_ssop_routes.py
 COPY templates/case_ssop.html /iriswebapp/app/blueprints/case/templates/case_ssop.html
 
+# Phase 2: case-list SSOP columns (overrides the stock datatable + template).
+COPY manage.cases.js /iriswebapp/app/static/assets/js/iris/manage.cases.js
+COPY manage_cases.html /iriswebapp/app/blueprints/manage/templates/manage_cases.html
+
 # Wire the blueprint import/registration + the nav tab into the stock files.
 # Anchored + idempotent: fails loudly if a stock anchor vanished (so an
 # upstream bump can't silently produce a panel-less image), skips if the
@@ -53,4 +57,18 @@ if 'case_ssop' not in n:
     print('case-nav.html patched')
 else:
     print('case-nav.html already patched')
+
+# --- Phase 2: expose custom_attributes on case create so the SSOP summary
+# (decision/engine/playbook/agent) can ride into the case list UI. ---
+schema = Path('/iriswebapp/app/schema/marshables.py')
+m = schema.read_text()
+if '    custom_attributes: Optional[Dict[str, Any]]' not in m:
+    anchor = "    severity_id: Optional[int] = auto_field('severity_id', required=False, allow_none=True)\n"
+    assert anchor in m, 'CaseSchema severity_id anchor missing'
+    field = anchor + "    custom_attributes: Optional[Dict[str, Any]] = auto_field('custom_attributes', required=False)\n"
+    m = m.replace(anchor, field, 1)
+    schema.write_text(m)
+    print('CaseSchema custom_attributes added')
+else:
+    print('CaseSchema already patched')
 PYEOF

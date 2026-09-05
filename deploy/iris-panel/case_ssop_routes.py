@@ -26,6 +26,8 @@ from typing import Optional
 
 from app.datamgmt.case.case_db import get_case
 from app.models.authorization import CaseAccessLevel
+from app import db
+from app.models.cases import Cases
 from app.util import ac_api_case_requires
 from app.util import ac_case_requires
 from app.util import response_error
@@ -133,3 +135,31 @@ def case_ssop_decide(caseid):
         return response_error(f"spine HTTP {e.code}: {e.read().decode()[:200]}")
     except Exception as e:  # noqa: BLE001
         return response_error(f"spine unreachable: {e}")
+
+
+@case_ssop_blueprint.route('/case/ssop/meta', methods=['POST'])
+@ac_api_case_requires(CaseAccessLevel.full_access)
+def case_ssop_meta(caseid):
+    """Write the SSOP summary into the case's custom_attributes.
+
+    Body: {custom_attributes: {...}} — merged under the "ssop" key so the
+    case-list datatable (manage.cases.js) can render Engine/Decision/
+    Playbook/Agent columns. This bypasses CaseSchema (whose create/update
+    load drops custom_attributes on this IRIS version) and writes the ORM
+    object directly.
+    """
+    try:
+        payload = request.get_json(force=True)
+    except Exception:  # noqa: BLE001
+        return response_error("bad json body")
+    attrs = (payload or {}).get("custom_attributes")
+    if not isinstance(attrs, dict):
+        return response_error("custom_attributes (dict) required")
+    case = get_case(caseid)
+    if not case:
+        return response_error("case not found")
+    existing = dict(case.custom_attributes or {})
+    existing["ssop"] = attrs.get("ssop", attrs)
+    case.custom_attributes = existing
+    db.session.commit()
+    return response_success("SSOP meta saved", data={"case_id": caseid})

@@ -335,13 +335,21 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                 result["escalated"] = True
                 logger.info("router attached alert to existing chain %s (repeated entity)", case_id)
             else:
+                # Persist the extracted IOCs on the case (first-class observables,
+                # adopted SO concept) so the supervisor/report/advisory/IRIS IOC
+                # mapping all read real data. Mirror analyst.py's extraction.
+                from tools.observables import extract_observables
+                obs = extract_observables(alert)
                 case = cases.open_case(
                     source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
                             "rule_id": v.get("rule_id"), "category": v["category"], "level": v["level"],
                             "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
                     title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
+                    observables=obs,
                     techniques=v.get("techniques") or [],
+                    assignee="analyst",  # auto-assign like the analyst mint path
                 )
+                result["observables"] = obs
                 case_id = case["case_id"]
                 cases.append_event(case_id, "router", "dispatch", {
                     "verdict": "escalate", "rationale": v["rationale"],
