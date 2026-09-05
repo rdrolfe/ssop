@@ -451,7 +451,11 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 try:
                     for t in _sup.list_tickets(status="open"):
                         det = t.get("detail") or {}
-                        if det.get("case_id") == case_id or det.get("case") == case_id:
+                        # Router-spread tickets carry case_id TOP-LEVEL (the
+                        # escalate() spread puts it beside the verdict); the
+                        # console-normalized shape nests under detail. Check both.
+                        if (det.get("case_id") == case_id or det.get("case") == case_id
+                                or t.get("case_id") == case_id):
                             _sup.adjudicate(t, decision, rationale or "via console")
                             logger.info("case-decision closed ticket %s for %s",
                                         t.get("ticket_id"), case_id)

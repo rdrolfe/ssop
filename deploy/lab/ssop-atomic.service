@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP atomic-indicator injector (fire MITRE-style signals)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rdrolfe
+Group=rdrolfe
+ExecStart=/home/rdrolfe/agent-runtime/deploy/lab/ssop-atomic.sh
+Nice=10

@@ -1,0 +1,24 @@
+# SSOP atomic-indicator injector — standing purple-team cadence.
+#
+# Fires fresh MITRE-style atomic indicators (T1046 scan, T1053.005 task,
+# T1071.001 HTTP exfil, T1566.001 phishing, T1572 DNS tunnel) into the live
+# Wazuh alerts index using NEVER-tuned rule ids, so the router sweep mints
+# fresh cases and the analyst/supervisory timers complete the chains into
+# IRIS. Fixed doc ids -> re-runs overwrite, never duplicate.
+#
+# Cadence: every 30 minutes, offset from the router sweep (which runs every
+# 3 min) so injected signals get picked up on the next sweep. Cost: ~1s of
+# writes + the downstream chain. The 5 rules are fresh (9910xx/9915xx) so
+# no tuning collision; if a supervisory deny ever auto-tunes them, the
+# injector's fixed ids still land but dispatch goes silent — check the
+# tuning ledger before assuming the pipeline is broken.
+[Unit]
+Description=SSOP atomic-indicator injector (30m)
+
+[Timer]
+OnCalendar=*-*-* *:0/30:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

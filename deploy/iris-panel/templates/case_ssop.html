@@ -1,0 +1,163 @@
+{% extends "layouts/default_ext.html" %}
+
+{% block title %} SSOP Case Panel {% endblock title %}
+
+{% block stylesheets %}
+{% include 'includes/header_case.html' %}
+<style>
+  .ssop-state { font-size: .95rem; }
+  .ssop-state .badge { font-size: .8rem; }
+  .ssop-timeline { max-height: 340px; overflow-y: auto; font-size: .85rem; }
+  .ssop-timeline .entry { border-left: 3px solid #4c72a1; padding: 4px 8px; margin: 4px 0; background: #f6f8fc; }
+  .ssop-timeline .entry .role { font-weight: 600; color: #4c72a1; text-transform: uppercase; font-size: .75rem; }
+  .ssop-timeline .entry .ts { color: #8898aa; font-size: .75rem; }
+  .ssop-decide .btn { min-width: 90px; }
+  .btn-approve { background: #22c55e; border-color: #22c55e; color: #fff; }
+  .btn-deny { background: #ef4444; border-color: #ef4444; color: #fff; }
+  .btn-fp { background: #f59e0b; border-color: #f59e0b; color: #fff; }
+  .ssop-err { color: #ef4444; font-size: .85rem; }
+  .ssop-ok { color: #22c55e; font-size: .85rem; }
+</style>
+{% endblock stylesheets %}
+
+{% block content %}
+
+{% include 'includes/navigation_ext.html' %}
+
+<div class="main-panel">
+  <div class="content">
+    <div class="row">
+      <div class="col-md-12">
+        <div class="card">
+          <div class="card-header">
+            <div class="row">
+              <div class="col-md-8">
+                <h4 class="m-0 font-weight-bold">SSOP spine state</h4>
+                <small class="text-muted">Live case state from the agent spine (Qdrant). Decisions post back through the spine adjudication API.</small>
+              </div>
+              <div class="col-md-4 text-right">
+                {% if soc_id %}<span class="badge badge-primary">{{ soc_id }}</span>{% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="card-body">
+            {% if not soc_id %}
+              <div class="alert alert-warning">This IRIS case has no SSOP spine mapping (case_soc_id empty).</div>
+            {% elif spine %}
+              <div class="row ssop-state mb-3">
+                <div class="col-md-3">
+                  <div><strong>State</strong></div>
+                  <span class="badge badge-{{ 'success' if spine.state == 'closed' else ('info' if spine.state in ('decided','awaiting_decision') else 'secondary') }}">{{ spine.state }}</span>
+                </div>
+                <div class="col-md-3">
+                  <div><strong>Status</strong></div>
+                  {{ spine.status }}
+                </div>
+                <div class="col-md-3">
+                  <div><strong>Assignee</strong></div>
+                  {{ spine.assignee or '—' }}
+                </div>
+                <div class="col-md-3">
+                  <div><strong>Last touched</strong></div>
+                  {{ (spine.last_touched_ts or '—')[:19] }}
+                </div>
+              </div>
+
+              {% if spine.adjudication %}
+              <div class="alert alert-{{ 'success' if spine.adjudication.decision == 'approve' else 'warning' }}">
+                <strong>Decision: {{ spine.adjudication.decision | upper }}</strong>
+                {% if spine.adjudication.rationale %} — {{ spine.adjudication.rationale[:200] }}{% endif %}
+              </div>
+              {% endif %}
+
+              <h5 class="mt-3">Spine timeline</h5>
+              <div class="ssop-timeline">
+                {% for e in spine.timeline[-12:] %}
+                <div class="entry">
+                  <span class="role">{{ e.role }}</span>
+                  <span class="ts">{{ (e.ts or '')[:19] }}</span> —
+                  <span>{{ e.type }}{% if e.detail and e.detail.decision %}: <strong>{{ e.detail.decision }}</strong>{% endif %}</span>
+                  {% if e.detail and e.detail.rationale %}<div class="small text-muted">{{ e.detail.rationale[:160] }}</div>{% endif %}
+                </div>
+                {% endfor %}
+              </div>
+
+              <h5 class="mt-4">Decision</h5>
+              {% if ticket %}
+                <div class="alert alert-info py-2"><strong>Open ticket {{ ticket.ticket_id }}</strong> — {{ ticket.title }}</div>
+              {% elif spine.state not in ('closed',) %}
+                <div class="alert alert-secondary py-2">No open tier-2 ticket for this case.</div>
+              {% endif %}
+
+              {% if can_decide and ticket and spine.state not in ('closed',) %}
+              <form id="ssop-decide-form" data-url="{{ decide_url }}">
+                {{ form.csrf_token }}
+                <div class="form-group">
+                  <label for="ssop-rationale">Rationale</label>
+                  <textarea id="ssop-rationale" class="form-control" rows="3"
+                            placeholder="Why this decision? (appended with your IRIS identity)"></textarea>
+                </div>
+                <div class="ssop-decide">
+                  <button type="button" class="btn btn-approve" data-decision="approve">Approve</button>
+                  <button type="button" class="btn btn-deny" data-decision="deny">Deny</button>
+                  <button type="button" class="btn btn-fp" data-decision="fp">False positive</button>
+                </div>
+                <div id="ssop-decide-result" class="mt-2"></div>
+              </form>
+              {% elif not can_decide %}
+                <div class="alert alert-secondary py-2">Read-only: only supervisory users can decide from this panel.</div>
+              {% elif spine.state == 'closed' %}
+                <div class="alert alert-secondary py-2">Case is closed on the spine.</div>
+              {% endif %}
+
+            {% else %}
+              <div class="alert alert-danger">Could not reach the spine API. Is the adjudication service up on infra-ops?</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock content %}
+
+{% block javascripts %}
+<script>
+$(document).ready(function () {
+  $('#ssop-decide-form').on('click', '[data-decision]', function () {
+    var $btn = $(this);
+    var decision = $btn.data('decision');
+    var rationale = $('#ssop-rationale').val() || '';
+    var csrf = $('input[name="csrf_token"]').val() || '';
+    var $result = $('#ssop-decide-result');
+    $btn.prop('disabled', true);
+    $.ajax({
+      url: $('#ssop-decide-form').data('url'),
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({
+        decision: decision,
+        rationale: rationale,
+        csrf_token: csrf,
+        case_id: {{ (soc_id if soc_id else '') | tojson }}
+      }),
+      success: function (res) {
+        if (res.status === 'success') {
+          $result.html('<span class="ssop-ok">Decision recorded on spine. Refresh to see the updated chain.</span>');
+          setTimeout(function () { window.location.reload(); }, 1200);
+        } else {
+          $result.html('<span class="ssop-err">' + (res.message || 'failed') + '</span>');
+          $btn.prop('disabled', false);
+        }
+      },
+      error: function (xhr) {
+        $result.html('<span class="ssop-err">Request failed: ' + xhr.status + '</span>');
+        $btn.prop('disabled', false);
+      }
+    });
+  });
+});
+</script>
+{% endblock javascripts %}

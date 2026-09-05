@@ -103,6 +103,10 @@ def main() -> int:
     # Decision chain tasklog.
     pub._req("POST", f"/case/tasklog/add?cid={iris_id}",
              {"log_content": f"SSOP chain: {pub._chain_summary(c)}"})
+    # Per-role timeline events (investigation/verdict/adjudication/assigned)
+    # so the IRIS case shows each agent's work, attributed per role.
+    n = pub.enrich_case_timeline(cid, iris_id)
+    print(f"timeline events written: {n}")
     # 5. Task assigned to rdrolfe so the human dashboard shows it.
     t = pub._req("POST", f"/case/tasks/add?cid={iris_id}", {
         "task_title": "Triage SSOP case",
