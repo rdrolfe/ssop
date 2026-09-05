@@ -69,6 +69,26 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
             if case_id:
                 case = cases.get_case(case_id)
             if case:
+                # Already-decided/closed cases must not be re-adjudicated —
+                # decide() raises on decided -> decided, and a deny here would
+                # auto-tune the rule (adjudicate() writes the tuning ledger on
+                # deny). mark_adjudicated closes the ticket WITHOUT tuning —
+                # this is bookkeeping for a case whose verdict already exists.
+                from tools.case_tools import _normalize_state
+                if _normalize_state(case.get("state", "new")) in ("decided", "closed"):
+                    last = None
+                    for e in reversed(case.get("timeline", [])):
+                        if e.get("type") in ("adjudication", "verdict") and \
+                           e.get("detail", {}).get("decision"):
+                            last = e["detail"]["decision"]
+                            break
+                    decision = last or "deny"
+                    rationale = f"case already {case.get('state')} (skipped re-adjudication)"
+                    sup.mark_adjudicated(t, decision, rationale)
+                    for dup in repeats:
+                        sup.mark_adjudicated(dup, decision, f"{rationale} (duplicate)")
+                    lines.append(f"  {t['ticket_id']} [{decision}] {t.get('title', '')[:50]} — already decided, ticket closed")
+                    continue
                 # Evidence-aware: if the analyst appended an investigation to
                 # the case, adjudicate WITH that scored evidence. Otherwise
                 # fall back to the context-aware supervise_case.

@@ -160,16 +160,70 @@ class HuntClient:
         }
 
     def _analyze_apparmor(self, docs: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[str, Any]:
-        agents = {}
+        """AppArmor denial analysis — PROFILE/COMM aware, not raw volume.
+
+        Chronic-FP class (verified Aug-Sep 2026, all stock Ubuntu): rule
+        52002 fires on normal stock-profile enforcement — fusermount3
+        (capable dac_override/setuid, caps commented out by design),
+        unprivileged_userns (CVE-2023-2640 mitigation, ubuntu-insights
+        telemetry), snap-update-ns (snap mount namespace setup). A raw
+        >=50 threshold flags these as evasion every run.
+
+        REAL evasion signal: class=exec denials, unknown profiles/comms,
+        load/unload/change_profile operations, or a NEW/unknown profile
+        name. Volume alone is NOT signal.
+        """
+        import re as _re
+        profiles = Counter()
+        comms = Counter()
+        classes = Counter()
+        operations = Counter()
+        unknown = []
         for d in docs:
-            a = d.get("agent", {}).get("name", "?")
-            agents[a] = agents.get(a, 0) + 1
-        finding = "suspicious" if len(docs) >= 50 else ("info" if docs else "clean")
+            fl = d.get("full_log", "") or ""
+            m = _re.search(r'profile="([^"]+)"', fl)
+            prof = m.group(1) if m else "?"
+            m = _re.search(r'comm="([^"]+)"', fl)
+            comm = m.group(1) if m else "?"
+            m = _re.search(r'class="([^"]+)"', fl)
+            cls = m.group(1) if m else "?"
+            m = _re.search(r'operation="([^"]+)"', fl)
+            op = m.group(1) if m else "?"
+            profiles[prof] += 1
+            comms[comm] += 1
+            classes[cls] += 1
+            operations[op] += 1
+            if cls == "exec" or prof in ("?", "unconfined") or \
+               op in ("load", "unload", "change_profile", "exec"):
+                unknown.append({"profile": prof, "comm": comm, "class": cls,
+                                "op": op, "full_log": fl[:200]})
+        # Known-benign stock profiles/comms (verified taxonomy). Profile
+        # names arrive as full paths (e.g. /snap/snapd/27710/.../snap-confine)
+        # — match on the basename so stock profiles never look unknown.
+        import posixpath as _pp
+        benign_basenames = {"fusermount3", "unprivileged_userns",
+                            "snap-update-ns.firmware-updater", "snap-confine",
+                            "cupsd", "firmware-notifier", "unpr"}
+        def _benign(prof: str) -> bool:
+            base = _pp.basename(prof.rstrip("/"))
+            return base in benign_basenames
+        suspicious = (classes.get("exec", 0) > 0
+                      or any(not _benign(p) for p in profiles
+                             if p not in ("?", ""))
+                      or len(unknown) > 0
+                      or (operations.get("load", 0) + operations.get("unload", 0)
+                          + operations.get("change_profile", 0)) > 0)
+        finding = "suspicious" if suspicious else "info"
         return {
             "finding": finding,
-            "confidence": "medium" if finding == "suspicious" else "high",
-            "summary": f"{len(docs)} AppArmor denials across {agents}",
-            "by_agent": agents,
+            "confidence": "high" if suspicious else "high",
+            "summary": (f"{len(docs)} AppArmor denials; profiles={dict(profiles.most_common(4))} "
+                        f"| comms={dict(comms.most_common(4))} | classes={dict(classes)} "
+                        f"| suspicious_signals={len(unknown)}"),
+            "by_profile": dict(profiles),
+            "by_comm": dict(comms),
+            "by_class": dict(classes),
+            "suspicious_signals": unknown[:10],
             "detail": docs[:5],
         }
 

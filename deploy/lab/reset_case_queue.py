@@ -53,16 +53,21 @@ def main() -> int:
           f"open: {sum(1 for c in all_cases if c.get('status') == 'open')} | "
           f"protected: {sum(1 for c in all_cases if c.get('case_id') in PROTECTED)}")
 
-    # 2. Close all open cases.
-    open_cases = [c for c in all_cases if c.get("status") == "open"]
+    # 2. Close all open cases (keyed on machine state, not the stale status
+    # field — legacy cases can read status=open while state=closed).
+    from tools.case_tools import _normalize_state, CaseStateError
+    open_cases = [c for c in all_cases
+                  if _normalize_state(c.get("state", "new")) != "closed"]
     print(f"closing {len(open_cases)} open cases...")
     if not DRY_RUN:
         for c in open_cases:
             if c.get("case_id") in PROTECTED:
                 continue  # seeds stay as-is (already decided)
-            cs.close_case(c["case_id"], reason="operator reset: fresh slate "
-                          "(2026-09-02, user: create fresh data)")
-    print(f"closed {len(open_cases)}")
+            try:
+                cs.close_case(c["case_id"], reason="operator reset: fresh slate "
+                              "(2026-09-02, user: create fresh data)")
+            except CaseStateError as e:
+                print(f"  skip (already terminal): {e}")
 
     # 3. Delete all case points EXCEPT protected from Qdrant.
     to_delete = [c.get("case_id") for c in all_cases
@@ -73,6 +78,39 @@ def main() -> int:
         ids = [str(_uuid.uuid5(_uuid.NAMESPACE_URL, cid)) for cid in to_delete]
         mem.client.delete(collection_name=CASE_COLLECTION,
                           points_selector=ids, wait=True)
+
+    # 3b. Archive the receipt spine and rewrite it with ONLY the protected
+    # seeds. WITHOUT this, the next reconcile(heal=True) — the analyst timer
+    # and supervisory duty both call it — re-hydrates every purged case back
+    # into Qdrant from the JSONL "receipt-only" diff, silently undoing the
+    # purge (proven live 2026-09-04: reset -> 2 seeds, next supervisory run
+    # -> 1213 points). The old spine is preserved as a timestamped archive
+    # (provenance kept), the working spine becomes truly fresh.
+    if not DRY_RUN:
+        import json as _json
+        from datetime import datetime as _dt
+        spine = cs.cases_file
+        if spine.exists() and spine.stat().st_size > 0:
+            archive = spine.with_name(
+                f"cases.jsonl.reset-{_dt.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.bak")
+            with spine.open() as f, archive.open("w") as out:
+                for line in f:
+                    out.write(line)
+                out.flush()
+            # Rewrite spine with just the protected seeds' receipts.
+            protected_recs: list[str] = []
+            with spine.open() as f:
+                for line in f:
+                    try:
+                        rec = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    if rec.get("case_id") in PROTECTED:
+                        protected_recs.append(line)
+            with spine.open("w") as f:
+                f.writelines(protected_recs)
+            print(f"receipt spine archived -> {archive.name} "
+                  f"(kept {len(protected_recs)} seed receipts)")
 
     # 4. Close open tickets (defensive).
     open_ts = sc.list_tickets(status="open")

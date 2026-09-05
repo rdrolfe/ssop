@@ -80,7 +80,12 @@ fixtures:
     description: "Same agent+rule as an open case, no entity pair — analyst must ATTACH (host recidivism), not mint a new case"
     probe: false
     alert:
-      rule: {id: 9003, level: 12, groups: [sysmon, malware, process_creation], description: "ET MALWARE Cerber ransomware process-exec"}
+      # Verify-dedicated rule id (990003): MUST stay out of exercise rotation —
+      # the lab exercises fire/deny 9001/9003/2045417/9910xx and a supervisory
+      # deny auto-tunes (auto_fp), which silences the fixture (classify ->
+      # operational, no dispatch). Classifies threat/analyst via the ontology
+      # (sysmon+malware groups, ET MALWARE desc) exactly like the old 9003.
+      rule: {id: 990003, level: 12, groups: [sysmon, malware, process_creation], description: "ET MALWARE Cerber ransomware process-exec"}
       agent: {id: "007", name: we8105desk.waynecorpinc.local}
       timestamp: "2026-08-23T12:00:02.000Z"
     expect:
