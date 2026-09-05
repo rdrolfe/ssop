@@ -135,14 +135,14 @@ read-only view.
 **Objective:** The module survives IRIS container restarts and is
 re-deployable.
 
-**Files:**
-- Create: `deploy/lab/ssop-iris-module.service` (+ timer if a sync is needed)
-- Modify: `docs/DEPLOYMENT.md` (install steps)
-
-**Step 1:** Document the install path (copy module dir onto the IRIS host,
-enable via IRIS module registration, restart app).
-
-**Step 2:** Verify after a `docker compose restart` the tab persists.
+**Status: DONE (2026-09-05)** — superseded by the derived-image approach.
+The panel ships as `deploy/iris-panel/Dockerfile` layered on the stock
+image (`iriswebapp_app:ssop-panel`, selected via `APP_IMAGE_NAME/TAG` in
+`~/iris-web/.env`), which survives container recreation by construction. A
+separate systemd unit is unnecessary — the panel is baked into the image.
+The full install/rebuild path is documented as **Step 14** in
+`docs/DEPLOYMENT.md` (deploy IRIS, bootstrap keys, build + pin the derived
+image, recreate app/worker, verify in-container).
 
 ---
 
@@ -276,9 +276,9 @@ full pitfalls):
   attaches the alert to an existing case with no new ticket).
 
 ### Phase 1 remaining
-- Task 1.4 (systemd-tracked unit / DEPLOYMENT.md) — partially done: the
-  derived image + .env pins make the panel durable across container
-  recreation; formal docs/DEPLOYMENT.md section still pending.
+- ~~Task 1.4 (systemd-tracked unit / DEPLOYMENT.md)~~ **DONE (2026-09-05)**:
+  derived image makes the panel durable across container recreation (no
+  systemd unit needed); install path documented as DEPLOYMENT.md Step 14.
 - Phase 2 (list columns, notes as working log, IOCs/assets) and Phase 3
   (bake-off gate redefinition) not started.
 - Known follow-ups: `/case-decision` approve does NOT auto-assign the

@@ -360,4 +360,78 @@ every case's full chain in one screen.
 python3 agents/tools/adjudicate_api_entry.py --host 0.0.0.0 --port 8787 --tls
 ```
 
+## Step 14 — IRIS as the human case front-end (optional, recommended)
+
+DFIR-IRIS (github.com/dfir-iris/iris-web) becomes the single human surface:
+each spine case is published to an IRIS case, and an **SSOP decision panel**
+tab on the case page lets a supervisory user approve/deny/false-positive the
+open tier-2 ticket back onto the spine. Wazuh + Security Onion stay
+detection engines. See `docs/plans/2026-09-04-iris-frontend.md` (Phase 0–3)
+and `docs/decisions/ADR-006 - IRIS Front-End.md`.
+
+### Deploy IRIS (once)
+
+1. Clone the latest non-beta tag (e.g. `v2.4.29`) into `~/iris-web` and
+   `cp .env.model .env`; set `POSTGRES_*`, `IRIS_SECRET_KEY`,
+   `IRIS_SECURITY_PASSWORD_SALT`, and (first boot only) `IRIS_ADM_PASSWORD`.
+2. If the host already runs the Wazuh dashboard on 443, set
+   `INTERFACE_HTTPS_PORT=<alt>` (e.g. 8443) — IRIS nginx defaults to 443.
+3. `docker compose up -d --build`. Admin password prints once in the app
+   logs; it lives only in host logs after first boot.
+4. Bootstrap service-account API keys per SSOP role and grant the Analysts
+   group + `user_client` access (`access_level=4` full access, NOT 5 —
+   the 5 = deny_all|full_access deny-bit poisons every case). Details in the
+   `dfir-iris-integration` skill.
+
+### Install the SSOP decision panel — derived image
+
+The stock IRIS image runs as-is with **no `build:` key and no bind mount of
+the source tree**, so editing `~/iris-web/source` alone can never activate a
+new blueprint (restarts + `docker compose build` reload the same stock
+image). The panel is shipped as a **derived image** that layers it on:
+
+```bash
+# From the repo root — build dir is the image source of truth
+mkdir -p ~/iris-panel-build
+cp deploy/iris-panel/*.py ~/iris-panel-build/
+cp -r deploy/iris-panel/templates ~/iris-panel-build/
+cd ~/iris-panel-build && docker build -t iriswebapp_app:ssop-panel .
+
+# Point the compose project at the derived image (add to ~/iris-web/.env)
+echo "APP_IMAGE_NAME=iriswebapp_app"  >> ~/iris-web/.env
+echo "APP_IMAGE_TAG=ssop-panel"        >> ~/iris-web/.env
+
+# Recreate the app + worker on the derived image
+cd ~/iris-web && docker compose up -d app worker
+```
+
+The Dockerfile patches `case_routes.py` (import + register) and
+`case-nav.html` (SSOP tab) with an **anchored, idempotent** RUN step that
+fails loudly if the stock anchors drift on an upstream IRIS upgrade — so a
+panel-less image can never be built silently. After ANY panel change,
+re-sync to the build dir (one file per `scp` — multi-source copies silently
+drop files), rebuild, and recreate. Verify the blueprint is in the running
+container before trusting the UI.
+
+Panel behavior to know:
+
+- The SSOP tab posts to the spine **`/case-decision`** endpoint
+  `{case_id, decision, rationale}` — the workbench path that writes the CASE
+  verdict (timeline event + state transition) AND closes the linked open
+  tier-2 ticket. `/adjudicate` `{ticket_id, ...}` only closes the ticket
+  (the case never transitions); do not wire the panel to it.
+- Decisions are attributed: the rationale is suffixed with
+  `— decided by <IRIS user> via IRIS` on the spine.
+- Only `_DECIDERS` users in `case_ssop_routes.py` (supervisory humans) get
+  the decision buttons; everyone else sees the tab read-only.
+
+### IRIS <-> spine sync
+
+`deploy/lab/sync_iris_to_spine.py` (wired as a non-fatal pre-step in
+`ssop-supervisory.sh`) pulls human-authored IRIS activity into the spine
+timeline before the duty decides. It uses a per-case watermark
+(`last_iris_sync_ts`) and skips the `ssop`-tagged events the publisher wrote
+(the mirror-loop guard), so it is idempotent.
+
+
 
