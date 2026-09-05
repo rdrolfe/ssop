@@ -92,18 +92,18 @@ def _timer_gate() -> bool:
 
 
 def _bakeoff_gate() -> bool:
-    """Bake-off parity gate: both SIEM surfaces must keep scoring 12/12 on
-    the six bake-off axes for the seed case (SO native so-case store vs the
-    console). Fail-closed — an unverifiable bake-off is itself a parity
-    failure (same philosophy as the docs/timer gates). Subprocess: needs SO
-    ES + console proxy, which the runtime host has."""
+    """Bake-off parity gate: both seed cases (deny + approve) must score 12/12
+    rendering their decision chain in IRIS (engine parity per ADR-006).
+    Fail-closed — an unverifiable bake-off is itself a parity failure (same
+    philosophy as the docs/timer gates). Subprocess: needs IRIS + console
+    proxy, which the runtime host has."""
     try:
         import subprocess as _sp
         br = _sp.run(
             [sys.executable, "-m", "verify.check_bakeoff"],
             capture_output=True, text=True, timeout=240)
         ok = br.returncode == 0
-        print("bake-off parity: " + ("12/12 both surfaces" if ok else "FAIL"))
+        print("bake-off parity: " + ("12/12 engine-in-IRIS (both seeds)" if ok else "FAIL"))
         if not ok:
             print(br.stdout[-800:])
         return ok

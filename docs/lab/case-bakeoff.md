@@ -11,6 +11,56 @@ Date: 2026-09-01.
 
 ---
 
+## 2026-09-05 — REDEFINED: parity = engine parity in IRIS (ADR-006)
+
+DFIR-IRIS is now the **single human case front-end** (ADR-006). The bake-off
+no longer scores three surfaces (Wazuh console + SO native store + IRIS) for
+UI parity — it scores whether the **decision chain renders identically in
+IRIS** regardless of which engine (Wazuh or SO) fed the alert. The spine is
+the source of truth; IRIS is fed from it via `publish_case_iris.py`, so a
+fully-decided case must render its whole chain (investigation → verdict →
+adjudication → assignment/close) on the IRIS **Timeline** tab, plus the SSOP
+note + IOCs + the spine report. If IRIS shows the full chain, engine-parity
+holds **by construction** (both engines feed the same spine; IRIS reads the
+spine).
+
+**Tooling (new, replaces the two-surface capture/score for the gate):**
+- `deploy/lab/capture_iris_bakeoff.py <case_id>` — maps the spine case to its
+  IRIS case (via `soc_id`), captures the IRIS timeline + SSOP note + IOCs +
+  the spine `/report?case_id=` deliverable → `/tmp/iris_bakeoff_capture.json`.
+- `deploy/lab/score_iris_bakeoff.py` — scores the SAME six axes (0–2) against
+  what IRIS renders → `/tmp/iris_bakeoff_scores.json`.
+- `agents/verify/check_bakeoff.py` — the matrix gate, now drives the IRIS
+  capture+score for BOTH seed cases and asserts 12/12 each, fail-closed
+  (a seed not published to IRIS, or an axis < 2, turns the gate RED).
+
+**Scored (2026-09-05):** both gated seeds render **12/12 in IRIS** —
+
+| Axis | case-26b166ce32 (deny) | case-204a8dc4f9 (approve) |
+|---|---|---|
+| 1 Ontology fidelity | 2 — investigation + verdict + decision | 2 |
+| 2 Agent-fact transparency | 2 — evidence + kill-chain + severity | 2 |
+| 3 Negative-outcome clarity | 2 — DENY + rationale | 2 |
+| 4 Case compilation | 2 — 5 ordered events | 2 — 7 ordered events |
+| 5 Retention/queryability | 2 — IRIS case found by spine id | 2 |
+| 6 Report readiness | 2 — spine report (1983 chars) | 2 — spine report (2944 chars) |
+
+Softer negative-outcome note: IRIS renders a deny as a **"Supervisory
+decision: DENY"** event title (not the literal `false_positive` token), so the
+scorer detects deny/FP titles + rationale — the WHY is present either way.
+
+**Task 3.2 — SO stays engine #2:** the SO native-store publish in
+`deploy/lab/e2e_full_chain.py` is now **flag-gated** (`--publish-so`); the
+IRIS publish (the human front-end) always runs. SO keeps feeding detection;
+its native-store publish is legacy/optional.
+
+The sections below document the **pre-IRIS** two-surface bake-off (Wazuh
+console + SO native store) — retained as history; it is no longer what the
+matrix gate enforces.
+
+---
+
+
 ## The seed case
 
 `case-26b166ce32` — a complete **negative-outcome** story, chosen deliberately

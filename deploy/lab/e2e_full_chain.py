@@ -6,8 +6,9 @@ Feeds a FRESH un-tuned threat alert through the REAL pipeline, end to end:
   router.dispatch (classify -> mint case + techniques -> escalate ticket)
     -> analyst investigation (live Investigator on the entity)
     -> supervisory adjudicate (approve -> responder auto-assign)
-    -> publish case to SO native store
-    -> verify SO store + report/advisory render
+    -> publish case to IRIS (the human front-end); optionally to SO native store
+       (--publish-so)
+    -> verify render + report/advisory
 
 Proves the whole spine still produces a human-facing artifact after the
 recent changes (tuning, host recidivism, technique mapping, get_case
@@ -99,18 +100,24 @@ def main() -> int:
               dec.get("recommended_playbook"))
         time.sleep(1)
 
-    # Publish to SO native store (create + timeline comments).
-    import sys as _sys
-    _pub = _load(str(_BASE / "publish_case_so.py"))
-    _sys.argv = ["publish_case_so.py", cid]
-    _pub.main()
-    print("published to SO")
-    time.sleep(2)
+    # Publish to SO native store — OPTIONAL (ADR-006: SO stays a detection
+    # engine; the native-store publish is legacy). Pass --publish-so to run
+    # it; the IRIS publish (the human front-end) always runs.
+    publish_so = "--publish-so" in sys.argv
+    if publish_so:
+        import sys as _sys
+        _pub = _load(str(_BASE / "publish_case_so.py"))
+        _sys.argv = ["publish_case_so.py", cid]
+        _pub.main()
+        print("published to SO")
+        time.sleep(2)
 
-    # Verify SO store + attached report/advisory.
-    _ver = _load(str(_BASE / "verify_attach_so.py"))
-    _sys.argv = ["verify_attach_so.py", cid]
-    _ver.main()
+        # Verify SO store + attached report/advisory.
+        _ver = _load(str(_BASE / "verify_attach_so.py"))
+        _sys.argv = ["verify_attach_so.py", cid]
+        _ver.main()
+    else:
+        print("SO native-store publish SKIPPED (no --publish-so) — IRIS is the human front-end")
 
     # Report/advisory render check (spine side).
     from tools.advisory_gen import render_advisory

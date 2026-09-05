@@ -193,32 +193,24 @@ route exists: `/case/notes/add`) carrying the decision-chain summary.
 
 ### Task 3.1: Parity = engine parity in IRIS
 
-**Objective:** The bake-off scores both engines rendering identically in
-IRIS, not 3-surface UI parity.
-
-**Files:**
-- Modify: `agents/verify/check_bakeoff.py`
-- Modify: `docs/lab/case-bakeoff.md`
-
-**Step 1:** Redefine the parity check: for each seed case, assert the IRIS
-timeline contains the same decision chain regardless of which engine
-produced the alert (Wazuh vs SO).
-
-**Step 2:** Update the matrix gate; verify 12/12 still green after the
-pivot (now scored from IRIS).
+**Status: DONE (2026-09-05).** Parity is now scored against the IRIS case
+surface (ADR-006: IRIS = the single human front-end), not the Wazuh console
++ SO native store. New tooling: `deploy/lab/capture_iris_bakeoff.py` (maps a
+spine case to its IRIS case via soc_id and captures timeline + note + IOCs +
+report) + `deploy/lab/score_iris_bakeoff.py` (scores the same six axes 0–2
+against what IRIS renders). `agents/verify/check_bakeoff.py` now drives both
+seed cases through the IRIS capture+score and asserts 12/12 each, fail-closed
+(a seed not published to IRIS turns the gate RED). **Both gated seeds score
+12/12 in IRIS** (deny + approve directions); `verify/test_check_bakeoff.py`
+rewritten for the IRIS gate and NON-VACUOUS (baseline clean, axis-3/axis-6
+drops + not-published all caught).
 
 ### Task 3.2: SO stays engine #2
 
-**Objective:** Security Onion remains a detection engine; its native case
-store publish becomes optional/legacy.
-
-**Files:**
-- Modify: `deploy/lab/e2e_full_chain.py` (SO publish step becomes flag-gated)
-
-**Step 1:** Keep SO detection flowing; gate the SO native-store publish
-behind `--publish-so`.
-
-**Step 2:** Verify the chain still publishes to IRIS without the SO store.
+**Status: DONE (2026-09-05).** The SO native-store publish in
+`deploy/lab/e2e_full_chain.py` is now flag-gated behind `--publish-so`
+(legacy/optional); the IRIS publish (the human front-end) always runs. SO
+keeps feeding detection.
 
 ---
 
