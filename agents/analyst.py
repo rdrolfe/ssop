@@ -39,6 +39,45 @@ escalator = get_escalation()
 
 # --- Nodes ---
 
+def _persist_investigation(cases, case_id: str, alert: dict, obs: list) -> dict | None:
+    """Investigate the alert's entity and append the FULL investigation event.
+
+    Persists every field the report/advisory/supervisor read — entity,
+    entities, sources, sources_engaged, evidence_count, severity,
+    severity_label, kill_chain, hypothesis, evidence. A case whose
+    investigation omits entity/severity renders hollow in the report.
+    Shared by the analyst + router mint paths so both carry the evidence.
+    Returns the investigation result (or None if no evidence / error).
+    """
+    try:
+        from tools.investigator import Investigator
+        inv = Investigator()
+        # entity srcip: observables first, then alert field shapes.
+        srcip = (obs[0].get("value") if obs else "") or alert.get("srcip", "") \
+            or (alert.get("data") or {}).get("srcip", "") \
+            or (alert.get("data") or {}).get("src_ip", "")
+        inv_res = inv.investigate(srcip=srcip)
+        if inv_res["evidence"]:
+            cases.append_event(
+                case_id, "analyst", "investigation",
+                {"hypothesis": inv_res["hypothesis"],
+                 "evidence": inv_res["evidence"],
+                 "evidence_count": len(inv_res["evidence"]),
+                 "kill_chain": inv_res["kill_chain"],
+                 "entity": (inv_res.get("entities") or [None])[0],
+                 "entities": inv_res.get("entities") or [],
+                 "sources": inv_res.get("correlated_sources") or [],
+                 "sources_engaged": len(inv_res.get("correlated_sources") or []),
+                 "severity": inv_res.get("severity", 0),
+                 "severity_label": inv_res.get("severity_label", "low"),
+                 },
+            )
+            return inv_res
+    except Exception as e:  # noqa: BLE001 — investigation must not block escalation
+        logger.warning("investigation failed (continuing): %s", e)
+    return None
+
+
 def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any]:
     """Full per-alert analyst write path: classify, mint/attach case, escalate.
 
@@ -100,22 +139,9 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
         assignee="analyst",  # auto-assign: the analyst owns the case from minting
     )
     out["case_id"] = case["case_id"]
-    # INVESTIGATE: correlate the case entities across sources and append the
-    # kill-chain hypothesis + evidence to the timeline.
-    try:
-        from tools.investigator import Investigator
-        inv = Investigator()
-        srcip = (obs[0].get("value") if obs else "") or alert.get("srcip", "")
-        inv_res = inv.investigate(srcip=srcip)
-        if inv_res["evidence"]:
-            cases.append_event(
-                case["case_id"], "analyst", "investigation",
-                {"hypothesis": inv_res["hypothesis"],
-                 "evidence": inv_res["evidence"],
-                 "kill_chain": inv_res["kill_chain"]},
-            )
-    except Exception as e:  # noqa: BLE001 — investigation must not block escalation
-        logger.warning("investigation failed (continuing): %s", e)
+    # INVESTIGATE: correlate the case entity across sources and persist the
+    # FULL investigation (entity/sources/severity/evidence) on the timeline.
+    _persist_investigation(cases, case["case_id"], alert, obs)
     cases.append_event(
         case["case_id"], "analyst", "verdict",
         {"verdict": "escalate", "rationale": v["rationale"], **{k: v[k] for k in ("level", "category", "agent")}},

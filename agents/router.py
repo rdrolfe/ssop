@@ -355,6 +355,11 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                     "verdict": "escalate", "rationale": v["rationale"],
                     "level": v["level"], "category": v["category"], "agent": v["agent"],
                 })
+                # Router-minted cases reach a human for review — persist the
+                # FULL investigation (entity/evidence/severity) so the
+                # report/advisory/panel have real data, not a hollow case.
+                from analyst import _persist_investigation
+                _persist_investigation(cases, case_id, alert, obs)
                 result["case_id"] = case_id
                 result["escalated"] = True
             escalator.escalate(tier=2, title=f"[ROUTER-ANALYST] {v['description'][:60]}",
