@@ -168,6 +168,40 @@ class QdrantMemory:
             raise QdrantError(f"get_by_payload failed: {e}") from e
         return None
 
+    def upsert_point(self, collection: str, point_id: str, payload: dict[str, Any],
+                     vector: list[float] | None = None) -> None:
+        """Idempotent upsert of ONE point with a CALLER-CHOSEN deterministic
+        id (event-points design: a retried write overwrites the same point,
+        never duplicates)."""
+        self.ensure_collection(collection)
+        _retry_call(
+            self.client.upsert,
+            collection_name=collection,
+            points=[PointStruct(id=point_id, vector=vector or [0.0] * DEFAULT_VECTOR_SIZE,
+                                payload=payload)],
+        )
+
+    def events_for(self, collection: str, case_id: str) -> list[dict[str, Any]]:
+        """All event points for one case (payload-filtered scroll), ordered
+        by ts ascending. Used by the event-points case store — appends are
+        independent points, reads fold them into a timeline."""
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        out: list[dict[str, Any]] = []
+        try:
+            for rec in self.scroll_all(
+                    collection,
+                    scroll_filter=Filter(must=[FieldCondition(
+                        key="case_id", match=MatchValue(value=case_id))]),
+                    page_size=256):
+                payload = rec.payload or {}
+                out.append(payload)
+        except Exception as e:
+            logger.error("events_for failed in %s (%s): %s", collection, case_id, e)
+            raise QdrantError(f"events_for failed: {e}") from e
+        out.sort(key=lambda p: p.get("ts", ""))
+        return out
+
     def search_memory(self, collection: str, query: str, limit: int = 5,
                       scroll_limit: int = 1000) -> list[dict[str, Any]]:
         """Search memory entries by text content.

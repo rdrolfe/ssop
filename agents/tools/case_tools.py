@@ -35,6 +35,9 @@ from logging_setup import get_logger
 logger = get_logger(__name__)
 
 CASE_COLLECTION = settings.case_collection
+# Event-points design: timeline events live as independent points in their
+# own collection; the case point carries state fields only.
+CASE_EVENTS_COLLECTION = settings.case_collection + "_events"
 
 
 def load_case_template(rule_id: Any) -> str | None:
@@ -124,6 +127,16 @@ class CaseStore:
     Owns the case lifecycle state machine (transition/decide/reopen/close),
     assignment history, aging (list_stale), recidivism scans, and the
     dual-write to Qdrant + the append-only receipt spine.
+
+    EVENT-POINTS DESIGN (concurrency):
+    Timeline events are INDEPENDENT Qdrant points (collection
+    CASE_EVENTS_COLLECTION, deterministic id = uuid5 of
+    case_id:ts:role:type:detail) — appends never read-modify-write, so
+    concurrent writers cannot lose events (proven failure of the previous
+    whole-payload upsert design on live Qdrant, Sep 6). The case point in
+    CASE_COLLECTION carries STATE FIELDS ONLY (no timeline); get_case()
+    folds case point + event points into the same dict shape every consumer
+    expects. Legacy points with embedded timelines still read correctly.
     """
 
     def __init__(self, memory=None) -> None:
@@ -138,6 +151,54 @@ class CaseStore:
 
             self._memory = QdrantMemory()
         return self._memory
+
+    # --- event-point helpers (event-points design) ---
+
+    @staticmethod
+    def _event_point_id(case_id: str, entry: dict[str, Any]) -> str:
+        """Deterministic id for one timeline event: a retried write of the
+        SAME event overwrites the same point (idempotent), never duplicates."""
+        import hashlib
+        import uuid as _uuid
+
+        detail_hash = hashlib.sha1(
+            json.dumps(entry.get("detail", {}), sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        basis = f"{case_id}:{entry.get('ts')}:{entry.get('role')}:{entry.get('type')}:{detail_hash}"
+        return str(_uuid.uuid5(_uuid.NAMESPACE_URL, basis))
+
+    def _write_event_point(self, case_id: str, entry: dict[str, Any]) -> None:
+        """Append one timeline event as an independent Qdrant point.
+
+        This is the ONLY write the event itself requires — no read, no
+        compare, no whole-payload upsert. Concurrent appends commute.
+        """
+        from tools.case_tools import CASE_EVENTS_COLLECTION  # same module (avoids runtime layout coupling)
+
+        content = f"{case_id} {json.dumps(entry)}"
+        self._get_memory().upsert_point(
+            CASE_EVENTS_COLLECTION,
+            self._event_point_id(case_id, entry),
+            {
+                "content": content,
+                "case_id": case_id,
+                "ts": entry.get("ts", ""),
+                "role": entry.get("role", ""),
+                "type": entry.get("type", ""),
+            },
+        )
+
+    def _read_event_points(self, case_id: str) -> list[dict[str, Any]]:
+        """Fold event points for a case into timeline entries (ts order)."""
+        mem = self._get_memory()
+        if not hasattr(mem, "events_for"):
+            return []  # test double without event-point support
+        timeline: list[dict[str, Any]] = []
+        for payload in mem.events_for(CASE_EVENTS_COLLECTION, case_id):
+            parsed = self._parse_content(payload.get("content", ""))
+            if parsed:
+                timeline.append(parsed)
+        return timeline
 
     # --- core ops ---
 
@@ -248,45 +309,52 @@ class CaseStore:
     def append_event(self, case_id: str, role: str, event_type: str, detail: dict[str, Any]) -> dict[str, Any] | None:
         """Append a timeline event to an existing case (by case_id).
 
-        Stamps last_touched_ts and — where the event is a lifecycle signal —
-        advances the state machine opportunistically (investigation ->
-        investigating; escalate/verdict -> awaiting_decision), so real flows
-        move the case through the machine without every call site needing to
-        know the transitions. Adjudication is NOT handled here: use
-        decide()/case_verdict (it writes the decision + transition).
-        Concurrency-safe: routed through _mutate_case (revision-verified
-        write) so parallel writers merge rather than clobber.
+        EVENT-POINTS DESIGN: the event is written as an independent Qdrant
+        point (idempotent deterministic id) — no read-modify-write, so
+        concurrent appends can never lose an event regardless of timing.
+
+        The case point gets a best-effort STATE-ONLY update (last_touched_ts
+        + opportunistic machine advance: investigation -> investigating;
+        escalate/verdict -> awaiting_decision). A lost race on THIS write can
+        only delay a last_touched refresh or a state advance the next event
+        re-derives — it cannot lose the event itself. Adjudication is NOT
+        handled here: use decide()/case_verdict (it writes the decision +
+        transition).
         """
+        case = self.get_case(case_id)
+        if not case:
+            logger.warning("append_event: case %s not found", case_id)
+            return None
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "role": role,
             "type": event_type,
             "detail": detail,
         }
-
-        def _mut(case: dict[str, Any]) -> None:
-            case.setdefault("timeline", []).append(entry)
-            case["last_touched_ts"] = entry["ts"]
-            # Opportunistic machine advance (enforced — illegal moves are
-            # skipped silently here: a signal on a decided case must not
-            # yank it back).
-            cur = _normalize_state(case.get("state", "new"))
-            want = None
-            if event_type == "investigation" and cur in ("new", "triage"):
-                want = "investigating"
-            elif event_type in ("escalate", "verdict") and cur in ("triage", "investigating"):
-                want = "awaiting_decision"
-            if want and want in _CASE_TRANSITIONS.get(cur, set()):
-                case["state"] = want
-                case["status"] = _derive_status(want)
-
-        return self._mutate_case(case_id, _mut, event=event_type, role=role)
+        # 1. The event itself — independent point, race-free.
+        self._write_event_point(case_id, entry)
+        # 2. State projection on the case point (best-effort under races).
+        case.setdefault("timeline", []).append(entry)  # embedded copy for legacy readers
+        case["last_touched_ts"] = entry["ts"]
+        cur = _normalize_state(case.get("state", "new"))
+        want = None
+        if event_type == "investigation" and cur in ("new", "triage"):
+            want = "investigating"
+        elif event_type in ("escalate", "verdict") and cur in ("triage", "investigating"):
+            want = "awaiting_decision"
+        if want and want in _CASE_TRANSITIONS.get(cur, set()):
+            case["state"] = want
+            case["status"] = _derive_status(want)
+        self._write_both(case, event=event_type, role=role)
+        return case
 
     def assign_case(self, case_id: str, role: str, note: str = "") -> dict[str, Any] | None:
         """Assign a case to the role handling it (auto-assign).
 
-        Concurrency-safe: routed through _mutate_case (revision-verified
-        write) so parallel writers merge rather than clobber.
+        Concurrency-safe (event-points): the `assigned` event is written as
+        an independent point first (never lost); the assignee/assignment-
+        history fields then update best-effort on the case point (a lost
+        race only delays the assignment field; the event + receipt remain).
         """
         prev_holder = [None]  # filled inside _mut (read under the retry loop)
         entry = {
@@ -311,6 +379,12 @@ class CaseStore:
         if not case:
             logger.warning("assign_case: case %s not found", case_id)
             return None
+        # Event-points: the assigned event also lands as an independent
+        # point, so a lost race on the case-point fields can never lose it.
+        try:
+            self._write_event_point(case_id, entry)
+        except Exception as e:  # noqa: BLE001 — projection write must not fail the call
+            logger.warning("assigned event point write failed for %s: %s", case_id, e)
         logger.info("case assigned: %s -> %s (%s)", case_id, role, note or "no note")
         return case
 
@@ -324,8 +398,12 @@ class CaseStore:
         `last_touched_ts`, appends a `transition` timeline event (the audit
         trail of WHO moved the case and why), and dual-writes. Raises
         CaseStateError on an illegal move — fail loud, not silent.
-        Concurrency-safe via _mutate_case.
+        Concurrency-safe (event-points): the transition event is ALSO an
+        independent point (written after the state write), so a lost race
+        can delay state but never lose the audit event.
         """
+        ts = datetime.now(timezone.utc).isoformat()
+
         def _mut(case: dict[str, Any]) -> None:
             cur = _normalize_state(case.get("state", "new"))
             if to_state not in _CASE_TRANSITIONS.get(cur, set()):
@@ -333,9 +411,9 @@ class CaseStore:
                     f"illegal case transition {cur} -> {to_state} (case {case_id})")
             case["state"] = to_state
             case["status"] = _derive_status(to_state)
-            case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+            case["last_touched_ts"] = ts
             case.setdefault("timeline", []).append({
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": ts,
                 "role": role,
                 "type": "transition",
                 "detail": {"from": cur, "to": to_state, "rationale": rationale or ""},
@@ -348,6 +426,15 @@ class CaseStore:
         if not case:
             logger.warning("transition: case %s not found", case_id)
             return None
+        # Event-points: independent point for the transition audit event.
+        try:
+            self._write_event_point(case_id, {
+                "ts": ts, "role": role, "type": "transition",
+                "detail": {"from": case.get("state"), "to": to_state,
+                           "rationale": rationale or ""},
+            })
+        except Exception as e:  # noqa: BLE001 — projection write must not fail the call
+            logger.warning("transition event point write failed for %s: %s", case_id, e)
         logger.info("case %s transition: -> %s (%s)", case_id, to_state, role)
         return case
 
@@ -362,8 +449,12 @@ class CaseStore:
         case. Callers that previously set status directly now ride the
         machine: an approved case stays OPEN until the responder/close step
         closes it (real SOC semantics — approve ≠ close). Concurrency-safe
-        via _mutate_case.
+        (event-points): the adjudication event is ALSO an independent point,
+        so a lost race can delay the decision fields but never lose the
+        human decision record.
         """
+        ts = datetime.now(timezone.utc).isoformat()
+
         def _mut(case: dict[str, Any]) -> None:
             cur = _normalize_state(case.get("state", "new"))
             if "decided" not in _CASE_TRANSITIONS.get(cur, set()):
@@ -371,26 +462,36 @@ class CaseStore:
                     f"illegal case transition {cur} -> decided (case {case_id})")
             case["state"] = "decided"
             case["status"] = _derive_status("decided")
-            case["supervisory"] = {"decision": decision, "rationale": rationale,
-                                   "ts": datetime.now(timezone.utc).isoformat()}
+            case["supervisory"] = {"decision": decision, "rationale": rationale, "ts": ts}
             case.setdefault("timeline", []).append({
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": ts,
                 "role": role,
                 "type": "transition",
                 "detail": {"from": cur, "to": "decided", "rationale": f"{decision}: {rationale[:80]}"},
             })
             case.setdefault("timeline", []).append({
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": ts,
                 "role": role,
                 "type": "adjudication",
                 "detail": {"decision": decision, "rationale": rationale},
             })
-            case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+            case["last_touched_ts"] = ts
 
         try:
-            return self._mutate_case(case_id, _mut, event="adjudication", role=role)
+            case = self._mutate_case(case_id, _mut, event="adjudication", role=role)
         except CaseStateError:
             raise
+        if not case:
+            return None
+        # Event-points: independent point for the human decision.
+        try:
+            self._write_event_point(case_id, {
+                "ts": ts, "role": role, "type": "adjudication",
+                "detail": {"decision": decision, "rationale": rationale},
+            })
+        except Exception as e:  # noqa: BLE001 — projection write must not fail the call
+            logger.warning("adjudication event point write failed for %s: %s", case_id, e)
+        return case
 
     def reopen(self, case_id: str, role: str = "case-spine",
                rationale: str = "") -> dict[str, Any] | None:
@@ -480,23 +581,54 @@ class CaseStore:
         and assignment callers trust the payload, so that is a correctness
         bug, not a heuristic. Prefers an exact payload-field lookup; falls
         back to a scanned exact-token match; falls back to receipts.
+
+        Event-points design: the returned timeline = independent event
+        points (authoritative, race-free) MERGED with any embedded timeline
+        on the case point (legacy rows / the append_event embedded copy),
+        deduped by (ts, role, type, detail). All consumers see the same dict
+        shape as before.
         """
         try:
             mem = self._get_memory()
             # Primary: exact payload match (Qdrant filter, no scan).
             payload = mem.get_by_payload(CASE_COLLECTION, "case_id", case_id)
+            case = None
             if payload:
                 parsed = self._parse_content(payload.get("content", ""))
                 if parsed and parsed.get("case_id") == case_id:
-                    return parsed
-            # Fallback: full scan with EXACT first-token identity.
-            for r in mem.search_memory(CASE_COLLECTION, case_id):
-                content = r.get("content", "")
-                if content.split(" ", 1)[0] == case_id:
-                    parsed = self._parse_content(content)
-                    if parsed and parsed.get("case_id") == case_id:
-                        return parsed
-            return None
+                    case = parsed
+            if case is None:
+                # Fallback: full scan with EXACT first-token identity.
+                for r in mem.search_memory(CASE_COLLECTION, case_id):
+                    content = r.get("content", "")
+                    if content.split(" ", 1)[0] == case_id:
+                        parsed = self._parse_content(content)
+                        if parsed and parsed.get("case_id") == case_id:
+                            case = parsed
+                            break
+            if case is None:
+                return None
+            # Fold event points over the embedded timeline.
+            event_points = self._read_event_points(case_id)
+            if event_points:
+                embedded = case.get("timeline") or []
+                seen = {
+                    json.dumps(
+                        (e.get("ts"), e.get("role"), e.get("type"), e.get("detail")),
+                        sort_keys=True, default=str)
+                    for e in embedded
+                }
+                merged = list(embedded)
+                for e in event_points:
+                    key = json.dumps(
+                        (e.get("ts"), e.get("role"), e.get("type"), e.get("detail")),
+                        sort_keys=True, default=str)
+                    if key not in seen:
+                        seen.add(key)
+                        merged.append(e)
+                merged.sort(key=lambda e: e.get("ts", ""))
+                case["timeline"] = merged
+            return case
         except Exception as e:  # noqa: BLE001 — fall back to receipt on any store failure
             logger.warning("qdrant read failed for %s, falling back to receipt: %s", case_id, e)
             return self._get_from_receipt(case_id)
