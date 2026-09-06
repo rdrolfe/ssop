@@ -182,6 +182,20 @@ class SupervisoryClient:
         if not case:
             logger.warning("case_verdict: %s not found or transition failed", case_id)
             return None
+        # Auto-assign the role that acts next (approve -> responder, the
+        # playbook executor; deny -> analyst, closure/tuning). This makes the
+        # PANEL /case-decision path assign consistently with
+        # adjudicate_with_investigation — a decided case with no assignee is
+        # unowned (writeup audit: 47/47 unowned). Guard: don't re-assign if
+        # the case is already held by the target role (the evidence-aware
+        # path assigns before calling case_verdict).
+        target = "responder" if decision == "approve" else "analyst"
+        if case.get("assignee") != target:
+            try:
+                self._cases.assign_case(
+                    case_id, target, note=f"supervisory {decision} via verdict")
+            except Exception:  # noqa: BLE001 — assignment must never break the verdict
+                logger.warning("assign after case_verdict failed for %s", case_id)
         # Attach the generated report + advisory INTO the case on the SO
         # surface (meatsuit sees the full report as part of the case, not a
         # separate link). Best-effort — never breaks adjudication.

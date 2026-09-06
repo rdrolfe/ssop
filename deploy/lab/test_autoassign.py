@@ -50,7 +50,28 @@ print("deny decision:", dec2["decision"], "| assignee:", after2["assignee"])
 assert dec2["decision"] == "deny", f"expected deny, got {dec2['decision']}"
 assert after2["assignee"] == "analyst", "deny should assign analyst"
 
+# 6. PANEL path: case_verdict DIRECT (what /case-decision calls) must ALSO
+#    auto-assign — approve -> responder, deny -> analyst. Regression for the
+#    panel-decide path leaving the assignee as analyst (unowned).
+case3 = cs.open_case(
+    source={"rule_desc": "case_verdict direct", "rule_id": "case-verdict-direct"},
+    title="CASE_VERDICT DIRECT APPROVE", assignee="analyst",
+)
+sup.case_verdict(case3["case_id"], "approve", "direct approve test")
+after3 = cs.get_case(case3["case_id"])
+print("case_verdict approve assignee:", after3["assignee"])
+assert after3["assignee"] == "responder", "case_verdict approve should assign responder"
+
+case4 = cs.open_case(
+    source={"rule_desc": "case_verdict deny", "rule_id": "case-verdict-deny"},
+    title="CASE_VERDICT DIRECT DENY", assignee="analyst",
+)
+sup.case_verdict(case4["case_id"], "deny", "direct deny test")
+after4 = cs.get_case(case4["case_id"])
+print("case_verdict deny assignee:", after4["assignee"])
+assert after4["assignee"] == "analyst", "case_verdict deny should keep/assign analyst"
+
 # cleanup both test cases (close with reason, so no open residue)
-for cid in (case["case_id"], case2["case_id"]):
+for cid in (case["case_id"], case2["case_id"], case3["case_id"], case4["case_id"]):
     cs.close_case(cid, role="verify", reason="auto-assign test cleanup")
 print("AUTO-ASSIGN OK")
