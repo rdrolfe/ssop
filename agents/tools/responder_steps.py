@@ -45,11 +45,23 @@ class StepResult:
 
 def _ssh_run(host: str, command: str, timeout_s: int = 60) -> str:
     """Run a command on a host via the SSH singleton (paramiko)."""
-    ssh = get_ssh()
-    result = ssh.run(host=host, command=command, timeout=timeout_s)
+    result = _ssh_run_result(host, command, timeout_s)
     if not result.get("ok"):
         raise StepError(f"ssh {host}: {result.get('error', 'unknown error')}")
     return result.get("stdout", "")
+
+
+def _ssh_run_result(host: str, command: str, timeout_s: int = 60) -> dict[str, Any]:
+    """Run a command and return the FULL result dict (ok/exit/stdout/stderr/error).
+
+    Unlike _ssh_run this does not raise on nonzero exit — callers that need to
+    interpret documented nonzero exit codes (e.g. systemctl is-active) use it.
+    """
+    try:
+        return get_ssh().run(host=host, command=command, timeout=timeout_s)
+    except Exception as e:  # noqa: BLE001 — transport errors become a failed result
+        logger.exception("ssh %s transport error", host)
+        return {"ok": False, "host": host, "error": str(e)}
 
 
 def step_service_stop(host: str, service: str, timeout_s: int = 60) -> StepResult:
@@ -94,12 +106,28 @@ def step_disk_clean(host: str, timeout_s: int = 120) -> StepResult:
 
 
 def step_verify_service_state(host: str, service: str, expected: str = "active", timeout_s: int = 30) -> StepResult:
-    """Verify a service state (read-only, tier0)."""
+    """Verify a service state (read-only, tier0).
+
+    `systemctl is-active` exits 3 (with stdout "inactive") for an inactive
+    service — that is a legitimate query answer, not a transport error. When
+    `expected=inactive`, exit 3 + stdout "inactive" is a PASS. Transport
+    failures and unknown services (exit 4 / "unknown") remain failures.
+    """
     try:
-        out = _ssh_run(host, f"systemctl is-active {service}", timeout_s)
-        ok = out.strip() == expected
-        return StepResult(ok, f"service {service} on {host} is {out.strip()}", "verify_service_state")
-    except StepError as e:
+        result = _ssh_run_result(host, f"systemctl is-active {service}", timeout_s)
+        out = (result.get("stdout") or "").strip()
+        exit_code = result.get("exit")
+        if not result.get("ok"):
+            # Documented: is-active exits 3 when the unit is inactive.
+            if expected == "inactive" and exit_code == 3 and out == "inactive":
+                return StepResult(True, f"service {service} on {host} is inactive", "verify_service_state")
+            detail = result.get("error") or f"exit={exit_code} stdout={out!r}"
+            logger.error("verify_service_state %s/%s failed: %s", host, service, detail)
+            return StepResult(False, f"ssh {host}: {detail}", "verify_service_state")
+        ok = out == expected
+        return StepResult(ok, f"service {service} on {host} is {out} (expected {expected})", "verify_service_state")
+    except Exception as e:  # noqa: BLE001 — unexpected errors become a failed step
+        logger.exception("verify_service_state %s/%s failed", host, service)
         return StepResult(False, str(e), "verify_service_state")
 
 

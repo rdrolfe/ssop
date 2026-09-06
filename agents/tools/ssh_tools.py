@@ -14,7 +14,6 @@ Hygiene: config-driven hosts (config.py), no load_dotenv, logging, imports at to
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,8 +22,9 @@ from typing import Any
 import paramiko
 
 from config import settings
+from logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _fetch_spiffe_id(socket_path: str, spire_bin: str) -> str:
@@ -65,6 +65,8 @@ class RemoteExec:
         # Host-key verification: default OFF for the lab (ephemeral VMs, keys
         # rotate on reinstall) but configurable for prod via SSH_STRICT_HOST_KEYS.
         self.strict_host_keys = bool(settings.ssh_strict_host_keys)
+        kh = getattr(settings, "ssh_known_hosts_file", "")
+        self.known_hosts_file: Path | None = Path(kh).expanduser() if kh else None
 
     # --- helpers ---
 
@@ -83,10 +85,40 @@ class RemoteExec:
         except OSError as e:
             logger.error("audit write failed: %s", e)
 
+    def _load_known_hosts(self, client: paramiko.SSHClient) -> None:
+        """Load trusted host keys BEFORE enabling RejectPolicy.
+
+        Strict mode with an empty trust set rejects even correctly enrolled
+        hosts, so both key sources are loaded up front:
+          1. the system known_hosts (~/.ssh/known_hosts, managed by the user);
+          2. an explicitly configured file (SSH_KNOWN_HOSTS_FILE) for systemd
+             units and operators who keep a dedicated trust store.
+        A missing configured file is a hard error (fail-closed, no AutoAdd
+        fallback) — enroll hosts with ssh-keyscan first.
+        """
+        try:
+            client.load_system_host_keys()
+        except (OSError, paramiko.SSHException) as e:
+            logger.warning("could not load system known_hosts: %s", e)
+        kh = self.known_hosts_file
+        if kh:
+            if not kh.exists():
+                raise paramiko.SSHException(
+                    f"SSH_STRICT_HOST_KEYS is on but configured known-hosts "
+                    f"file {kh} does not exist — enroll hosts first "
+                    f"(ssh-keyscan -H <host> >> {kh}) or unset "
+                    f"SSH_KNOWN_HOSTS_FILE")
+            client.load_host_keys(str(kh))
+        if not len(client.get_host_keys()):
+            logger.warning(
+                "strict host-key mode: no keys in %s — every host will be "
+                "rejected until enrolled (ssh-keyscan >> known-hosts)", kh or "~/.ssh/known_hosts")
+
     def _connect(self, host: str) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         if self.strict_host_keys:
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
+            self._load_known_hosts(client)
         else:
             # Lab default (SSH_STRICT_HOST_KEYS=False): ephemeral VMs, keys
             # rotate on reinstall. NOT a silent choice — production must set
@@ -109,8 +141,15 @@ class RemoteExec:
             client = self._connect(host)
         except (paramiko.SSHException, OSError) as e:
             logger.warning("ssh connect failed to %s: %s", host, e)
-            self._audit({"host": host, "command": command, "ok": False, "error": str(e)})
-            return {"ok": False, "host": host, "error": str(e)}
+            msg = str(e)
+            if self.strict_host_keys and (
+                    "not found in known_hosts" in msg
+                    or isinstance(e, paramiko.BadHostKeyException)):
+                msg += (" (strict host-key mode: unknown key — enroll via "
+                        "ssh-keyscan; changed key — investigate before "
+                        "trusting; this client never falls back to AutoAdd)")
+            self._audit({"host": host, "command": command, "ok": False, "error": msg})
+            return {"ok": False, "host": host, "error": msg}
         try:
             stdin, stdout, stderr = client.exec_command(command, timeout=t)
             out = stdout.read().decode(errors="replace")

@@ -1,8 +1,8 @@
 # SSOP — Sovereign Security Operations Platform
 
 A self-healing, self-testing SOC platform where AI agents fill the operational roles
-of a security operations center — with **separation of duties, cryptographic identity,
-provable audit, and a human approval gate baked into the architecture**.
+of a security operations center — with **separation of duties, platform identity,
+tamper-evident audit design, and a human approval gate baked into the architecture**.
 
 SSOP is designed to run entirely on infrastructure you control. No cloud dependency,
 no vendor lock-in. The ontology (roles, authority, memory, audit) is the product;
@@ -32,9 +32,10 @@ and audit trails — then a platform can *be* a SOC instead of *assist* a SOC.
    commands in its sudoers whitelist. Roles are scoped by construction, not by prompt.
 
 2. **Cryptographic identity for every actor.** Every role holds a SPIFFE/SPIRE SVID
-   (a short-lived, auto-rotating X.509 identity). Audit records are cryptographically
-   bound to the actor that produced them. "Which agent did this?" has a cryptographic
-   answer, not an IP guess.
+   (a short-lived, auto-rotating X.509 identity), and SSH audit records carry the
+   acting role's fetched SPIFFE ID. "Which agent did this?" is answered by the
+   platform identity, not an IP guess. (Audit records store the identity string;
+   end-to-end cryptographic binding/signing of every record is on the roadmap.)
 
 3. **Dual-write audit with cross-reference.** Every incident gets a `case_id` minted
    at first detection. All roles read/write the same incident spine. Every write goes

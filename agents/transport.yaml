@@ -2,11 +2,20 @@
 # The decision spine (alerts -> categories -> roles -> verdicts -> cases)
 # is transport-agnostic; this file selects the backend + field ontology.
 #
-# backend: wazuh | securityonion | elastic
-#   - wazuh: OpenSearch indices (ssop-events, wazuh-alerts-*, wazuh-states-*)
+# backend: wazuh | securityonion | elastic | bots
+#   - wazuh: OpenSearch indices (wazuh-alerts-*, wazuh-states-*) — the DEFAULT
+#     for a clean checkout: the local Wazuh stack started by
+#     deploy/docker-compose.yml, indexer at https://localhost:9200
+#     (override with WAZUH_INDEXER_URL in .env)
 #   - securityonion: Elasticsearch indices (so-*, .internal.alerts-*)
 #   - elastic: generic Elasticsearch (future)
-backend: bots
+#   - bots: Splunk BOTSv1 dataset slices (see DEPLOYMENT.md Step 11)
+#
+# ENDPOINT PRECEDENCE: the indexer endpoint comes from .env first
+# (WAZUH_INDEXER_URL, default host localhost:9200). No endpoint is hardcoded
+# in this file — an explicit `endpoint:` here is an operator override and
+# beats .env, so leave it blank unless you mean it.
+backend: wazuh
 
 # Global field ontology — the SAME semantic fields across backends.
 # Per-backend overrides live in backends.<name>.fields (see below); the
@@ -22,12 +31,18 @@ backends:
   wazuh:
     alerts_index: "wazuh-alerts-4.x-*"
     inventory_index: "wazuh-states-inventory-packages-*"
-    endpoint: "https://192.168.1.75:9200"
-    # creds come from the .env (INDEXER_USERNAME/INDEXER_PASSWORD) by default
+    # No hardcoded endpoint — WAZUH_INDEXER_URL in .env decides (local
+    # compose default: https://localhost:9200). Homelab example:
+    # endpoint: "https://192.168.1.75:9200"
+    endpoint: ""
+    # creds come from the .env (WAZUH_INDEXER_USER/PASSWORD) by default
   securityonion:
     alerts_index: ".ds-logs-suricata.alerts-so-*,.ds-logs-detections.alerts-so-*"
     inventory_index: "so-*"     # SO host data (Elastic Agent)
-    endpoint: "https://192.168.1.76:9200"   # SO VM 706 — ES is HTTPS-only
+    # Homelab example (SO VM 706 — ES is HTTPS-only): set in .env or here.
+    # SO_INDEXER_PASSWORD stays in .env either way.
+    # endpoint: "https://192.168.1.76:9200"
+    endpoint: ""
     # SO signals nest rule fields under signal.* — override the field names
     # for the ECS alert shape (suricata.alerts-so / detections.alerts-so).
     fields:
@@ -44,7 +59,10 @@ backends:
   bots:
     alerts_index: "bots-*-poc"   # BOTSv1 ingested slices (sysmon/http/winsys/suricata/dns)
     inventory_index: "bots-*-poc"
-    endpoint: "https://192.168.1.75:9200"
+    # BOTS is an example homelab profile, never the default backend — opt in
+    # by setting backend: bots AND the endpoint (env or here).
+    # endpoint: "https://192.168.1.75:9200"
+    endpoint: ""
 
 # Rule map — the ontology: alert signature -> (category, role).
 # The MEANING is ours; the signature ids are the SIEM's. Re-mapping for a

@@ -53,8 +53,13 @@ echo "=== [4/5] creating Qdrant collections ==="
 source .venv/bin/activate
 python3 - << 'PYEOF'
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+# Explicit path: bare load_dotenv() from a stdin program raises
+# AssertionError (find_dotenv can't inspect the stack under py3.12 /
+# python-dotenv 1.2.x). .env was written to the repo root in step 3.
+if not load_dotenv(Path(".env")):
+    print("  WARNING: .env not found — using defaults (run step 3 first)")
 from qdrant_client import QdrantClient
 url = os.getenv("QDRANT_URL", "http://localhost:6333")
 c = QdrantClient(url=url, prefer_grpc=False)

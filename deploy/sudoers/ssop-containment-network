@@ -1,3 +1,5 @@
-# SSOP containment — firewall block/unblock + read (network host only)
-# Narrow whitelist: only the exact block/unblock/verify patterns, no arbitrary iptables.
-rdrolfe ALL=(ALL) NOPASSWD: /usr/sbin/iptables -I INPUT -s *, /usr/sbin/iptables -D INPUT -s *, /usr/sbin/iptables -L INPUT -n
+# SSOP containment — firewall block/unblock/list via the root-owned wrapper
+# (network host only). The wrapper (ssop-containment-iptables.sh) validates the
+# IP address and forces the iptables verb/target, so no caller-supplied
+# iptables flags can ever match this rule.
+rdrolfe ALL=(root) NOPASSWD: /usr/local/sbin/ssop-containment-iptables.sh

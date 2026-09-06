@@ -48,8 +48,15 @@ def _has(cap: dict, needle: str) -> bool:
 
 
 def _ordered(tl: list) -> bool:
-    ts = [e.get("event_date") or e.get("event_id") for e in tl]
-    return bool(tl) and all(ts)
+    """True when the timeline has >=1 event, every event has a timestamp, and
+    the timestamps are non-decreasing (chronology, not just presence)."""
+    ts = [e.get("event_date") for e in tl]
+    if not ts or not all(ts):
+        return False
+    try:
+        return ts == sorted(ts)
+    except TypeError:  # mixed/incomparable timestamp types -> not ordered
+        return False
 
 
 def score_iris(cap: dict) -> list:
@@ -72,14 +79,23 @@ def score_iris(cap: dict) -> list:
     s2 = 2 if (evidence and (kc or sev)) else (1 if (evidence or kc) else 0)
     notes.append(("2", s2, f"evidence={evidence} kill_chain={kc} severity={sev}"))
 
-    # 3. Negative-outcome clarity — an FP/deny carries the WHY (rationale).
+    # 3. Outcome clarity — the decision carries its WHY (rationale).
     # IRIS renders a negative outcome as a "DENY"/"false positive" decision
     # event title (not the literal spine verdict token), so detect deny/FP.
+    # A positive APPROVED outcome needs the rationale present but has no deny
+    # token by definition — it earns full marks on rationale alone instead of
+    # being capped at 1 for lacking a keyword it must NOT contain.
     tl_blob = _tl_all(tl).lower()
     deny = "deny" in tl_blob or "false_positive" in tl_blob or "false positive" in tl_blob
+    approve = "approve" in tl_blob or (cap.get("expected_decision") or "").lower() in ("approve", "positive")
     rationale = "rationale" in tl_blob or _has(cap, "rationale")
-    s3 = 2 if (deny and rationale) else (1 if (deny or rationale) else 0)
-    notes.append(("3", s3, f"deny/fp={deny} rationale={rationale}"))
+    if deny:
+        s3 = 2 if rationale else 1
+    elif approve and rationale:
+        s3 = 2  # clean approve: rationale present, no deny token required
+    else:
+        s3 = 1 if (approve or rationale) else 0
+    notes.append(("3", s3, f"deny/fp={deny} approve={approve} rationale={rationale}"))
 
     # 4. Case compilation — >=3 ordered events.
     s4 = 2 if (len(tl) >= 3 and _ordered(tl)) else (1 if tl else 0)

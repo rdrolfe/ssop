@@ -44,7 +44,8 @@ class IntelClient:
         self.nvd_url = settings.nvd_url
         self.staging_dir: Path = settings.hunt_staging_dir
         self.hunts_dir: Path = settings.hunts_dir
-        self.inventory_index = settings.inventory_index
+        self.inventory_index = getattr(self._indexer, "inventory_index",
+                                       settings.inventory_index)
 
     # --- INGEST ---
 
@@ -155,6 +156,11 @@ class IntelClient:
             "category": "threat",
             "hypothesis": hypothesis,
             "analyze": "generic",
+            # Target dataset: inventory packs run against the fleet inventory
+            # index (current state), NOT the alert index — HuntClient resolves
+            # "inventory" through the active transport and skips alert-style
+            # time filtering.
+            "target": "inventory",
             "query": {
                 "size": 100,
                 "query": {"bool": {"filter": [

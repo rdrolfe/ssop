@@ -61,20 +61,35 @@ class HuntClient:
     HUNTS: Dict[str, Dict[str, Any]] = load_hunts(settings.hunts_dir)
 
     def run_hunt(self, hunt_id: str, days: int = 7) -> Dict[str, Any]:
-        """Execute a hunt from the library and analyze the results."""
+        """Execute a hunt from the library and analyze the results.
+
+        Target resolution (spec["target"], validated):
+          - "alerts" (default): the backend's alerts index, time-bound to
+            `days` using the transport's timestamp field.
+          - "inventory": the backend's inventory index (current fleet state)
+            with NO time filter — inventory is not event telemetry; requiring
+            a recent alert timestamp would misreport present packages as clean.
+        """
         if hunt_id not in self.HUNTS:
             raise ValueError(f"Unknown hunt: {hunt_id}. Available: {list(self.HUNTS)}")
         spec = self.HUNTS[hunt_id]
+        target = spec.get("target", "alerts")
+        if target not in ("alerts", "inventory"):
+            raise ValueError(
+                f"hunt {hunt_id}: invalid target {target!r} (expected 'alerts' or 'inventory')")
+        inventory_index = getattr(self._indexer, "inventory_index", settings.inventory_index)
+        index = inventory_index if target == "inventory" else self._indexer.alerts_index
         query = json.loads(json.dumps(spec["query"]))  # deep copy
-        # Time-bind the hunt — use the transport's timestamp field mapping
-        # (bots/securityonion map to @timestamp; wazuh keeps timestamp).
-        ts_field = getattr(self._indexer, "field_timestamp", "timestamp")
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        query["query"]["bool"]["filter"].append(
-            {"range": {ts_field: {"gte": since}}}
-        )
+        if target == "alerts":
+            # Time-bind the hunt — use the transport's timestamp field mapping
+            # (bots/securityonion map to @timestamp; wazuh keeps timestamp).
+            ts_field = getattr(self._indexer, "field_timestamp", "timestamp")
+            since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            query["query"]["bool"]["filter"].append(
+                {"range": {ts_field: {"gte": since}}}
+            )
         try:
-            data = self._indexer.search(query)
+            data = self._indexer.search(query, index=index)
         except IndexerError as e:
             logger.error("hunt %s failed: %s", hunt_id, e)
             raise
@@ -87,8 +102,10 @@ class HuntClient:
             "name": spec["name"],
             "category": spec["category"],
             "hypothesis": spec["hypothesis"],
+            "target": target,
+            "index": index,
             "technique_id": spec.get("technique_id"),  # optional MITRE ID on the hunt definition
-            "window_days": days,
+            "window_days": days if target == "alerts" else None,
             "events_scanned": data.get("hits", {}).get("total", {}).get("value", len(docs)),
             "ts": datetime.now(timezone.utc).isoformat(),
         })

@@ -130,6 +130,8 @@ class Cursor:
                 self.data["last_ts"] = raw.get("last_ts")
                 self.data["seen_ids"] = set(raw.get("seen_ids", []))
                 self.data["bursts"] = raw.get("bursts", {})
+                # Stable pagination boundary (ts + doc id sort values).
+                self.data["search_after"] = raw.get("search_after")
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning("cursor load failed: %s", e)
 
@@ -140,6 +142,7 @@ class Cursor:
                 "last_ts": self.data["last_ts"],
                 "seen_ids": list(self.data["seen_ids"])[-5000:],  # keep last 5k
                 "bursts": self.data["bursts"],
+                "search_after": self.data.get("search_after"),
             }, indent=2))
         except OSError as e:
             logger.error("cursor save failed: %s", e)
@@ -158,22 +161,68 @@ class Cursor:
 
         Returns the count INCLUDING this occurrence. First call in the window
         returns 1 (dispatch once); repeats return >1 (dedupe).
+
+        Two guards prevent indefinite suppression (issue: burst starvation):
+          - HARD CAP: a burst lives at most `burst_max_min` minutes from its
+            first_ts. After the cap the signature re-dispatches (fresh burst).
+          - ENTITY EXEMPTION: the caller may pass entity keys; a burst entry
+            stores them, and a NEW entity (never seen in this burst) breaks
+            suppression — a different attacker/victim pair is material
+            evidence, not sensor noise.
         """
         window = window_min or settings.burst_window_min
+        max_min = getattr(settings, "burst_max_min", 60)
         bursts = self.data["bursts"]
         now = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         entry = bursts.get(key)
         if entry:
+            first = datetime.fromisoformat(entry["first_ts"].replace("Z", "+00:00"))
             last = datetime.fromisoformat(entry["last_ts"].replace("Z", "+00:00"))
-            if (now - last) <= timedelta(minutes=window):
+            age_min = (now - first).total_seconds() / 60.0
+            if age_min > max_min:
+                # Suppression cap expired — start a fresh burst for this key.
+                bursts.pop(key, None)
+                entry = None
+            elif (now - last) <= timedelta(minutes=window):
+                if self._burst_entity_exempts(entry):
+                    # Material change (new entity) — dispatch this alert.
+                    # The repeat counter stays where it was: the exempted
+                    # alert is a NEW occurrence, not another suppressed echo.
+                    entry["last_ts"] = ts
+                    return 1
                 entry["count"] += 1
                 entry["last_ts"] = ts
                 return entry["count"]
-        bursts[key] = {"count": 1, "last_ts": ts, "first_ts": ts}
+        bursts[key] = {"count": 1, "last_ts": ts, "first_ts": ts,
+                       "entities": self._burst_pending_entities}
+        self._burst_pending_entities = []
         if len(bursts) > 2000:
             for k in list(bursts)[:500]:
                 bursts.pop(k, None)
         return 1
+
+    _burst_pending_entities: list[str] = []  # set via burst_entities() before burst_count
+
+    def burst_entities(self, entities: list[str]) -> "Cursor":
+        """Declare the alert's entity identity (srcip/dstip/agent) for the
+        NEXT burst_count() call. A repeat whose entities were never part of
+        the burst is MATERIAL CHANGE — burst_count treats it as count=1."""
+        self._burst_pending_entities = [e for e in entities if e]
+        return self
+
+    def _burst_entity_exempts(self, entry: dict[str, Any]) -> bool:
+        """True when pending entities are all NEW to this burst (material
+        change — suppress only equivalent evidence, never new entities)."""
+        pending = getattr(self, "_burst_pending_entities", [])
+        if not pending:
+            return False
+        seen = set(entry.get("entities") or [])
+        fresh = [e for e in pending if e not in seen]
+        self._burst_pending_entities = []
+        if not fresh:
+            return False
+        entry.setdefault("entities", list(seen)).extend(fresh)
+        return True
 
     @property
     def last_ts(self) -> str | None:
@@ -510,33 +559,73 @@ def pattern_due(hunt_id: str, ts: str) -> bool:
 
 
 def run(limit: int = 50, dry_run: bool = False) -> dict[str, Any]:
-    """Main router run: fetch new alerts, classify, dispatch, persist cursor."""
+    """Main router run: fetch new alerts, classify, dispatch, persist cursor.
+
+    Intake contract (issues: backend fields, pagination, checkpointing):
+      - Field names come from the ACTIVE TRANSPORT (field_timestamp), never
+        hardcoded — the query, sort, and cursor all use the backend's field.
+      - The source projection carries the fields the transport normalizer
+        reads (SO: rule.name/uuid, event.severity, tags, source.ip,
+        destination.ip) so backend mapping happens BEFORE intake.
+      - Sort is [timestamp asc, _id asc] and pagination uses search_after
+        (cursor ts + last doc id) — a full page sharing one timestamp can
+        never strand the next alerts at that timestamp.
+      - The cursor advances ONLY past alerts whose dispatch succeeded (or
+        which were explicitly skipped/deduped); a failed dispatch is retried
+        on the next run instead of being permanently checkpointed.
+    """
     ix = get_indexer()
     cursor = Cursor()
-    report = {"ts": datetime.now(timezone.utc).isoformat(), "processed": 0, "dispatched": 0, "results": []}
+    report: dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat(),
+                              "processed": 0, "dispatched": 0, "results": []}
 
-    must = [{"range": {"timestamp": {"gte": cursor.last_ts or "now-30m"}}}]
+    # Transport-driven intake fields (issue: backend field mappings before
+    # intake). `field_timestamp` is the ACTIVE backend's timestamp field.
+    ts_field = getattr(ix, "field_timestamp", "timestamp")
+    must = [{"range": {ts_field: {"gte": cursor.last_ts or "now-30m"}}}]
     query = {
         "size": limit,
-        "sort": [{"timestamp": {"order": "asc"}}],
+        # Tie-break on _id: stable total order across pages/restarts.
+        "sort": [{ts_field: {"order": "asc"}}, {"_id": {"order": "asc"}}],
         "query": {"bool": {"filter": must}},
-        "_source": ["timestamp", "rule.id", "rule.description", "rule.level", "rule.groups",
-                    "agent.name", "agent.id", "data", "full_log", "decoder.name"],
+        "_source": [
+            ts_field, "rule.id", "rule.description", "rule.level", "rule.groups",
+            # SO detection-schema fields the normalizer reads (parity intake).
+            "rule.name", "rule.uuid", "rule.category", "event.severity", "tags",
+            "agent.name", "agent.id", "data", "full_log", "decoder.name",
+            # SO ECS entity pair — normalized into srcip/dstip before intake.
+            "source.ip", "destination.ip", "source.domain", "destination.domain",
+        ],
     }
+    # Stable cursor: (timestamp, doc id) of the last processed doc.
+    search_after = cursor.data.get("search_after") or None
+    if search_after:
+        query["search_after"] = search_after
+
     try:
         data = ix.search(query)
         hits = data.get("hits", {}).get("hits", [])
         report["total_fetched"] = len(hits)
+        pending_cursor_ts: str | None = None   # highest ts SUCCESSFULLY passed
+        pending_search_after: list | None = None
         for h in hits:
             source = h.get("_source", {})
             alert_id = h.get("_id") or str(uuid.uuid4())
-            ts = source.get("timestamp", "")
+            ts = source.get(ts_field) or source.get("timestamp", "")
             if cursor.is_known(alert_id):
+                # Already handled on an earlier run — safe to advance past it.
+                pending_cursor_ts = ts or pending_cursor_ts
+                pending_search_after = h.get("sort")
                 continue
-            cursor.mark(alert_id, ts)
-            rule = source.get("rule", {})
-            burst_key = f"{rule.get('id')}|{source.get('agent', {}).get('name')}"
-            burst = cursor.burst_count(burst_key, ts)
+            # Extract the entity identity for burst material-change checks.
+            data_obj = source.get("data") or {}
+            entities = [
+                str(source.get("srcip") or data_obj.get("src_ip") or ""),
+                str(source.get("dstip") or data_obj.get("dest_ip") or ""),
+                str((source.get("agent") or {}).get("name") or ""),
+            ]
+            burst_key = f"{(source.get('rule') or {}).get('id')}|{(source.get('agent') or {}).get('name')}"
+            burst = cursor.burst_entities(entities).burst_count(burst_key, ts)
             if not dry_run:
                 result = dispatch(source, burst_count=burst)
             else:
@@ -544,8 +633,26 @@ def run(limit: int = 50, dry_run: bool = False) -> dict[str, Any]:
                           "burst": burst, "dispatch": {"action": "dry_run_skip"}}
             report["results"].append(result)
             report["processed"] += 1
-            if result.get("dispatch", {}).get("action", "").startswith("dispatched_to"):
+            # Checkpoint discipline (issue: failed dispatch): only a result
+            # WITHOUT an error advances the durable cursor. A dispatch that
+            # failed (case store down, role crash) is retried next run; it is
+            # NOT marked seen, so nothing is silently lost.
+            dispatch_result = result.get("dispatch") or {}
+            if dispatch_result.get("error"):
+                report["failed_dispatches"] = report.get("failed_dispatches", 0) + 1
+                logger.warning("dispatch failed for %s — will retry next run: %s",
+                               alert_id, dispatch_result.get("error"))
+                continue
+            cursor.mark(alert_id, ts)
+            pending_cursor_ts = ts or pending_cursor_ts
+            pending_search_after = h.get("sort")
+            if dispatch_result.get("action", "").startswith("dispatched_to"):
                 report["dispatched"] += 1
+        # Persist ONLY the successfully-processed boundary.
+        if pending_cursor_ts:
+            cursor.data["last_ts"] = pending_cursor_ts
+        if pending_search_after:
+            cursor.data["search_after"] = pending_search_after
         cursor.save()
         logger.info("router run: %d processed, %d dispatched", report["processed"], report["dispatched"])
     except Exception as e:

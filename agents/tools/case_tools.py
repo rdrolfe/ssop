@@ -102,6 +102,11 @@ class CaseStateError(RuntimeError):
     """Raised when a case transition is invalid (the machine is enforced)."""
 
 
+class CaseConflictError(RuntimeError):
+    """Raised when concurrent case writers keep colliding past the retry
+    budget (optimistic-concurrency verification failed repeatedly)."""
+
+
 def _derive_status(state: str) -> str:
     return "open" if state in _OPEN_STATES else "closed"
 
@@ -194,6 +199,52 @@ class CaseStore:
                     len(case["observables"]), len(case["enrichments"]))
         return case
 
+    # Optimistic-concurrency retry budget (issue: concurrent writers). Each
+    # mutation re-reads the case, mutates, and verifies its write landed
+    # before returning; a racing writer bumps the revision, we re-read, and
+    # retry — so the last writer never silently discards an earlier one.
+    _WRITE_ATTEMPTS = 5
+
+    def _mutate_case(self, case_id: str, mutate, *, event: str, role: str = "case-spine") -> dict[str, Any] | None:
+        """Read-mutate-write with revision verification + retry.
+
+        `mutate(case)` mutates the case dict in place (returns nothing) or
+        returns a replacement dict. Between read and upsert another process
+        can write the same point — Qdrant upserts are last-write-wins, so we
+        verify by re-reading: our revision must be the one on the point.
+        On a lost race, re-read (incorporating the other writer's state) and
+        retry. Exhausting the budget raises CaseConflictError instead of
+        silently overwriting (the reviewed failure mode).
+        """
+        last_err: Exception | None = None
+        for attempt in range(self._WRITE_ATTEMPTS):
+            case = self.get_case(case_id)
+            if not case:
+                return None
+            base_rev = int(case.get("revision") or 0)
+            result = mutate(case)
+            if isinstance(result, dict):
+                case = result
+            case["revision"] = base_rev + 1
+            case["updated_ts"] = datetime.now(timezone.utc).isoformat()
+            self._write_both(case, event=event, role=role)
+            try:
+                verify = self.get_case(case_id)
+                if verify and int(verify.get("revision") or 0) == case["revision"] \
+                        and verify.get("updated_ts") == case["updated_ts"]:
+                    return case
+                last_err = RuntimeError(
+                    f"case {case_id} write raced (rev {base_rev} -> {case['revision']})")
+                logger.warning("case write race on %s (attempt %d/%d): %s",
+                               case_id, attempt + 1, self._WRITE_ATTEMPTS, last_err)
+            except Exception as e:  # noqa: BLE001 — verify failure must not skip the retry loop
+                last_err = e
+                logger.warning("case write verify failed on %s (attempt %d/%d): %s",
+                               case_id, attempt + 1, self._WRITE_ATTEMPTS, e)
+        raise CaseConflictError(
+            f"case {case_id}: {self._WRITE_ATTEMPTS} concurrent write attempts "
+            f"failed — refusing to clobber: {last_err}")
+
     def append_event(self, case_id: str, role: str, event_type: str, detail: dict[str, Any]) -> dict[str, Any] | None:
         """Append a timeline event to an existing case (by case_id).
 
@@ -203,63 +254,63 @@ class CaseStore:
         move the case through the machine without every call site needing to
         know the transitions. Adjudication is NOT handled here: use
         decide()/case_verdict (it writes the decision + transition).
+        Concurrency-safe: routed through _mutate_case (revision-verified
+        write) so parallel writers merge rather than clobber.
         """
-        case = self.get_case(case_id)
-        if not case:
-            logger.warning("append_event: case %s not found", case_id)
-            return None
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "role": role,
             "type": event_type,
             "detail": detail,
         }
-        case.setdefault("timeline", []).append(entry)
-        case["updated_ts"] = entry["ts"]
-        case["last_touched_ts"] = entry["ts"]
-        # Opportunistic machine advance (enforced — illegal moves are skipped
-        # silently here: a signal on a decided case must not yank it back).
-        cur = _normalize_state(case.get("state", "new"))
-        want = None
-        if event_type == "investigation" and cur in ("new", "triage"):
-            want = "investigating"
-        elif event_type in ("escalate", "verdict") and cur in ("triage", "investigating"):
-            want = "awaiting_decision"
-        if want and want in _CASE_TRANSITIONS.get(cur, set()):
-            case["state"] = want
-            case["status"] = _derive_status(want)
-        self._write_both(case, event=event_type, role=role)
-        return case
+
+        def _mut(case: dict[str, Any]) -> None:
+            case.setdefault("timeline", []).append(entry)
+            case["last_touched_ts"] = entry["ts"]
+            # Opportunistic machine advance (enforced — illegal moves are
+            # skipped silently here: a signal on a decided case must not
+            # yank it back).
+            cur = _normalize_state(case.get("state", "new"))
+            want = None
+            if event_type == "investigation" and cur in ("new", "triage"):
+                want = "investigating"
+            elif event_type in ("escalate", "verdict") and cur in ("triage", "investigating"):
+                want = "awaiting_decision"
+            if want and want in _CASE_TRANSITIONS.get(cur, set()):
+                case["state"] = want
+                case["status"] = _derive_status(want)
+
+        return self._mutate_case(case_id, _mut, event=event_type, role=role)
 
     def assign_case(self, case_id: str, role: str, note: str = "") -> dict[str, Any] | None:
         """Assign a case to the role handling it (auto-assign).
 
-        A case with no assignee is unowned — a human opening the queue can't
-        tell who's responsible. Every escalation and every supervisory
-        verdict assigns the case to the role that should act next (writeup
-        audit: 47/47 cases had no assignee). Sets `assignee`, records an
-        `assigned` timeline event + assignment-history entry, dual-writes.
+        Concurrency-safe: routed through _mutate_case (revision-verified
+        write) so parallel writers merge rather than clobber.
         """
-        case = self.get_case(case_id)
-        if not case:
-            logger.warning("assign_case: case %s not found", case_id)
-            return None
-        prev = case.get("assignee")
-        case["assignee"] = role
+        prev_holder = [None]  # filled inside _mut (read under the retry loop)
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "role": role,
             "type": "assigned",
-            "detail": {"assignee": role, "previous": prev, "note": note or ""},
+            "detail": {"assignee": role, "previous": prev_holder[0], "note": note or ""},
         }
-        case.setdefault("timeline", []).append(entry)
-        case["updated_ts"] = entry["ts"]
-        case["last_touched_ts"] = entry["ts"]
-        # Assignment history — who held the case, when, by whom (the SOC
-        # audit trail for handoffs between roles).
-        case.setdefault("assignment_history", []).append({
-            "assignee": role, "ts": entry["ts"], "by": "assign"})
-        self._write_both(case, event="assigned", role=role)
+
+        def _mut(case: dict[str, Any]) -> None:
+            prev_holder[0] = case.get("assignee")
+            entry["detail"]["previous"] = prev_holder[0]
+            case["assignee"] = role
+            case.setdefault("timeline", []).append(entry)
+            case["last_touched_ts"] = entry["ts"]
+            # Assignment history — who held the case, when, by whom (the SOC
+            # audit trail for handoffs between roles).
+            case.setdefault("assignment_history", []).append({
+                "assignee": role, "ts": entry["ts"], "by": "assign"})
+
+        case = self._mutate_case(case_id, _mut, event="assigned", role=role)
+        if not case:
+            logger.warning("assign_case: case %s not found", case_id)
+            return None
         logger.info("case assigned: %s -> %s (%s)", case_id, role, note or "no note")
         return case
 
@@ -273,28 +324,31 @@ class CaseStore:
         `last_touched_ts`, appends a `transition` timeline event (the audit
         trail of WHO moved the case and why), and dual-writes. Raises
         CaseStateError on an illegal move — fail loud, not silent.
+        Concurrency-safe via _mutate_case.
         """
-        case = self.get_case(case_id)
+        def _mut(case: dict[str, Any]) -> None:
+            cur = _normalize_state(case.get("state", "new"))
+            if to_state not in _CASE_TRANSITIONS.get(cur, set()):
+                raise CaseStateError(
+                    f"illegal case transition {cur} -> {to_state} (case {case_id})")
+            case["state"] = to_state
+            case["status"] = _derive_status(to_state)
+            case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+            case.setdefault("timeline", []).append({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "role": role,
+                "type": "transition",
+                "detail": {"from": cur, "to": to_state, "rationale": rationale or ""},
+            })
+
+        try:
+            case = self._mutate_case(case_id, _mut, event=f"transition:{to_state}", role=role)
+        except CaseStateError:
+            raise
         if not case:
             logger.warning("transition: case %s not found", case_id)
             return None
-        cur = _normalize_state(case.get("state", "new"))
-        if to_state not in _CASE_TRANSITIONS.get(cur, set()):
-            raise CaseStateError(
-                f"illegal case transition {cur} -> {to_state} (case {case_id})")
-        case["state"] = to_state
-        case["status"] = _derive_status(to_state)
-        case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "role": role,
-            "type": "transition",
-            "detail": {"from": cur, "to": to_state, "rationale": rationale or ""},
-        }
-        case.setdefault("timeline", []).append(entry)
-        case["updated_ts"] = entry["ts"]
-        self._write_both(case, event=f"transition:{to_state}", role=role)
-        logger.info("case %s transition: %s -> %s (%s)", case_id, cur, to_state, role)
+        logger.info("case %s transition: -> %s (%s)", case_id, to_state, role)
         return case
 
     def decide(self, case_id: str, decision: str, rationale: str,
@@ -307,23 +361,36 @@ class CaseStore:
         timeline event (the console reads the timeline), and stamps the
         case. Callers that previously set status directly now ride the
         machine: an approved case stays OPEN until the responder/close step
-        closes it (real SOC semantics — approve ≠ close).
+        closes it (real SOC semantics — approve ≠ close). Concurrency-safe
+        via _mutate_case.
         """
-        case = self.transition(case_id, "decided", role=role,
-                               rationale=f"{decision}: {rationale[:80]}")
-        if not case:
-            return None
-        case["supervisory"] = {"decision": decision, "rationale": rationale,
-                               "ts": datetime.now(timezone.utc).isoformat()}
-        case.setdefault("timeline", []).append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "role": role,
-            "type": "adjudication",
-            "detail": {"decision": decision, "rationale": rationale},
-        })
-        case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
-        self._write_both(case, event="adjudication", role=role)
-        return case
+        def _mut(case: dict[str, Any]) -> None:
+            cur = _normalize_state(case.get("state", "new"))
+            if "decided" not in _CASE_TRANSITIONS.get(cur, set()):
+                raise CaseStateError(
+                    f"illegal case transition {cur} -> decided (case {case_id})")
+            case["state"] = "decided"
+            case["status"] = _derive_status("decided")
+            case["supervisory"] = {"decision": decision, "rationale": rationale,
+                                   "ts": datetime.now(timezone.utc).isoformat()}
+            case.setdefault("timeline", []).append({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "role": role,
+                "type": "transition",
+                "detail": {"from": cur, "to": "decided", "rationale": f"{decision}: {rationale[:80]}"},
+            })
+            case.setdefault("timeline", []).append({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "role": role,
+                "type": "adjudication",
+                "detail": {"decision": decision, "rationale": rationale},
+            })
+            case["last_touched_ts"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            return self._mutate_case(case_id, _mut, event="adjudication", role=role)
+        except CaseStateError:
+            raise
 
     def reopen(self, case_id: str, role: str = "case-spine",
                rationale: str = "") -> dict[str, Any] | None:
@@ -404,20 +471,31 @@ class CaseStore:
         return case
 
     def get_case(self, case_id: str) -> dict[str, Any] | None:
-        """Fetch case from Qdrant (working store)."""
+        """Fetch case from Qdrant (working store).
+
+        Exact identity match (issue: capped substring scans): the point
+        content is `"<case_id> <json>"`, so the FIRST TOKEN must equal the
+        requested case_id. A substring match (`case_id in content`) can
+        return a DIFFERENT case whose text merely mentions the id — decision
+        and assignment callers trust the payload, so that is a correctness
+        bug, not a heuristic. Prefers an exact payload-field lookup; falls
+        back to a scanned exact-token match; falls back to receipts.
+        """
         try:
-            # scroll_limit must exceed the store size: the default 1000
-            # silently drops the freshest cases once the store grows past
-            # 1000 points (BOTS replay pushed it to ~1200), making get_case
-            # return None for cases that exist — same class as the
-            # recidivism-scan cap fixed earlier.
-            results = self._get_memory().search_memory(
-                CASE_COLLECTION, case_id, limit=1, scroll_limit=10000)
-            for r in results:
-                if case_id in r.get("content", ""):
-                    payload = self._parse_content(r.get("content", ""))
-                    if payload:
-                        return payload
+            mem = self._get_memory()
+            # Primary: exact payload match (Qdrant filter, no scan).
+            payload = mem.get_by_payload(CASE_COLLECTION, "case_id", case_id)
+            if payload:
+                parsed = self._parse_content(payload.get("content", ""))
+                if parsed and parsed.get("case_id") == case_id:
+                    return parsed
+            # Fallback: full scan with EXACT first-token identity.
+            for r in mem.search_memory(CASE_COLLECTION, case_id):
+                content = r.get("content", "")
+                if content.split(" ", 1)[0] == case_id:
+                    parsed = self._parse_content(content)
+                    if parsed and parsed.get("case_id") == case_id:
+                        return parsed
             return None
         except Exception as e:  # noqa: BLE001 — fall back to receipt on any store failure
             logger.warning("qdrant read failed for %s, falling back to receipt: %s", case_id, e)
@@ -432,17 +510,53 @@ class CaseStore:
         except (json.JSONDecodeError, IndexError):
             return None
 
-    def _get_from_receipt(self, case_id: str) -> dict[str, Any] | None:
+    def _receipts_for(self, case_id: str) -> list[dict[str, Any]]:
+        """ALL receipt records for a case, in file (chronological) order."""
+        out: list[dict[str, Any]] = []
         if not self.cases_file.exists():
-            return None
+            return out
         for line in self.cases_file.read_text().splitlines():
             try:
                 rec = json.loads(line)
                 if rec.get("case_id") == case_id:
-                    return rec
+                    out.append(rec)
             except json.JSONDecodeError:
                 continue
-        return None
+        return out
+
+    @staticmethod
+    def _rebuild_from_receipts(case_id: str, recs: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Rebuild the LATEST COMPLETE case state from receipts.
+
+        The last receipt is the most recent truth (its status/title); the
+        full timeline is folded from EVERY receipt's detail in order, so the
+        recovered case carries its history — not a one-event stub (issue:
+        receipt recovery returned the first record and a minimal rebuild).
+        """
+        if not recs:
+            return None
+        last = recs[-1]
+        timeline = [r["detail"] for r in recs if r.get("detail")]
+        case: dict[str, Any] = {
+            "case_id": case_id,
+            "title": last.get("title", case_id),
+            "status": last.get("status", "open"),
+            "ts": recs[0].get("ts"),
+            "updated_ts": last.get("ts"),
+            "last_touched_ts": last.get("ts"),
+            "observables": [],
+            "enrichments": [],
+            "techniques": [],
+            "state": "closed" if last.get("status") == "closed" else "new",
+            "supervisory": last.get("supervisory"),
+            "timeline": timeline,
+        }
+        if case["supervisory"] is None:
+            case.pop("supervisory")
+        return case
+
+    def _get_from_receipt(self, case_id: str) -> dict[str, Any] | None:
+        return self._rebuild_from_receipts(case_id, self._receipts_for(case_id))
 
     # --- dual-write helpers ---
 
@@ -640,14 +754,12 @@ class CaseStore:
         except Exception as e:  # noqa: BLE001
             logger.warning("reconcile: qdrant scan failed: %s", e)
         receipt_ids: set[str] = set()
-        receipts: dict[str, dict[str, Any]] = {}
         if self.cases_file.exists():
             for line in self.cases_file.read_text().splitlines():
                 try:
                     rec = json.loads(line)
                     if rec.get("case_id"):
                         receipt_ids.add(rec["case_id"])
-                        receipts.setdefault(rec["case_id"], rec)
                 except json.JSONDecodeError:
                     continue
         receipt_only = sorted(receipt_ids - qdrant_ids)
@@ -655,23 +767,14 @@ class CaseStore:
         heal_failed: list[str] = []
         if heal and receipt_only:
             for cid in receipt_only:
-                rec = receipts.get(cid) or self._get_from_receipt(cid)
-                if not rec:
-                    heal_failed.append(cid)
-                    continue
-                # Rebuild a minimal canonical case from the receipt record
-                # (title/status/timeline) and re-write the Qdrant point.
                 try:
-                    case = {
-                        "case_id": cid,
-                        "title": rec.get("title", cid),
-                        "status": rec.get("status", "open"),
-                        "ts": rec.get("ts"),
-                        "updated_ts": rec.get("ts"),
-                        "observables": [],
-                        "enrichments": [],
-                        "timeline": [rec.get("detail")] if rec.get("detail") else [],
-                    }
+                    # Rebuild the LATEST COMPLETE state: fold EVERY receipt
+                    # for this case into a full timeline (not the first
+                    # record + a minimal stub).
+                    case = self._rebuild_from_receipts(cid, self._receipts_for(cid))
+                    if not case:
+                        heal_failed.append(cid)
+                        continue
                     self._write_memory(case)
                     healed.append(cid)
                 except Exception as e:  # noqa: BLE001 — report, don't die

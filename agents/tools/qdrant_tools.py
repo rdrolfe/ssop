@@ -120,39 +120,77 @@ class QdrantMemory:
             raise QdrantError(f"store_memory failed: {e}") from e
         return {"stored": True, "point_id": point_id, "collection": collection}
 
+    def scroll_all(self, collection: str, scroll_filter: Any = None,
+                   page_size: int = 1000, max_points: int = 200000):
+        """Yield EVERY record in the collection, paging via scroll offset.
+
+        A single scroll call returns at most `limit` points — callers that
+        used it as "the whole store" silently dropped everything past the
+        first page once the collection grew (the 1000-record recidivism cut).
+        This generator pages until Qdrant reports no next-page offset, so no
+        record is silently invisible. `max_points` is a runaway guard, not a
+        business cap.
+        """
+        self.ensure_collection(collection)
+        offset: Any = None
+        yielded = 0
+        while True:
+            records, offset = _retry_call(
+                self.client.scroll,
+                collection_name=collection,
+                scroll_filter=scroll_filter,
+                limit=page_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for rec in records or []:
+                yield rec
+                yielded += 1
+            if offset is None or yielded >= max_points:
+                return
+
+    def get_by_payload(self, collection: str, field: str, value: Any) -> dict[str, Any] | None:
+        """Exact-match ONE record by a payload field (Qdrant filter, not a
+        substring scan). Returns the payload dict, or None when absent."""
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        self.ensure_collection(collection)
+        try:
+            for rec in self.scroll_all(
+                    collection,
+                    scroll_filter=Filter(must=[FieldCondition(
+                        key=field, match=MatchValue(value=value))]),
+                    page_size=10):
+                return rec.payload or {}
+        except Exception as e:
+            logger.error("get_by_payload failed in %s (%s=%s): %s", collection, field, value, e)
+            raise QdrantError(f"get_by_payload failed: {e}") from e
+        return None
+
     def search_memory(self, collection: str, query: str, limit: int = 5,
                       scroll_limit: int = 1000) -> list[dict[str, Any]]:
         """Search memory entries by text content.
 
-        scroll_limit caps how many records the SCROLL pulls before the
-        substring filter — callers that need the whole store (recidivism
-        scans) must raise it: the default 1000 silently drops the freshest
-        cases once the store exceeds 1000 points (the BOTS replay pushed it
-        to 1176, breaking entity/host recidivism seeding).
+        Backed by scroll_all (full pagination — no silent page cap); the
+        scroll_limit argument is retained for call-site compatibility but is
+        now only a soft hint, never a truncation of the scanned store.
         """
         self.ensure_collection(collection)
+        results: list[dict[str, Any]] = []
         try:
-            records = _retry_call(
-                self.client.scroll,
-                collection_name=collection,
-                limit=scroll_limit,
-                with_payload=True,
-                with_vectors=False,
-            )[0]
+            for rec in self.scroll_all(collection):
+                payload = rec.payload or {}
+                results.append({
+                    "id": rec.id,
+                    "content": payload.get("content", ""),
+                    "timestamp": payload.get("timestamp", ""),
+                    "agent": payload.get("agent", ""),
+                    "metadata": {k: v for k, v in payload.items() if k not in ("content", "timestamp", "agent")},
+                })
         except Exception as e:
             logger.error("search_memory scroll failed in %s: %s", collection, e)
             raise QdrantError(f"search_memory failed: {e}") from e
-
-        results: list[dict[str, Any]] = []
-        for rec in records:
-            payload = rec.payload or {}
-            results.append({
-                "id": rec.id,
-                "content": payload.get("content", ""),
-                "timestamp": payload.get("timestamp", ""),
-                "agent": payload.get("agent", ""),
-                "metadata": {k: v for k, v in payload.items() if k not in ("content", "timestamp", "agent")},
-            })
 
         # Filter by query text (substring — deterministic, no embeddings needed)
         if query:

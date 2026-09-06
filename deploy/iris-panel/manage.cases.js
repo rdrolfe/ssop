@@ -118,7 +118,7 @@ $('#cases_table').dataTable({
             "render": function (data, type, row, meta) {
                 if (type !== 'display') { return ''; }
                 var c = (row.custom_attributes && row.custom_attributes.ssop) ? row.custom_attributes.ssop : {};
-                return (c.engine || '');
+                return sanitizeHTML(c.engine || '');
             },
             "title": "Engine"
         },
@@ -128,7 +128,7 @@ $('#cases_table').dataTable({
                 if (type !== 'display') { return ''; }
                 var c = (row.custom_attributes && row.custom_attributes.ssop) ? row.custom_attributes.ssop : {};
                 var d = c.decision || '';
-                return d ? d.toUpperCase() : '';
+                return d ? sanitizeHTML(String(d).toUpperCase()) : '';
             },
             "title": "SSOP Decision"
         },
@@ -137,7 +137,7 @@ $('#cases_table').dataTable({
             "render": function (data, type, row, meta) {
                 if (type !== 'display') { return ''; }
                 var c = (row.custom_attributes && row.custom_attributes.ssop) ? row.custom_attributes.ssop : {};
-                return (c.playbook || '');
+                return sanitizeHTML(c.playbook || '');
             },
             "title": "Playbook"
         },
@@ -146,7 +146,7 @@ $('#cases_table').dataTable({
             "render": function (data, type, row, meta) {
                 if (type !== 'display') { return ''; }
                 var c = (row.custom_attributes && row.custom_attributes.ssop) ? row.custom_attributes.ssop : {};
-                return (c.agent || '');
+                return sanitizeHTML(c.agent || '');
             },
             "title": "Agent"
         }

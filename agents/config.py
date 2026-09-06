@@ -171,6 +171,14 @@ class Settings:
     # --- router ---
     router_interval_s: int = _env_int("ROUTER_INTERVAL_S", 180)
     burst_window_min: int = _env_int("ROUTER_BURST_WINDOW_MIN", 10)
+    # Burst suppression hard cap (issue 9): a burst cannot suppress its
+    # signature longer than this, however busy the sensor — after the cap the
+    # next repeat dispatches normally.
+    burst_max_min: int = _env_int("ROUTER_BURST_MAX_MIN", 60)
+    # Correlation wall-clock budget (issue 11): the investigator's per-source
+    # searches stop once this many seconds are consumed, so router escalation
+    # + cursor persist always fit inside the systemd service runtime budget.
+    correlation_budget_s: int = _env_int("ROUTER_CORRELATION_BUDGET_S", 60)
     pattern_rate_minutes: int = _env_int("ROUTER_PATTERN_RATE_MINUTES", 60)
     noise_rules: frozenset[str] = frozenset(_env("ROUTER_NOISE_RULES", "5501,5502,5715").split(","))
     default_category: str = _env("ROUTER_DEFAULT_CATEGORY", "operational")
@@ -223,11 +231,26 @@ class Settings:
     ssh_user: str = _env("SSH_USER", "")
     ssh_key_path: str = _env("SSH_KEY_PATH", "~/.ssh/id_ed25519")
     ssh_strict_host_keys: bool = _env_bool("SSH_STRICT_HOST_KEYS", False)
+    # Explicit known-hosts file for strict verification (system
+    # ~/.ssh/known_hosts is always loaded first; this adds an operator- or
+    # systemd-managed file). Empty = system file only.
+    ssh_known_hosts_file: str = _env("SSH_KNOWN_HOSTS_FILE", "")
     spire_socket: str = _env("SPIRE_SOCKET", "/tmp/spire-agent/public/api.sock")
     spire_bin: str = _env("SPIRE_BIN", "spire-agent")
     disk_warn_pct: int = _env_int("SELFHEAL_DISK_WARN_PCT", 85)
     disk_crit_pct: int = _env_int("SELFHEAL_DISK_CRIT_PCT", 95)
     timeout_s: int = _env_int("SELFHEAL_TIMEOUT_S", 30)
+
+    # --- adjudication API (issues #1 / #30) ---
+    # Bearer token required on every decision/adjudication request. Empty
+    # means the API FAILS CLOSED: it serves only /health and rejects
+    # everything else with 401 until a token is configured.
+    adjudicate_api_token: str = _env("ADJUDICATE_API_TOKEN", "")
+    # Max request body accepted (bytes); larger Content-Length is 413'd
+    # before any read.
+    adjudicate_api_max_body: int = _env_int("ADJUDICATE_API_MAX_BODY", 65536)
+    # Per-connection read deadline (seconds) for headers + body.
+    adjudicate_api_timeout_s: int = _env_int("ADJUDICATE_API_TIMEOUT_S", 30)
 
     def __post_init__(self):
         # parse SSH_HOSTS="web=10.0.0.5,db=10.0.0.6" into dict

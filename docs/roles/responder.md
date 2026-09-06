@@ -10,34 +10,34 @@ entities (fail-closed). Recommend, not NAC.
 - The case spine (supervisor's decision + recommendation)
 - Playbook library + config (`settings.protected_entities`, tiers)
 
-## Decision flow (`responder.py:279-355`)
+## Decision flow
 
-### 0. Approval gate from the case (`responder.py:293-331`)
+### 0. Approval gate from the case
 The responder reads the supervisor's decision from the case
 (`supervisory.recommended_playbook` + the timeline adjudication event). If
 the supervisor DENIED the case → refuses to execute, no matter what was
 recommended. Also pulls the analyst verdict category so live alerts carry
 their classification for playbook matching.
 
-### 1. Candidate selection + recommendation gate (`responder.py:136-152`)
+### 1. Candidate selection + recommendation gate
 A playbook fires if:
 - its trigger matches the alert (`playbook.matches`: rule-id override, then
   category (single or list) + `level >= min_level`), AND
 - a tier1+/recommended playbook fires ONLY if `recommended` names it — a
   role must have attached `recommended_playbook` to the case.
 
-### 2. Self-infliction guard (`responder.py:63-107`, `201-208`)
+### 2. Self-infliction guard (`guard_check`)
 Every step's `host`/`src_ip`/`target`/`ip` params (and `alert.srcip`) are
 resolved against the protected set — literal → hostname alias → CIDR. ANY
 protected target blocks the WHOLE playbook (fail-closed).
 
-### 3. Tier check (`responder.py:242-276`)
+### 3. Tier check (tier routing in `build_graph`)
 - **tier0 / tier1** → execute immediately (`node_tier1_execute`), recorded
 - **tier2** → create an escalation ticket with `run_id` + resolved params +
   expiry (`node_tier2_ticket`); execute only after human approval matches
   `run_id` and is not expired
 
-### 4. Execution (`responder.py:159-173`)
+### 4. Execution (`execute_playbook`)
 Steps run strictly sequentially; STOP on first failure (recorded on spine +
 ticket).
 

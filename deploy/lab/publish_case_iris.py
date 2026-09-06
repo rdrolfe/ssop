@@ -17,6 +17,7 @@ Usage: python3 deploy/lab/publish_case_iris.py <case_id> [--customer N]
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import ssl
 import sys
@@ -200,6 +201,61 @@ def _role_key(role: str) -> str:
     return ""
 
 
+def _event_ts(ev: dict) -> str:
+    """Occurrence time from the spine event (NOT publication time).
+
+    Spine events carry `ts` (ISO-8601, case_tools.append_event). Reformat it
+    for IRIS `event_date`; fall back to now only for legacy events without ts.
+    """
+    raw = ev.get("ts") or ""
+    if raw:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+def _event_tag(ev: dict, payload: dict) -> str:
+    """Deterministic identity for a mapped spine event (stable on republish)."""
+    basis = f"{ev.get('type')}|{ev.get('role')}|{payload.get('event_title')}|" \
+            f"{payload.get('event_content')}"
+    return "ssop-" + hashlib.sha1(basis.encode()).hexdigest()[:12]
+
+
+def _existing_event_tags(iris_case_id: int) -> set[str]:
+    """Tags already on the IRIS timeline (for event dedupe)."""
+    try:
+        r = _req("GET", f"/case/timeline/events/list?cid={iris_case_id}")
+        out = set()
+        for e in r.get("data", []) or []:
+            tags = e.get("event_tags") or ""
+            out.update(t for t in str(tags).split(",") if t.startswith("ssop-"))
+        return out
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return set()
+
+
+def find_existing_case(case_id: str) -> int | None:
+    """Look up the IRIS case mapped to this spine case (case_soc_id).
+
+    One spine case maps to ONE IRIS case — republishing must reuse it, not
+    mint a duplicate. Scans the case list client-side for our soc_id.
+    """
+    try:
+        r = _req("GET", "/manage/cases/list?limit=1000")
+        for c in r.get("data", []) or []:
+            if str(c.get("case_soc_id", "")) == str(case_id) \
+                    and not c.get("case_close_date"):
+                return c.get("case_id")
+    except urllib.error.HTTPError as e:
+        print(f"case lookup failed (will create): {e.code}")
+    return None
+
+
 def enrich_case_timeline(case_id: str, iris_case_id: int, customer: int = 1) -> int:
     """Write each spine timeline event as an IRIS timeline event, attributed
     per role (the calling key determines event.user_id). Returns count."""
@@ -210,17 +266,25 @@ def enrich_case_timeline(case_id: str, iris_case_id: int, customer: int = 1) -> 
         return 0
     original = _IRIS_KEY
     added = 0
+    seen_tags = _existing_event_tags(iris_case_id)
     for ev in case.get("timeline", []):
         payload = _event_payload(ev, case_id)
         if not payload:
             continue
+        tag = _event_tag(ev, payload)
+        if tag in seen_tags:
+            continue  # already published — keep the IRIS timeline idempotent
         _IRIS_KEY = _role_key(ev.get("role", "")) or original
         try:
-            payload["event_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+            # Occurrence time from the spine event; publication time is NOT
+            # used (preserves historical chronology on republish).
+            payload["event_date"] = _event_ts(ev)
             payload["event_tz"] = "+00:00"
             payload["event_assets"] = []
             payload["event_iocs"] = []
+            payload["event_tags"] = f"{payload.get('event_tags', '')},{tag}".lstrip(",")
             _req("POST", f"/case/timeline/events/add?cid={iris_case_id}", payload)
+            seen_tags.add(tag)
             added += 1
         except urllib.error.HTTPError as e:
             print(f"  timeline event failed ({ev.get('type')}): {e.code} {e.read().decode()[:150]}")
@@ -265,6 +329,15 @@ def _add_note(iris_id: int, title: str, content: str) -> bool:
         except urllib.error.HTTPError as e:
             print(f"  note dir create failed: {e.code} {e.read().decode()[:150]}")
             return False
+    # Idempotency: skip if an identically-titled note already exists.
+    try:
+        notes = _req("GET", f"/case/notes/list?cid={iris_id}")
+        for n in notes.get("data", []) or []:
+            if n.get("note_title") == title[:155]:
+                print("  note already present:", title[:50])
+                return True
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        pass
     try:
         _req("POST", f"/case/notes/add?cid={iris_id}",
              {"note_title": title[:155], "note_content": content,
@@ -280,9 +353,19 @@ def _add_iocs(iris_id: int, case: dict) -> int:
     """Map spine observables -> IRIS IOCs. Returns count added."""
     obs = case.get("observables", []) or []
     added = 0
+    # Idempotency: skip observables already on the case.
+    existing = set()
+    try:
+        iocs = _req("GET", f"/case/ioc/list?cid={iris_id}")
+        for i in iocs.get("data", []) or []:
+            existing.add((str(i.get("ioc_value", "")), i.get("ioc_type_id")))
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        pass
     for o in obs:
         tid = _ioc_type_id(o.get("type", ""))
         if not tid:
+            continue
+        if (str(o.get("value", "")), tid) in existing:
             continue
         try:
             _req("POST", f"/case/ioc/add?cid={iris_id}",
@@ -343,14 +426,20 @@ def main() -> int:
         "case_name": case.get("title", case_id)[:60],
         "case_description": desc[:2000],
     }
-    try:
-        created = _req("POST", "/manage/cases/add", payload)
-        data = created.get("data", {})
-        iris_id = data.get("case_id")
-        print(f"IRIS case created: id={iris_id} name={data.get('name')}")
-    except urllib.error.HTTPError as e:
-        print(f"case create failed: {e.code} {e.read().decode()[:300]}")
-        return 1
+    # Idempotency: one spine case maps to ONE IRIS case. Reuse the existing
+    # IRIS case on republish instead of minting a duplicate.
+    iris_id = find_existing_case(case_id)
+    if iris_id:
+        print(f"IRIS case exists: id={iris_id} (case_soc_id={case_id}) — reusing")
+    else:
+        try:
+            created = _req("POST", "/manage/cases/add", payload)
+            data = created.get("data", {})
+            iris_id = data.get("case_id")
+            print(f"IRIS case created: id={iris_id} name={data.get('name')}")
+        except urllib.error.HTTPError as e:
+            print(f"case create failed: {e.code} {e.read().decode()[:300]}")
+            return 1
 
     # Phase 2 (case-list columns): write the SSOP summary into the case's
     # custom_attributes via the SSOP meta endpoint (bypasses CaseSchema which

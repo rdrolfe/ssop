@@ -16,18 +16,69 @@ import json
 import ssl
 import urllib.request
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
 
+# Issue #30: bound request bodies and give each connection a deadline so a
+# slow client can't monopolize the proxy (and thus the console iframe).
+MAX_BODY = 65536
+READ_TIMEOUT_S = 30
+
 # GET paths proxied 1:1 to the adjudication API (read-through).
 GET_ROUTES = ("/tickets", "/tuning", "/cases", "/report", "/reports", "/advisory", "/health")
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        """Header + body reads must finish within READ_TIMEOUT_S seconds."""
+        super().setup()
+        try:
+            self.connection.settimeout(READ_TIMEOUT_S)
+        except OSError:
+            pass
+
+    def _read_body(self):
+        """Read a bounded request body; reject excess size BEFORE reading."""
+        raw_cl = self.headers.get("Content-Length", "")
+        try:
+            length = int(raw_cl)
+        except ValueError:
+            self._json(411, {"ok": False, "error": "Content-Length required"})
+            return None
+        if length < 0:
+            self._json(400, {"ok": False, "error": "bad Content-Length"})
+            return None
+        if length > MAX_BODY:
+            self._json(413, {"ok": False, "error": f"body too large (>{MAX_BODY} bytes)"})
+            return None
+        chunks = []
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        body = b"".join(chunks)
+        if len(body) < length:
+            self._json(400, {"ok": False, "error": "incomplete request body"})
+            return None
+        return body
+
+    def _forward_auth_headers(self):
+        """The backend enforces bearer-token auth (issue #1). Forward the
+        Authorization credential this request already carries verbatim —
+        never mint or trust one of our own."""
+        headers = {"Content-Type": "application/json"}
+        auth = self.headers.get("Authorization", "")
+        if auth:
+            headers["Authorization"] = auth
+        return headers
+
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -52,11 +103,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _proxy_get(self, path):
-        # Forward a read path to the adjudication API (server-side, trusted).
+        # Forward a read path to the adjudication API (server-side). The
+        # Authorization credential this request carries is forwarded so the
+        # backend's bearer-token check (issue #1) sees the real caller.
         # JSON responses are re-emitted as JSON; non-JSON (e.g. the markdown
         # /report deliverable) is passed through with its content type intact.
         try:
-            with urllib.request.urlopen(ADJUDICATE_API + path, timeout=15,
+            req = urllib.request.Request(
+                ADJUDICATE_API + path,
+                headers=self._forward_auth_headers(), method="GET")
+            with urllib.request.urlopen(req, timeout=15,
                                         context=ssl._create_unverified_context()) as r:
                 body = r.read()
                 ctype = r.headers.get("Content-Type", "")
@@ -103,11 +159,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._json(404, {"ok": False, "error": "unknown path"})
             return
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = self.rfile.read(length)
+            payload = self._read_body()
+            if payload is None:
+                return
             req = urllib.request.Request(
                 ADJUDICATE_API + "/adjudicate", data=payload,
-                headers={"Content-Type": "application/json"}, method="POST")
+                headers=self._forward_auth_headers(), method="POST")
             with urllib.request.urlopen(req, timeout=15,
                                         context=ssl._create_unverified_context()) as r:
                 self._json(200, json.loads(r.read().decode()))
@@ -126,7 +183,8 @@ def main():
     cert_dir = Path(__file__).resolve().parent / "certs"
     cert = cert_dir / "cert.pem"
     key = cert_dir / "key.pem"
-    server = HTTPServer(("0.0.0.0", 5602), ProxyHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", 5602), ProxyHandler)
+    server.daemon_threads = True
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)

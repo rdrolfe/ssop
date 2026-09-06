@@ -1,4 +1,5 @@
 # SSOP containment — config revert via the protected wrapper script (all hosts)
-# The wrapper (ssop-revert.sh) enforces the /opt/ssop-backups source constraint;
+# The wrapper (ssop-revert.sh) enforces the /opt/ssop-backups source constraint,
+# maps each backup artifact to ONE canonical destination, and rejects symlinks;
 # sudoers allows ONLY this script — no arbitrary cp.
-rdrolfe ALL=(ALL) NOPASSWD: /usr/local/sbin/ssop-revert.sh
+rdrolfe ALL=(root) NOPASSWD: /usr/local/sbin/ssop-revert.sh

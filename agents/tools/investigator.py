@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import ssl
+import time
 import urllib.request
 from typing import Any
 
@@ -199,15 +200,32 @@ class Investigator:
 
     def correlate_entity(self, entity: str, entity_type: str = "ip",
                          limit_per_source: int = 5,
-                         window_hours: float = 0.0) -> list[dict[str, Any]]:
+                         window_hours: float = 0.0,
+                         budget_s: float | None = None) -> list[dict[str, Any]]:
         """Find where this entity appears across the BOTS sources.
 
         `window_hours` > 0 restricts each source to events in that window
         (relative to now) — temporal correlation. Returns evidence with a
         per-source score (how engaged the entity is in that source).
+
+        `budget_s` bounds the TOTAL wall-clock time spent on per-source
+        searches (issue: bound correlation work). Once the budget is spent,
+        remaining sources are skipped (best-effort by design) so the caller —
+        e.g. the router mint path inside the systemd runtime budget — can
+        always finish escalation + cursor persist. Defaults to the configured
+        router correlation budget.
         """
+        if budget_s is None:
+            from config import settings as _s
+            budget_s = getattr(_s, "correlation_budget_s", 60)
+        deadline = time.monotonic() + float(budget_s)
         evidence = []
         for entry in self.SOURCES:
+            if time.monotonic() >= deadline:
+                logger.warning("correlate_entity(%s): correlation budget "
+                               "(%.0fs) exhausted — skipping remaining sources",
+                               entity, budget_s)
+                break
             # Unpack: (name, index, field, artifact, label, threat_query[, min_count])
             src_name, index, field, artifact_field, label, threat_query = entry[:6]
             min_count = entry[6] if len(entry) > 6 else 0

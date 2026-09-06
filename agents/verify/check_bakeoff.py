@@ -65,11 +65,41 @@ def _score_case(case_id: str) -> list[str]:
         return [f"score produced no /tmp/iris_bakeoff_scores.json for {case_id}"]
     scores = json.loads(scores_path.read_text())
 
-    for r in scores.get("axes", []):
-        if r.get("iris") != 2:
+    # Schema + identity validation (fail-closed): the scores file must be for
+    # THIS case and must carry exactly one row per axis 1..6, each a valid
+    # 0-2 integer. An empty/short/duplicate/stale score set fails the gate
+    # rather than silently passing rows that happen to exist.
+    if scores.get("case_id") != case_id:
+        problems.append(
+            f"{case_id}: scores file case_id mismatch "
+            f"(expected {case_id}, got {scores.get('case_id')!r}) — stale capture?")
+    rows = scores.get("axes")
+    if not isinstance(rows, list) or not rows:
+        return problems + [f"{case_id}: scores file has no axes (incomplete scoring)"]
+    seen: set[int] = set()
+    for r in rows:
+        try:
+            axis = int(r.get("axis"))
+            val = int(r.get("iris"))
+        except (TypeError, ValueError):
+            problems.append(f"{case_id}: malformed score row {r!r}")
+            continue
+        if axis not in range(1, 7):
+            problems.append(f"{case_id}: axis {axis} out of range 1-6")
+        elif axis in seen:
+            problems.append(f"{case_id}: duplicate score for axis {axis}")
+        else:
+            seen.add(axis)
+        if val not in (0, 1, 2):
+            problems.append(f"{case_id}: axis {axis} score {val} not in 0-2")
+        elif val != 2:
             problems.append(
-                f"{case_id}: axis {r.get('axis')} ({r.get('axis_name','')}): "
-                f"iris={r.get('iris')} — {r.get('note','')[:100]}")
+                f"{case_id}: axis {axis} ({r.get('axis_name','')}): "
+                f"iris={val} — {str(r.get('note',''))[:100]}")
+    missing = sorted(set(range(1, 7)) - seen)
+    if missing:
+        problems.append(f"{case_id}: missing score for axis(es) {missing} "
+                        f"({len(seen)}/6 present) — incomplete scoring")
     return problems
 
 

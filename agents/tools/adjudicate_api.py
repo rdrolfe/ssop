@@ -15,9 +15,11 @@ Usage:  python3 -m tools.adjudicate_api [--host 0.0.0.0] [--port 8787]
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import socket
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 # Explicit .env path — a background/harness process may not inherit the
@@ -56,6 +58,7 @@ _qurl = _os.environ.get("QDRANT_URL", "")
 if not _qurl:
     print("WARN: QDRANT_URL empty after _load_env_into_os", flush=True)
 
+from config import settings
 from logging_setup import get_logger
 from tools.supervisory_tools import SupervisoryClient
 
@@ -156,12 +159,78 @@ def _load_console_html() -> str:
 _CONSOLE_HTML = _load_console_html()
 
 
+_MAX_BODY = settings.adjudicate_api_max_body
+_READ_TIMEOUT = settings.adjudicate_api_timeout_s
+
+
+class _RequestError(Exception):
+    """A client error detected while reading/validating a request."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
 class AdjudicateHandler(BaseHTTPRequestHandler):
+    # --- request-body bounding + deadlines (issue #30) ---------------------
+    def setup(self) -> None:
+        """Per-connection deadline: header + body reads must complete within
+        _READ_TIMEOUT seconds, so one slow client can't hold a worker."""
+        super().setup()
+        try:
+            self.connection.settimeout(_READ_TIMEOUT)
+        except OSError:
+            pass
+
+    def _read_json_body(self) -> dict[str, Any]:
+        """Read a bounded JSON request body, rejecting excess size BEFORE
+        reading (via Content-Length) and capping the actual read."""
+        raw_cl = self.headers.get("Content-Length", "")
+        try:
+            length = int(raw_cl)
+        except ValueError:
+            raise _RequestError(411, "Content-Length required")
+        if length < 0:
+            raise _RequestError(400, "bad Content-Length")
+        if length > _MAX_BODY:
+            # Reject before allocating or reading anything.
+            raise _RequestError(413, f"body too large (>{_MAX_BODY} bytes)")
+        chunks: list[bytes] = []
+        remaining = min(length, _MAX_BODY)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                break  # client sent less than declared
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        body = b"".join(chunks)
+        if len(body) < length:
+            raise _RequestError(400, "incomplete request body")
+        return json.loads(body.decode() or "{}")
+
+    # --- bearer-token auth, fail closed (issue #1) --------------------------
+    def _authorized(self) -> bool:
+        """Constant-time bearer-token check. Fails closed: no token in
+        config (or no/present-but-invalid credential) rejects the request."""
+        token = settings.adjudicate_api_token
+        if not token:
+            return False
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        return hmac.compare_digest(auth[len("Bearer "):], token)
+
+    def _reject_unauthorized(self) -> None:
+        logger.warning("adjudicate-api: unauthorized request for %s from %s",
+                       self.path, self.client_address[0])
+        self._send(401, {"ok": False, "error": "unauthorized"})
+
     def _cors_headers(self) -> None:
         """Allow the dashboard console (file:// or localhost origins) to call us."""
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def do_OPTIONS(self) -> None:
         """Preflight for cross-origin browser calls."""
@@ -194,6 +263,12 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
         # query params (e.g. /cases?case_id=) parse self.path themselves.
         path = urlparse(self.path).path.rstrip("/")
         try:
+            # Bearer-token auth on every read route (issue #1, fail closed).
+            # /health stays open for liveness probes only — it reads no data
+            # beyond an open-ticket count.
+            if path != "/health" and not self._authorized():
+                self._reject_unauthorized()
+                return
             if path == "/health":
                 open_t = len(_sup.list_tickets(status="open"))
                 self._send(200, {"ok": True, "open_tickets": open_t})
@@ -399,11 +474,23 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
         """POST /adjudicate — approve/deny a ticket by id (ticket queue).
         POST /case-decision — approve/deny/fp ON a case (the case workbench:
         the decision happens where the case is, not on a detached ticket).
-        POST /case-assign — assign/reassign a case to a role."""
+        POST /case-assign — assign/reassign a case to a role.
+        All POST routes require a valid bearer token (issue #1); request
+        bodies are size-capped and deadline-bounded (issue #30)."""
         path = self.path.rstrip("/")
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode() or "{}")
+            if not self._authorized():
+                self._reject_unauthorized()
+                return
+            payload = self._read_json_body()
+        except _RequestError as e:
+            self._send(e.status, {"ok": False, "error": e.message})
+            return
+        except socket.timeout:
+            logger.warning("adjudicate-api: request read timed out from %s",
+                           self.client_address[0])
+            self._send(408, {"ok": False, "error": "request read timed out"})
+            return
         except (ValueError, json.JSONDecodeError) as e:
             self._send(400, {"ok": False, "error": f"bad json: {e}"})
             return
@@ -506,7 +593,9 @@ def main() -> None:
     parser.add_argument("--tls", action="store_true",
                         help="serve HTTPS (self-signed cert at /tmp/api_cert.pem,key)")
     args = parser.parse_args()
-    server = HTTPServer((args.host, args.port), AdjudicateHandler)
+    server = ThreadingHTTPServer((args.host, args.port), AdjudicateHandler)
+    # Don't let one hung client thread keep the process from exiting.
+    server.daemon_threads = True
     logger.info("adjudication API listening on %s:%s (%s)",
                 args.host, args.port, "HTTPS" if args.tls else "HTTP")
     if args.tls:

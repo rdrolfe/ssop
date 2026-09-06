@@ -58,6 +58,28 @@ SSH_KEY_PATH=~/.ssh/id_ed25519
 > `WAZUH_API_PASSWORD` set consistently across all containers — the SSOP compose
 > reads them from the same deploy/.env so they stay in sync.
 
+### Transport / SIEM backend selection
+
+`agents/transport.yaml` selects which SIEM the agents query. A clean checkout
+ships with **`backend: wazuh`** and **no hardcoded endpoints**: the indexer
+endpoint comes from your environment — `WAZUH_INDEXER_URL` in `.env` (default:
+`https://localhost:9200`, i.e. the Wazuh stack you just started above). Private
+homelab endpoints (e.g. the BOTS example at `192.168.1.75`) live only as
+comments in the file.
+
+Precedence, in order:
+
+1. **`.env`** — `WAZUH_INDEXER_URL` (+ `_USER`/`_PASSWORD`) is the normal
+   configuration surface. The local compose default needs no override at all.
+2. **`transport.yaml` `endpoint:`** — an explicit operator override (e.g. a
+   remote indexer). It beats `.env`, which is why the committed file ships
+   them blank — leave them blank unless you mean it.
+3. `backend:` picks the index patterns + field ontology (`wazuh` |
+   `securityonion` | `elastic` | `bots`).
+
+To develop against the BOTSv1 dataset (Step 11), set `backend: bots` **and**
+point the endpoint at the indexer holding the ingested slices.
+
 ## Step 3 — bootstrap
 
 ```bash

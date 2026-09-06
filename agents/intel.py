@@ -35,27 +35,39 @@ class IntelState(TypedDict, total=False):
     dry_run: bool
     report: Dict[str, Any]
     error: Optional[str]
+    # Advisories fetched once in ingest and reused by match — never re-fetched.
+    kev_entries: list
 
 
 def node_ingest(state: IntelState) -> IntelState:
-    """Fetch advisories (KEV + NVD)."""
-    client: IntelClient = get_intel()
-    report = state.get("report") or {}
-    try:
-        report["fetched_kev"] = len(client.fetch_kev())
-        report["fetched_nvd"] = len(client.fetch_nvd_since(days=state.get("days", 1)))
-    except Exception as e:  # noqa: BLE001 — node boundary; record + fail fast
-        logger.exception("intel ingest failed")
-        return {**state, "error": str(e)}
-    return {**state, "report": report}
+    """Fetch advisories (KEV + NVD).
 
-
-def node_match(state: IntelState) -> IntelState:
-    """Match advisories against fleet inventory (environment filter)."""
+    Failure policy: fail-closed — ANY provider failure (KEV or NVD) sets
+    state.error and the conditional edges route straight to END; no matching,
+    generation, or staging runs after a failed prerequisite.
+    """
     client: IntelClient = get_intel()
     report = state.get("report") or {}
     try:
         kev = client.fetch_kev()
+        report["fetched_kev"] = len(kev)
+        report["fetched_nvd"] = len(client.fetch_nvd_since(days=state.get("days", 1)))
+    except Exception as e:  # noqa: BLE001 — node boundary; record + fail fast
+        logger.exception("intel ingest failed")
+        return {**state, "error": str(e)}
+    return {**state, "report": report, "kev_entries": kev}
+
+
+def node_match(state: IntelState) -> IntelState:
+    """Match advisories against fleet inventory (environment filter).
+
+    Reuses the KEV entries fetched by ingest (state.kev_entries) instead of
+    re-fetching; falls back to a fetch only if state was built without one.
+    """
+    client: IntelClient = get_intel()
+    report = state.get("report") or {}
+    try:
+        kev = state.get("kev_entries") or client.fetch_kev()
         inventory = client.inventory_products()
         matched = client.match_kev_to_inventory(kev, inventory)
         report["matched"] = len(matched)
@@ -96,25 +108,37 @@ def node_generate_stage(state: IntelState) -> IntelState:
 
 
 def build_graph() -> StateGraph:
-    """Build the intel LangGraph state machine."""
+    """Build the intel LangGraph state machine.
+
+    Conditional error transitions: a node that set state.error routes to END —
+    no dependent stage (matching, generation, staging) runs after a failed
+    prerequisite.
+    """
     g = StateGraph(IntelState)
     g.add_node("ingest", node_ingest)
     g.add_node("match", node_match)
     g.add_node("generate_stage", node_generate_stage)
     g.set_entry_point("ingest")
-    g.add_edge("ingest", "match")
-    g.add_edge("match", "generate_stage")
+    g.add_conditional_edges("ingest", lambda s: END if s.get("error") else "match")
+    g.add_conditional_edges("match", lambda s: END if s.get("error") else "generate_stage")
     g.add_edge("generate_stage", END)
     return g
 
 
 def run(days: int = 1, dry_run: bool = False) -> Dict[str, Any]:
-    """Run the intel role end-to-end."""
+    """Run the intel role end-to-end.
+
+    The returned report ALWAYS carries a stage error when one occurred
+    (report["error"]), so callers — including the CLI — can exit nonzero.
+    """
     graph = build_graph().compile()
     result = graph.invoke({"days": days, "dry_run": dry_run})
+    report = dict(result.get("report") or {})
     if result.get("error"):
         logger.error("intel run error: %s", result["error"])
-    return result.get("report") or {"error": result.get("error")}
+        report["error"] = result["error"]
+        report.setdefault("summary", "failed: " + str(result["error"]))
+    return report
 
 
 def cli() -> None:

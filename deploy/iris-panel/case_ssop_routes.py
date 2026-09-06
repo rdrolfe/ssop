@@ -10,6 +10,10 @@
 # IMPORTS ------------------------------------------------
 from flask import Blueprint
 from flask import current_app
+try:
+    from markupsafe import escape  # Flask >= 2.3 (flask.escape removed)
+except ImportError:  # older IRIS Flask versions
+    from flask import escape
 from flask import jsonify
 from flask import redirect
 from flask import render_template
@@ -99,6 +103,22 @@ def case_ssop(caseid, url_redir):
         decide_url=url_for('case_ssop.case_ssop_decide', cid=caseid))
 
 
+def _case_soc_id(case) -> Optional[str]:
+    """Resolve the spine case ID linked to an IRIS case.
+
+    Prefers the soc_id column; falls back to custom_attributes.ssop.soc_id
+    for cases linked only through the SSOP panel metadata.
+    """
+    if case is None:
+        return None
+    soc_id = getattr(case, "soc_id", None)
+    if soc_id:
+        return str(soc_id)
+    ssop = ((case.custom_attributes or {}).get("ssop") or {})
+    v = ssop.get("soc_id") if isinstance(ssop, dict) else None
+    return str(v) if v else None
+
+
 @case_ssop_blueprint.route('/case/ssop/decide', methods=['POST'])
 @ac_api_case_requires(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
 def case_ssop_decide(caseid):
@@ -123,10 +143,21 @@ def case_ssop_decide(caseid):
         return response_error("decision must be approve|deny|fp")
     if not case_id:
         return response_error("case_id required")
+    # Bind the decision to the IRIS case this route was authorized for:
+    # the spine target must be the case linked to the authorized caseid,
+    # never a foreign spine case smuggled in the JSON body (issue #3).
+    authorized_case = get_case(caseid)
+    soc_id = _case_soc_id(authorized_case)
+    if not authorized_case or not soc_id:
+        return response_error("IRIS case is not linked to a spine case")
+    if str(case_id) != str(soc_id):
+        return response_error(
+            "case_id does not match the spine case authorized for "
+            "this IRIS case")
     rationale = f"{rationale} — decided by {current_user.name} via IRIS"
     try:
         d = _spine_call("POST", "/case-decision", {
-            "case_id": case_id, "decision": decision,
+            "case_id": soc_id, "decision": decision,
             "rationale": rationale})
         if d.get("ok"):
             return response_success("decision recorded on spine", data=d)
@@ -158,8 +189,23 @@ def case_ssop_meta(caseid):
     case = get_case(caseid)
     if not case:
         return response_error("case not found")
+    # Sanitize/validate SSOP metadata before storing it (issue #27): it is
+    # rendered as HTML in manage.cases.js, so only string fields are
+    # accepted and every value is HTML-escaped at the write boundary.
+    ssop = attrs.get("ssop", attrs)
+    if not isinstance(ssop, dict):
+        return response_error("custom_attributes.ssop (dict) required")
+    sanitized = {}
+    for k, v in ssop.items():
+        if not isinstance(v, str):
+            return response_error(
+                f"custom_attributes.ssop.{k} must be a string")
+        if len(v) > 512:
+            return response_error(
+                f"custom_attributes.ssop.{k} exceeds 512 characters")
+        sanitized[str(k)] = str(escape(v))
     existing = dict(case.custom_attributes or {})
-    existing["ssop"] = attrs.get("ssop", attrs)
+    existing["ssop"] = sanitized
     case.custom_attributes = existing
     db.session.commit()
     return response_success("SSOP meta saved", data={"case_id": caseid})
