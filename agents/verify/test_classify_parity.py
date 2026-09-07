@@ -46,7 +46,18 @@ def _mk(rule_id: str, level: int, desc: str, groups: list[str]) -> dict:
 
 def main() -> int:
     # Inject the fake ledger (both analyst and router call TuningLedger()).
-    tt.TuningLedger.lookup = staticmethod(_fake_lookup)  # type: ignore[assignment]
+    # __init__ must be stubbed too: it constructs a real QdrantMemory and
+    # ensure_collection's the tuning collection — a live dependency that
+    # fails (BLOCKED-looking) in a hermetic environment. With both stubbed,
+    # TuningLedger() constructs nothing and lookup() serves the fixture map.
+    class _FakeLedger:
+        def __init__(self, memory=None) -> None:
+            pass
+
+        def lookup(self, rule_id: str):
+            return _fake_lookup(rule_id)
+
+    tt.TuningLedger = _FakeLedger  # type: ignore[assignment]
     fails = 0
     a = AnalystClient()
 
