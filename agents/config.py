@@ -154,6 +154,8 @@ class Settings:
     # --- Qdrant ---
     # Deployment convention: QDRANT_URL (full URL). Generic _HOST/_PORT also supported.
     qdrant_url: str = _env("QDRANT_URL", "")
+    # API key for the case-spine store (issue #28: fail closed without it).
+    qdrant_api_key: str = _env("QDRANT_API_KEY", "")
     qdrant_host: str = _env("QDRANT_HOST", "localhost")
     qdrant_port: str = _env("QDRANT_PORT", "6333")
 

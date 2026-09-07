@@ -6,6 +6,7 @@ Hygiene: config-driven (config.py), imports at top, logging, structured errors.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -66,10 +67,22 @@ class QdrantMemory:
     def __init__(self, url: str | None = None) -> None:
         # Prefer QDRANT_URL (full URL convention); fall back to host/port.
         self.url = url or settings.qdrant_url or f"http://{settings.qdrant_host}:{settings.qdrant_port}"
+        # API key (issue #28): Qdrant is the case spine + tuning policy —
+        # unauthenticated access is a finding. The key comes from .env
+        # (QDRANT_API_KEY). Production FAILS CLOSED without one: the client
+        # refuses to talk to an unauthenticated Qdrant. Set
+        # SSOP_ALLOW_NO_QDRANT_KEY=1 only for hermetic tests / throwaway labs.
+        self.api_key = getattr(settings, "qdrant_api_key", "") or os.getenv("QDRANT_API_KEY", "")
+        if not self.api_key and os.getenv("SSOP_ALLOW_NO_QDRANT_KEY", "") != "1":
+            raise QdrantError(
+                "QDRANT_API_KEY is not set — refusing unauthenticated access "
+                "to the case spine (issue #28). Set the key in .env, or set "
+                "SSOP_ALLOW_NO_QDRANT_KEY=1 for throwaway test environments.")
         try:
             # Explicit connect/read timeouts so a hung connection cannot block
             # a role forever (no timeout = wait indefinitely on a dead peer).
-            self.client = QdrantClient(url=self.url, prefer_grpc=False, timeout=5.0)
+            self.client = QdrantClient(url=self.url, prefer_grpc=False, timeout=5.0,
+                                       api_key=self.api_key or None)
         except Exception as e:
             logger.error("qdrant connect failed: %s", e)
             raise QdrantError(f"qdrant connect failed: {e}") from e

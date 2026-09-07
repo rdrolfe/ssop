@@ -17,12 +17,19 @@ services:
     image: qdrant/qdrant:v1.13.7
     container_name: ssop-qdrant
     restart: unless-stopped
+    # API key REQUIRED (issue #28): clients send it as
+    # "api-key: $QDRANT_API_KEY" (see agents/tools/qdrant_tools.py).
+    # Generate: openssl rand -hex 32
+    command: ["./qdrant", "--service.api-key", "${QDRANT_API_KEY:?QDRANT_API_KEY required}"]
+    # Loopback bind (issue #28): the case spine is NOT a LAN service.
+    # Anything that legitimately needs Qdrant runs on this host or reaches
+    # it through an authenticated tunnel.
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:
+      # Healthz is unauthenticated; stays usable without the key.
       test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
       interval: 10s
       timeout: 5s
