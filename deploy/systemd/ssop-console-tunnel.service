@@ -1,0 +1,22 @@
+[Unit]
+Description=SSOP console tunnel: adjudicate API (loopback on infra-ops) via SSH
+# Forwards .75's 127.0.0.1:8787 -> .29's 127.0.0.1:8787 so the console proxy
+# can reach the loopback-only adjudication API. The tunnel key is restricted
+# on .29 (permitopen=127.0.0.1:8787, no-pty) — it cannot open a shell or any
+# other forward.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rdrolfe
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -i /home/rdrolfe/.ssh/ssop-tunnel-key \
+  -L 127.0.0.1:8787:127.0.0.1:8787 \
+  rdrolfe@192.168.1.29
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
