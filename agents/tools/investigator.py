@@ -277,8 +277,15 @@ class Investigator:
         return evidence
 
     def investigate(self, srcip: str = "", dstip: str = "", domain: str = "",
-                    entities: list[str] | None = None) -> dict[str, Any]:
+                    entities: list[str] | None = None,
+                    window_hours: float | None = None) -> dict[str, Any]:
         """Investigate entities across sources -> kill-chain hypothesis.
+
+        `window_hours` bounds correlation to events in that window (issue
+        #25: explicit investigation scope). LIVE INCIDENT callers pass a
+        bounded window (e.g. 24h) so historical replay evidence can't mix
+        into a current incident; passing None = all history (retained for
+        the nightly hunt sweeps, which ARE historical by design).
 
         Returns {entities, evidence, hypothesis, kill_chain} where kill_chain
         lists the correlated stages in MITRE-ish order (initial access ->
@@ -294,7 +301,7 @@ class Investigator:
 
         all_evidence = []
         for e in ents:
-            all_evidence.extend(self.correlate_entity(e))
+            all_evidence.extend(self.correlate_entity(e, window_hours=window_hours or 0.0))
 
         # Build the kill-chain from which sources have evidence. Each stage
         # carries the MITRE technique ID(s) for that behavior (see

@@ -23,17 +23,19 @@ from logging_setup import get_logger
 logger = get_logger(__name__)
 
 # --- field-name candidates per observable type (transport-normalized + raw) ---
-IP_FIELDS = ("srcip", "dstip", "src_ip", "dst_ip", "source.ip", "destination.ip", "clientip")
-DOMAIN_FIELDS = ("domain", "hostname", "src_domain", "dst_domain", "url_domain", "dns.question.name")
-HASH_FIELDS = ("sha256", "sha1", "md5", "file.hash.sha256", "file.hash.sha1", "file.hash.md5", "hashes")
-URL_FIELDS = ("url", "uri", "full_url", "url.full", "url.original")
-
+# Single source of truth: tools/alert_contract.py owns the candidate lists;
+# these aliases keep the established module-level names working.
+from tools.alert_contract import (  # noqa: E402  (single source of truth, issue #25)
+    DST_IP_FIELDS, DOMAIN_FIELDS, HASH_FIELDS, SRC_IP_FIELDS, URL_FIELDS,
+)
+IP_FIELDS = SRC_IP_FIELDS
 # Loose IPv4/IPv6 matcher (safe — we validate with ipaddress afterward)
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b|\b[0-9a-fA-F:]{2,}\b")
 _DOMAIN_RE = re.compile(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b")
 _SHA256_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
 _SHA1_RE = re.compile(r"\b[0-9a-fA-F]{40}\b")
 _MD5_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
+_LENGTH_TO_HASH = {64: "sha256", 40: "sha1", 32: "md5"}
 
 
 def _flatten(alert: dict[str, Any]) -> dict[str, Any]:
@@ -111,16 +113,26 @@ def extract_observables(alert: dict[str, Any]) -> list[dict[str, str]]:
     flat = _flatten(alert)
     observables: list[dict[str, str]] = []
 
-    # 1. Direct field hits (typed, highest confidence)
-    for field, otype in (
-        *( (f, "ip") for f in IP_FIELDS ),
-        *( (f, "domain") for f in DOMAIN_FIELDS ),
-        *( (f, "hash") for f in HASH_FIELDS ),
-        *( (f, "url") for f in URL_FIELDS ),
+    # 1. Direct field hits (typed, highest confidence). HASH_FIELDS entries
+    #    are (field, declared_type) — the semantic hash type rides on the
+    #    observable (issue #25: md5/sha1/sha256 stay distinct end to end).
+    for entry in (
+        *((f, "ip") for f in IP_FIELDS),
+        *((f, "domain") for f in DOMAIN_FIELDS),
+        *((f, "hash") for f in HASH_FIELDS),
+        *((f, "url") for f in URL_FIELDS),
     ):
+        field, otype = entry[0], entry[1]
         val = flat.get(field)
         if isinstance(val, str) and val and val not in ("-", "unknown", "null"):
             if otype == "ip" and not _is_valid_ip(val):
+                continue
+            if otype == "hash":
+                ht = _LENGTH_TO_HASH.get(len(val.strip()))
+                obs = {"type": "hash", "value": val.strip()}
+                if ht:
+                    obs["hash_type"] = ht
+                observables.append(obs)
                 continue
             observables.append({"type": otype, "value": val.strip()})
 
@@ -132,11 +144,11 @@ def extract_observables(alert: dict[str, Any]) -> list[dict[str, str]]:
     )
     if text_src:
         for m in _SHA256_RE.findall(text_src):
-            observables.append({"type": "hash", "value": m})
+            observables.append({"type": "hash", "value": m, "hash_type": "sha256"})
         for m in _SHA1_RE.findall(text_src):
-            observables.append({"type": "hash", "value": m})
+            observables.append({"type": "hash", "value": m, "hash_type": "sha1"})
         for m in _MD5_RE.findall(text_src):
-            observables.append({"type": "hash", "value": m})
+            observables.append({"type": "hash", "value": m, "hash_type": "md5"})
         for m in _IP_RE.findall(text_src):
             if _is_valid_ip(m):
                 observables.append({"type": "ip", "value": m})

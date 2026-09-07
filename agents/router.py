@@ -368,6 +368,7 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
         analyst = get_analyst()
         cases = get_cases()
         escalator = get_escalation()
+        ix = get_indexer()  # transport: carries backend provenance (issue #25)
         v = analyst.verdict(alert)
         result["verdict"] = v["verdict"]
         if v["verdict"] == "escalate" or v.get("existing_chain"):
@@ -392,7 +393,13 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                 case = cases.open_case(
                     source={"alert_id": v["alert_id"], "agent": v["agent"], "rule_desc": v["description"],
                             "rule_id": v.get("rule_id"), "category": v["category"], "level": v["level"],
-                            "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip")},
+                            "srcip": v.get("entity_srcip"), "dstip": v.get("entity_dstip"),
+                            # Explicit provenance (issue #25): engine/index/doc
+                            # carried from the transport — IRIS publish never
+                            # guesses the engine from rule_id heuristics.
+                            "backend": getattr(ix, "backend", ""),
+                            "index": "", "doc_id": v.get("alert_id", ""),
+                            "occurred_at": v.get("ts", "")},
                     title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
                     observables=obs,
                     techniques=v.get("techniques") or [],

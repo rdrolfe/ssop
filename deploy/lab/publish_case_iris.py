@@ -300,9 +300,15 @@ _IOC_TYPE_IDS = {"ip-src": 79, "ip-dst": 77, "domain": 20, "hostname": 69,
                  "sha256": 113, "sha1": 111, "md5": 90, "uri": 140, "url": 141}
 
 
-def _ioc_type_id(otype: str) -> int | None:
-    """Resolve an SSOP observable type to an IRIS ioc_type_id."""
+def _ioc_type_id(otype: str, hash_type: str | None = None) -> int | None:
+    """Resolve an SSOP observable type to an IRIS ioc_type_id.
+
+    Hashes are semantic (issue #25): an observable with hash_type=md5/sha1
+    maps to the DISTINCT IRIS type instead of the blanket sha256 mapping.
+    """
     name = _IRIS_ALT.get(str(otype).lower())
+    if name == "sha256" and hash_type:
+        name = {"md5": "md5", "sha1": "sha1"}.get(hash_type.lower(), "sha256")
     return _IOC_TYPE_IDS.get(name or "")
 
 
@@ -362,7 +368,7 @@ def _add_iocs(iris_id: int, case: dict) -> int:
     except (urllib.error.HTTPError, urllib.error.URLError):
         pass
     for o in obs:
-        tid = _ioc_type_id(o.get("type", ""))
+        tid = _ioc_type_id(o.get("type", ""), o.get("hash_type"))
         if not tid:
             continue
         if (str(o.get("value", "")), tid) in existing:
@@ -413,7 +419,10 @@ def main() -> int:
         if e.get("role") == "supervisory" and e.get("type") in ("adjudication", "verdict"):
             decision = (e.get("detail") or {}).get("decision")
     ssop_summary = {
-        "engine": "wazuh" if str(src.get("rule_id", "")).isdigit() else "securityonion",
+        # Engine from EXPLICIT provenance (issue #25): the backend recorded
+        # at case mint time. The old rule_id.isdigit() heuristic was wrong
+        # for numeric SO signature IDs and every BOTS rule.
+        "engine": src.get("backend") or "unknown",
         "decision": decision or "",
         "playbook": sup.get("recommended_playbook") or "",
         "agent": src.get("agent") or case.get("assignee") or "",

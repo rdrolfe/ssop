@@ -50,13 +50,15 @@ def _persist_investigation(cases, case_id: str, alert: dict, obs: list) -> dict 
     Returns the investigation result (or None if no evidence / error).
     """
     try:
+        from tools.alert_contract import investigation_entity, normalize_alert
         from tools.investigator import Investigator
         inv = Investigator()
-        # entity srcip: observables first, then alert field shapes.
-        srcip = (obs[0].get("value") if obs else "") or alert.get("srcip", "") \
-            or (alert.get("data") or {}).get("srcip", "") \
-            or (alert.get("data") or {}).get("src_ip", "")
-        inv_res = inv.investigate(srcip=srcip)
+        # Entity: contract-validated src_ip ONLY (issue #25 — a hostname or
+        # hash observable can never be investigated as the source IP; the
+        # old obs[0]-first selection is gone). Falls back to "" → no
+        # correlation, rather than correlating the wrong value.
+        srcip = investigation_entity(normalize_alert(alert))
+        inv_res = inv.investigate(srcip=srcip, window_hours=24.0)
         if inv_res["evidence"]:
             cases.append_event(
                 case_id, "analyst", "investigation",
