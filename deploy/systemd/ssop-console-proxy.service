@@ -1,0 +1,22 @@
+[Unit]
+Description=SSOP adjudication console proxy (browser-facing, .75)
+# Serves the console on :5602 and proxies API calls to the loopback-only
+# adjudication API on .29 via ssop-console-tunnel.service, injecting the
+# bearer token server-side. Requires the tunnel to be up (it auto-restarts).
+After=network-online.target ssop-console-tunnel.service
+Wants=network-online.target ssop-console-tunnel.service
+
+[Service]
+Type=simple
+User=rdrolfe
+WorkingDirectory=/home/rdrolfe/ssop-console
+# Token lives in a root-only env file, NOT inline in this unit.
+EnvironmentFile=/home/rdrolfe/ssop-console/proxy.env
+# Refresh dashboard certs before start (they rotate with dashboard updates).
+ExecStartPre=/home/rdrolfe/ssop-console/refresh-certs.sh
+ExecStart=/usr/bin/python3 /home/rdrolfe/ssop-console/console_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
