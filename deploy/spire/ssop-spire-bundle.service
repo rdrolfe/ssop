@@ -1,0 +1,12 @@
+[Unit]
+Description=SSOP SPIRE trust-bundle refresh (agent side)
+
+[Service]
+Type=oneshot
+# infra-ops (agent+server co-located): no SSH needed.
+# telemetry: set SPIRE_SERVER_SSH=rdrolfe@192.168.1.29 in the unit's
+# Environment and install the restricted tunnel-style key.
+Environment=SPIRE_BUNDLE_PATH=/home/rdrolfe/spire/conf/bundle.crt
+ExecStart=/home/rdrolfe/ssop-spire/refresh-trust-bundle.sh
+# The restart inside the script needs root; run the whole unit as root but
+# drop to the spire user's files via the script itself.

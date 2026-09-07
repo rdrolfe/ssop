@@ -1,0 +1,29 @@
+name: offline-ci
+
+# Offline gate: hermetic regression tests, no secrets, no network, no live
+# services. Live/integration checks (verify matrix against runtime hosts)
+# are reported separately and are NOT part of this gate.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  hermetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Offline suite
+        run: python agents/verify/run_offline_ci.py

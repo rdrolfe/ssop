@@ -23,10 +23,31 @@ from tools.case_tools import CaseStore, CaseStateError  # noqa: E402
 
 
 class _FakeMemory:
-    """Minimal QdrantMemory stand-in: search_memory + client.count/scroll."""
+    """QdrantMemory stand-in: search_memory + event-points + client ops.
+
+    Mirrors the event-points design: case payloads in self.store, timeline
+    events as independent points in self.events (keyed by deterministic
+    event id like production). get_case folds both — same as live Qdrant.
+    """
 
     def __init__(self):
-        self.store: dict[str, dict] = {}  # case_id -> case dict
+        self.store: dict[str, dict] = {}      # case_id -> case dict
+        self.events: dict[str, dict] = {}     # event point id -> payload
+
+    def upsert_point(self, collection, point_id, payload, vector=None):
+        self.events[point_id] = dict(payload)
+
+    def events_for(self, collection, case_id):
+        out = [p for p in self.events.values() if p.get("case_id") == case_id]
+        out.sort(key=lambda p: p.get("ts", ""))
+        return out
+
+    def get_by_payload(self, collection, field, value):
+        if field == "case_id" and value in self.store:
+            import json as _json
+            return {"content": f"{value} {_json.dumps(self.store[value])}",
+                    "case_id": value}
+        return None
 
     def search_memory(self, collection, query, limit=5, scroll_limit=1000):
         out = []

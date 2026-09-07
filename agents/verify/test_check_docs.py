@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from verify.check_docs import check_docs  # noqa: E402
 
 REPO = Path("/tmp/dcrepo")
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ROLES = Path(__file__).resolve().parent.parent.parent / "docs" / "roles"
 
 FILES = [
@@ -32,7 +33,7 @@ FILES = [
 def build() -> None:
     shutil.rmtree(REPO, ignore_errors=True)
     for f in FILES:
-        src = Path(f)
+        src = _REPO_ROOT / f
         if src.exists():
             dst = REPO / f
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -65,12 +66,12 @@ def main() -> int:
     if not caught:
         fails += 1
 
-    # 2. Symbol moved out of range (real co-located case: `dispatch_security`
-    #    is named on the same line as `router.py:300-369`)
+    # 2. Symbol moved out of range (`high_level` named on the same line as
+    #    `analyst_tools.py:66-71`; window 10-20 does not contain it)
     build()
     for md in (REPO / "docs" / "roles").glob("*.md"):
         t = md.read_text()
-        md.write_text(t.replace("`router.py:300-369`", "`router.py:10-20`"))
+        md.write_text(t.replace("`analyst_tools.py:66-71`", "`analyst_tools.py:10-20`"))
     probs = check_docs(REPO)
     caught = [p for p in probs if p["kind"] == "symbol"]
     print(f"symbol-moved: {len(probs)} problems, {len(caught)} symbol-caught")
