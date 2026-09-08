@@ -724,7 +724,11 @@ class CaseStore:
             try:
                 from tools.ssh_tools import _fetch_spiffe_id
                 actor_id = _fetch_spiffe_id(settings.spire_socket, settings.spire_bin)
-                actor_ok = bool(actor_id)
+                # 'unverified' is the sentinel ssh_tools returns when SPIRE
+                # is unreachable — that is DEGRADED attribution, not verified.
+                actor_ok = bool(actor_id) and actor_id != "unverified"
+                if not actor_ok:
+                    actor_id = None
             except Exception as e:  # noqa: BLE001 — degraded mode is explicit
                 logger.warning("audit actor attribution unavailable (recording degraded): %s", e)
             self._chain_writer.write(
