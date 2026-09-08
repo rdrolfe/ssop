@@ -697,7 +697,15 @@ class CaseStore:
         self._write_memory(case)
 
     def _write_receipt(self, case: dict[str, Any], event: str, role: str = "case-spine") -> None:
-        """Append a signed receipt line (append-only, provable)."""
+        """Append a tamper-evident receipt (issue #26).
+
+        v2 records: hash-chained (prev_hash -> hash) + HMAC'd with the audit
+        key, so editing/reordering/deleting/forgetting any record breaks the
+        chain detectably. Actor attribution comes from the local SPIRE agent
+        when reachable; DEGRADED (actor_verified=false) is explicit, never
+        silent. Legacy v1 records (pre-chain) remain readable; the verifier
+        labels them unsigned and starts chain math from the first v2 record.
+        """
         receipt = {
             "case_id": case["case_id"],
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -707,6 +715,27 @@ class CaseStore:
             "title": case.get("title", ""),
             "detail": case.get("timeline", [{}])[-1] if case.get("timeline") else {},
         }
+        try:
+            from tools.audit_chain import AuditChainWriter
+
+            if not hasattr(self, "_chain_writer"):
+                self._chain_writer = AuditChainWriter(self.cases_file)
+            actor_id, actor_ok = None, False
+            try:
+                from tools.ssh_tools import _fetch_spiffe_id
+                actor_id = _fetch_spiffe_id(settings.spire_socket, settings.spire_bin)
+                actor_ok = bool(actor_id)
+            except Exception as e:  # noqa: BLE001 — degraded mode is explicit
+                logger.warning("audit actor attribution unavailable (recording degraded): %s", e)
+            self._chain_writer.write(
+                case_id=receipt["case_id"], role=role, event=event,
+                status=receipt["status"], title=receipt["title"],
+                detail=receipt["detail"], actor_id=actor_id,
+                actor_verified=actor_ok)
+            return
+        except Exception as e:  # noqa: BLE001 — chain failure must not kill the case write
+            logger.error("chained receipt write failed (falling back to v1): %s", e)
+        # Fallback: v1-shaped record (verifier labels it legacy-unsigned).
         with open(self.cases_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(receipt) + "\n")
 

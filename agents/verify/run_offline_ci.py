@@ -28,6 +28,8 @@ REQUIRED = ["yaml", "dotenv", "langgraph", "langchain_core"]
 # The hermetic suite: real mutation-path tests, no stores, no network.
 HERMETIC = [
     "agents/verify/test_classify_parity.py",
+    "agents/verify/test_alert_contract.py",
+    "agents/verify/test_audit_chain.py",
     "agents/verify/test_check_bakeoff.py",
     "agents/verify/test_check_docs.py",
     "agents/verify/test_check_timers.py",
