@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from config import settings
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 
 def _auth():
@@ -29,9 +30,7 @@ def _auth():
 
 
 def _ctx():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return ctx
 
 

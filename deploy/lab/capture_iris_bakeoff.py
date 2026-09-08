@@ -27,6 +27,7 @@ sys.path.insert(0, ".")
 _IRIS_URL = ""
 _IRIS_KEY = ""
 from pathlib import Path as _Path
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 
 def _load_env() -> None:
@@ -45,9 +46,7 @@ def _load_env() -> None:
 
 
 def _ctx():
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

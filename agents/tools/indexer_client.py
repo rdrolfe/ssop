@@ -111,10 +111,11 @@ class IndexerTransport:
 
     @staticmethod
     def _make_ctx() -> ssl.SSLContext:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        # Central verified-TLS factory (issue #29): full verification against
+        # the SSOP internal CA; SSOP_TLS_VERIFY=0 opts out (test profile).
+        from tools.tls import verified_ssl_context
+
+        return verified_ssl_context()
 
     def _auth(self) -> str:
         return "Basic " + base64.b64encode(f"{self.user}:{self.passwd}".encode()).decode()

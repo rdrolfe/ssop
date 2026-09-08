@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 sys.path.insert(0, ".")
 
@@ -138,9 +139,7 @@ def main() -> int:
         port = int(m.group(2) or 9200) if m else 9200
         auth = "Basic " + base64.b64encode(
             f"{b['user']}:{settings.so_indexer_password}".encode()).decode()
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
         def es(method, path, body=None):
             req = urllib.request.Request(

@@ -20,9 +20,7 @@ VIZ_IDS = [
 ]
 DASH_ID = "1a79ca90-9c1d-11f1-b914-e3158878e251"
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 auth = base64.b64encode(f"{USER}:{PASS}".encode()).decode()
 HDRS = {"Authorization": f"Basic {auth}", "osd-xsrf": "true", "Content-Type": "application/json"}
 
@@ -48,6 +46,7 @@ def put(kind, oid, obj):
 
 # Visualizations: rebuild payloads from the working structure (index embedded)
 import glob
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 # The visStates were built earlier; reuse the /tmp payloads on the HOST,
 # but we need them inside the container. Simpler: build full objects here
 # by loading the built update files (they have attrs.visState already).

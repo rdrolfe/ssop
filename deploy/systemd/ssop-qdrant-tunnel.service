@@ -1,0 +1,21 @@
+[Unit]
+Description=SSOP Qdrant tunnel: case spine (loopback on kb-vec) via SSH
+# Forwards .29's 127.0.0.1:16333 -> .94's 127.0.0.1:6333. The tunnel key is
+# restricted on .94 (permitopen=127.0.0.1:6333, no-pty) — it can open this
+# one forward and nothing else.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rdrolfe
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -i /home/rdrolfe/.ssh/qdrant-tunnel-key \
+  -L 127.0.0.1:16333:127.0.0.1:6333 \
+  rdrolfe@192.168.1.94
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

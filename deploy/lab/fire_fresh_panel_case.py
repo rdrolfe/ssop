@@ -16,11 +16,10 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.getcwd())
 from tools.indexer_client import IndexerTransport
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 t = IndexerTransport()
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
 
 def call(method, path, body=None):

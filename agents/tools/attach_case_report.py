@@ -24,6 +24,7 @@ import ssl
 import sys
 import urllib.request
 from typing import Any
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,7 @@ _ADVISORY_REL = {"role": "report", "type": "advisory"}
 
 
 def _ctx() -> ssl.SSLContext:
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

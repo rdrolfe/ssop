@@ -60,6 +60,11 @@ def run_one(test: str, td_base: str) -> tuple[str, int, str]:
         "AUDIT_DIR": str(Path(td) / "audit"),
         "ROUTER_STATE": str(Path(td) / "router_state.json"),
         "SSOP_OFFLINE": "1",
+        # Test profile (issue #29): no internal CA exists in a hermetic run,
+        # and the fail-closed default would BLOCK the whole suite. The
+        # verified-TLS path is exercised against live services, not here.
+        "SSOP_TLS_VERIFY": "0",
+        "SSOP_ALLOW_NO_QDRANT_KEY": "1",
         "LANG": "C.UTF-8",
         "PYTHONPATH": str(REPO / "agents"),
     }

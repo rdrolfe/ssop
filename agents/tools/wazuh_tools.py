@@ -31,11 +31,11 @@ class WazuhClient:
         self.password = settings.wazuh_api_password
         self._token: str | None = None
         try:
-            # verify=False: the lab uses self-signed certs on the indexer/API.
-            # SSOP OPSEC = zero external calls, so the trusted-CA posture is
-            # internal-only. Production must terminate TLS with a trusted CA
-            # and set verify=True. Deliberate; not an oversight.
-            self._client = httpx.Client(verify=False, timeout=30)  # nosec B501
+            # TLS verification via the central factory (issue #29): verifies
+            # against the SSOP internal CA; SSOP_TLS_VERIFY=0 = test profile.
+            from tools.tls import verified_ssl_context
+
+            self._client = httpx.Client(verify=verified_ssl_context(), timeout=30)
         except Exception as e:
             logger.error("wazuh client init failed: %s", e)
             raise WazuhError(f"wazuh client init failed: {e}") from e

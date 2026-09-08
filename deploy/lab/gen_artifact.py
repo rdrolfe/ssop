@@ -15,12 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 from config import settings
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 
 def _ctx():
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

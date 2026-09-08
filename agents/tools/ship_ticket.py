@@ -26,6 +26,7 @@ load_dotenv()
 import logging
 
 from config import settings
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,7 @@ def ship_ticket_doc(ticket: dict) -> bool:
     auth = "Basic " + base64.b64encode(
         f"{settings.indexer_user}:{settings.indexer_password}".encode()
     ).decode()
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
     body = json.dumps({"index": {"_index": "ssop-events",
                                   "_id": f"ticket-{doc.get('ticket_id', '')}"}}) + "\n" + json.dumps(doc) + "\n"
@@ -108,9 +107,7 @@ def ship(ticket_path: str) -> bool:
     auth = "Basic " + base64.b64encode(
         f"{settings.indexer_user}:{settings.indexer_password}".encode()
     ).decode()
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
     body = json.dumps({"index": {"_index": "ssop-events"}}) + "\n" + json.dumps(ticket) + "\n"
     req = urllib.request.Request(

@@ -25,6 +25,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 sys.path.insert(0, ".")
 
@@ -56,9 +57,7 @@ def _load_env() -> None:
 
 
 def _ctx() -> ssl.SSLContext:
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

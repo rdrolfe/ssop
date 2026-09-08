@@ -12,6 +12,7 @@ import os
 import ssl
 import urllib.error
 import urllib.request
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 BASE = "https://localhost:5601"
 USER = os.environ["DASHBOARD_USERNAME"]
@@ -19,9 +20,7 @@ PASS = os.environ["DASHBOARD_PASSWORD"]
 OSD_VERSION = "2.19.5"
 CONSOLE_URL = "https://192.168.1.75:5602/console"
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
 
 def _req(method, path, body=None):

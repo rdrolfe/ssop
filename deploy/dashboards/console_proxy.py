@@ -19,6 +19,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 ADJUDICATE_API = "https://192.168.1.29:8787"
 CONSOLE_HTML = Path(__file__).resolve().parent / "adjudication-console.html"
@@ -113,7 +114,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 ADJUDICATE_API + path,
                 headers=self._forward_auth_headers(), method="GET")
             with urllib.request.urlopen(req, timeout=15,
-                                        context=ssl._create_unverified_context()) as r:
+                                        context=verified_ssl_context()) as r:
                 body = r.read()
                 ctype = r.headers.get("Content-Type", "")
                 if "application/json" in ctype:
@@ -166,7 +167,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 ADJUDICATE_API + "/adjudicate", data=payload,
                 headers=self._forward_auth_headers(), method="POST")
             with urllib.request.urlopen(req, timeout=15,
-                                        context=ssl._create_unverified_context()) as r:
+                                        context=verified_ssl_context()) as r:
                 self._json(200, json.loads(r.read().decode()))
         except Exception as e:  # noqa: BLE001
             self._json(502, {"ok": False, "error": str(e)})

@@ -22,6 +22,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 
 class IrisClient:
@@ -54,9 +55,7 @@ class IrisClient:
 
     @staticmethod
     def _ctx() -> ssl.SSLContext:
-        c = ssl.create_default_context()
-        c.check_hostname = False
-        c.verify_mode = ssl.CERT_NONE
+        c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
         return c
 
     # --- raw HTTP ---

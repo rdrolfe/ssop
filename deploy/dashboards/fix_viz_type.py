@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fix visState.type from 'bar' to 'histogram' on the two bar visualizations."""
 import json, base64, urllib.request, ssl, os
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 BASE = "https://localhost:5601"
 IDX = "https://single-node-wazuh.indexer-1:9200"
@@ -9,9 +10,7 @@ PASS = os.environ["DASHBOARD_PASSWORD"]
 IUSER = os.environ["INDEXER_USERNAME"]
 IPASS = os.environ["INDEXER_PASSWORD"]
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
 def auth(u, p):
     return "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()

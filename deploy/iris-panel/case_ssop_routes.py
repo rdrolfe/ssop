@@ -23,9 +23,11 @@ from flask_login import current_user
 from flask_wtf import FlaskForm
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 from app.datamgmt.case.case_db import get_case
@@ -49,13 +51,32 @@ _DECIDERS = {"Ryan", "administrator"}
 
 
 def _spine_call(method: str, path: str, body: Optional[dict] = None) -> dict:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    # Verified TLS via the central factory (issue #29). The panel verifies
+    # the adjudication API's cert (issued by the SSOP internal CA) and sends
+    # the shared bearer token (installed on the panel host).
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "agents"))
+    try:
+        from tools.tls import verified_ssl_context
+
+        ctx = verified_ssl_context()
+    except ImportError:
+        # Panel hosts without the agents tree: verify against system CAs +
+        # the SSOP CA bundle if present (path mirrors the agents default).
+        ca = os.getenv("SSOP_CA_BUNDLE",
+                       str(Path.home() / ".ssop" / "ca" / "ca-bundle.crt"))
+        if Path(ca).is_file():
+            ctx = ssl.create_default_context(cafile=ca)
+            ctx.check_hostname = True
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        else:
+            ctx = ssl.create_default_context()
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"{_SSOP_API}{path}", data=data, method=method,
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {os.getenv('ADJUDICATE_API_TOKEN', '')}"})
     with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
         return json.loads(r.read().decode())
 

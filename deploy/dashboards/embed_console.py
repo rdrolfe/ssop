@@ -13,6 +13,7 @@ NOTE: OSD's PUT rejects the GET roundtrip shape (namespaces/version/updated_at).
 Build payloads with attributes + references ONLY, like fix_viz_index.py.
 """
 import json, base64, urllib.request, urllib.error, ssl, os
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 BASE = "https://localhost:5601"
 USER = os.environ.get("DASHBOARD_USERNAME", "admin")
@@ -20,9 +21,7 @@ PASS = os.environ.get("DASHBOARD_PASSWORD", "")
 PATTERN = "ssop-events"
 CONSOLE_URL = "https://192.168.1.75:5602/console"
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 auth = base64.b64encode(f"{USER}:{PASS}".encode()).decode()
 HDRS = {"Authorization": f"Basic {auth}", "osd-xsrf": "true", "Content-Type": "application/json"}
 

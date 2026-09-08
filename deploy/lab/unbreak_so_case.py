@@ -12,14 +12,13 @@ import yaml
 
 sys.path.insert(0, ".")
 from config import settings
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 ADMIN_USER_ID = "96203a00-9881-4b54-9cf6-44104757c876"  # admin@ssop.com
 
 
 def _ctx():
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

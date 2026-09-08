@@ -25,12 +25,19 @@ class ProxmoxClient:
 
     def __init__(self) -> None:
         try:
+            # TLS verification defaults ON (issue #29): PROXMOX_VERIFY_SSL is
+            # only set to 0 for throwaway labs. Proxmox presents its own
+            # pve-root-ca-signed cert; add that CA to the trust store.
+            verify = settings.proxmox_verify_ssl
+            if not verify:
+                logger.warning("PROXMOX_VERIFY_SSL=0 — TLS verification "
+                               "DISABLED for Proxmox (test profile only)")
             self.api = ProxmoxAPI(
                 host=settings.proxmox_host,
                 user=settings.proxmox_user,
                 token_name=settings.proxmox_token_id,
                 token_value=settings.proxmox_token_secret,
-                verify_ssl=settings.proxmox_verify_ssl,
+                verify_ssl=verify,
             )
         except Exception as e:
             logger.error("proxmox client init failed: %s", e)

@@ -136,7 +136,7 @@ class Settings:
     proxmox_user: str = _env("PROXMOX_USER", "root@pam")
     proxmox_token_id: str = _env("PROXMOX_TOKEN_ID", "tokenid")
     proxmox_token_secret: str = _env("PROXMOX_TOKEN_SECRET", "")
-    proxmox_verify_ssl: bool = _env_bool("PROXMOX_VERIFY_SSL", False)
+    proxmox_verify_ssl: bool = _env_bool("PROXMOX_VERIFY_SSL", True)
 
     # --- directories ---
     audit_dir: Path = Path(_env("AUDIT_DIR", str(RUNTIME_DIR / "audit")))

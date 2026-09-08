@@ -50,6 +50,7 @@ import yaml
 
 from config import settings
 from logging_setup import get_logger
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 logger = get_logger(__name__)
 
@@ -346,9 +347,7 @@ def _so_target():
 
 
 def _so_ctx():
-    c = ssl.create_default_context()
-    c.check_hostname = False
-    c.verify_mode = ssl.CERT_NONE
+    c = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
     return c
 
 

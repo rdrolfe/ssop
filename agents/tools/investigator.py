@@ -109,9 +109,10 @@ class Investigator:
             if not password:
                 password = settings.so_indexer_password if self._backend == "securityonion" else settings.indexer_password
         self._auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
-        self._ctx = ssl.create_default_context()
-        self._ctx.check_hostname = False
-        self._ctx.verify_mode = ssl.CERT_NONE
+        # Central verified-TLS factory (issue #29).
+        from tools.tls import verified_ssl_context
+
+        self._ctx = verified_ssl_context()
         self.host = indexer_host
 
         # LIVE-alert correlation: in addition to the replayed BOTS ground-truth

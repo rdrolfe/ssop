@@ -26,9 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools.indexer_client import IndexerTransport
 
 t = IndexerTransport()
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
+ctx = verified_ssl_context()  # issue #29: verified TLS (SSOP internal CA)
 
 
 def call(method, path, body=None):
@@ -50,6 +48,7 @@ now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 # Router cursor last saw ~20:45Z; stamp docs at now+1s so they clear the
 # cursor's gte filter even across clock skew.
 import time as _time
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 _time.sleep(1.1)
 now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
