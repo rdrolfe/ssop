@@ -78,9 +78,17 @@ def node_adjudicate_queue(state: SupervisoryState) -> SupervisoryState:
                 if _normalize_state(case.get("state", "new")) in ("decided", "closed"):
                     last = None
                     for e in reversed(case.get("timeline", [])):
-                        if e.get("type") in ("adjudication", "verdict") and \
-                           e.get("detail", {}).get("decision"):
-                            last = e["detail"]["decision"]
+                        # detail is normally a dict but CAN be a string (a
+                        # legacy/stray event payload) — treat non-dict as
+                        # "no decision here" instead of crashing the whole
+                        # adjudication queue (7392 error lines Sep 8-9 and
+                        # the supervisory timer FAILING while 60+ analyst
+                        # tickets sat unadjudicated).
+                        det = e.get("detail")
+                        if not isinstance(det, dict):
+                            continue
+                        if e.get("type") in ("adjudication", "verdict") and det.get("decision"):
+                            last = det["decision"]
                             break
                     decision = last or "deny"
                     rationale = f"case already {case.get('state')} (skipped re-adjudication)"
