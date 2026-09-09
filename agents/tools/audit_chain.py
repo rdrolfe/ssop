@@ -44,10 +44,25 @@ def load_or_create_key(key_id: str = "") -> bytes:
     """Load the audit HMAC key; generate on first use (600 perms)."""
     p = audit_key_path(key_id)
     if p.is_file():
-        return p.read_bytes().strip()
+        data = p.read_bytes()
+        # Keys are raw urandom bytes — a byte can legitimately be whitespace
+        # (0x20/newline), so NEVER strip: stripping mutates ~4.6% of random
+        # keys on read-back and silently desynchronizes key_id vs signature
+        # (writer signs with the full key, verifier's key_cache strips ->
+        # "key_id unknown"). Only a trailing newline from an editor is the
+        # historically-expected whitespace; strip exactly that.
+        if data.endswith(b"\n") and not data.endswith(b"\n\n"):
+            data = data[:-1]
+        return data
     AUDIT_KEY_DIR.mkdir(parents=True, exist_ok=True)
     key = os.urandom(32)
-    p.write_bytes(key)
+    # Never store a key whose edge bytes are whitespace-adjacent AND never
+    # rely on read-side stripping: newline-terminate explicitly on write so
+    # the on-disk form is canonical and read-back is byte-exact minus the
+    # one newline we remove above.
+    if key[-1:] == b"\n":
+        key = key[:-1] + b"\x00"
+    p.write_bytes(key + b"\n")
     os.chmod(p, 0o600)
     logger.info("generated audit key %s", p)
     return key
@@ -183,7 +198,12 @@ def verify_chain(path: Path, keys_dir: Path | None = None,
     key_cache: dict[str, bytes] = {}
     for kf in Path(keys_dir).glob("audit*.key"):
         try:
-            key_cache[key_id_for(kf.read_bytes().strip())] = kf.read_bytes().strip()
+            # Same read discipline as load_or_create_key: strip exactly one
+            # trailing newline, never full whitespace — keys are raw bytes.
+            data = kf.read_bytes()
+            if data.endswith(b"\n") and not data.endswith(b"\n\n"):
+                data = data[:-1]
+            key_cache[key_id_for(data)] = data
         except OSError as e:
             problems.append(f"key unreadable: {kf}: {e}")
 
