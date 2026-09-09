@@ -193,6 +193,7 @@ class TuningLedger:
         ts: str | None = None,
         tuned_by: str = "",
         fingerprint: dict | None = None,
+        exclude_hosts: list | None = None,
     ) -> bool:
         """Upsert a tuning entry. Human writes are final; analyst seeds mark source.
 
@@ -223,6 +224,9 @@ class TuningLedger:
             }
             if fingerprint:
                 payload["fingerprint"] = fingerprint
+            if exclude_hosts:
+                # Host-scoped policy (option-C): excluded hosts never suppress.
+                payload["exclude_hosts"] = [str(h) for h in exclude_hosts]
             self._memory.client.upsert(
                 collection_name=TUNING_COLLECTION,
                 points=[PointStruct(

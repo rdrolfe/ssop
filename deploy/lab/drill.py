@@ -27,12 +27,15 @@ escalates nothing (adjudication only, no escalator call).
 Usage: python3 drill.py   (reads active backend; write receipt)
 """
 import json
+import logging
 import socket
 import subprocess
 import sys
 import time
 import datetime
 from pathlib import Path
+
+logger = logging.getLogger("drill")
 
 RECEIPT = Path.home() / ".ssop" / "state" / "drill-last.json"
 WINDOW_S = 120  # phase-1 polling window for the fired alert
@@ -92,14 +95,26 @@ def phase1_live_fire() -> dict:
             "size": 5,
             "query": {"bool": {"filter": [
                 {"term": {"rule.id": "5710"}},
-                {"range": {"@timestamp": {"gte": "now-3m"}}},
+                # now-10m: Sep 8 failure showed a slow-import (25s) + transient
+                # indexer blip can leave the 5x5s poll entirely inside a window
+                # the docs never entered. 10m costs nothing (receipt still
+                # asserts landed + verdict=note) and tolerates a cold indexer.
+                {"range": {"@timestamp": {"gte": "now-10m"}}},
             ]}},
             "sort": [{"@timestamp": {"order": "desc"}}],
         }
-        for _ in range(5):
+        # Wall-clock-bounded poll: fast-failing searches (indexer blip)
+        # previously collapsed 5 tries into ~3s and gave up while the docs
+        # were still outside the window. Guarantee a >=30s observation window
+        # and log each poll so a future failure self-documents in journald.
+        deadline = time.monotonic() + 30.0
+        attempt = 0
+        while True:
+            attempt += 1
             r = inv._search(idx, body)
             found = r.get("hits", {}).get("hits", [])
-            if found:
+            logger.info("phase1 poll %d: %d hit(s)", attempt, len(found))
+            if found or time.monotonic() >= deadline:
                 break
             time.sleep(5)
         landed = len(found) > 0

@@ -111,10 +111,26 @@ class SupervisoryClient:
                     if vd and vd.get("rule_id"):
                         from tools.ontology import fingerprint_from_verdict
                         fingerprint = fingerprint_from_verdict(vd)
+                    # Merge with the prior entry: routine supervisory denies
+                    # update decision/fingerprint/rationale but must NOT
+                    # clobber human-scoped fields (exclude_hosts, tuned_by)
+                    # — Option-C entries like 2901/2903 keep their host scope.
+                    prior_exclude: list | None = None
+                    prior_tuned_by = ""
+                    try:
+                        prior = TuningLedger().lookup(rule_id)
+                    except Exception:  # noqa: BLE001 — merge is best-effort
+                        prior = None
+                    if isinstance(prior, dict):
+                        if prior.get("exclude_hosts"):
+                            prior_exclude = [str(h) for h in prior["exclude_hosts"]]
+                            prior_tuned_by = str(prior.get("tuned_by", ""))
                     TuningLedger().write(
                         rule_id=rule_id, decision=tuning_decision,
                         rationale=f"supervisory {decision}: {rationale}", source="human",
                         fingerprint=fingerprint,
+                        exclude_hosts=prior_exclude,
+                        tuned_by=(prior_tuned_by if prior_exclude else ""),
                     )
                 except Exception:  # noqa: BLE001 — tuning write must not break adjudication
                     logger.warning("tuning write skipped during adjudication of %s", ticket["ticket_id"])
