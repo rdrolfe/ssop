@@ -131,16 +131,16 @@ def stage_packs(matches: list[dict[str, Any]], staging_dir: Path) -> dict[str, i
     staged = written = skipped = 0
     staging_dir.mkdir(parents=True, exist_ok=True)
     live_cves: set[str] = set()
-    for f in live_dir.glob("*.yaml"):
+    for f in list(live_dir.glob("*.yaml")) + list(staging_dir.glob("*.yaml")):
         try:
             live_cves.add(str((yaml.safe_load(f.read_text()) or {})
                               .get("meta", {}).get("cve_id", "")))
-        except Exception:  # noqa: BLE001 — unreadable live file can't dedupe
+        except Exception:  # noqa: BLE001 — unreadable file can't dedupe
             pass
-    staged_cves = {f.name for f in staging_dir.glob("*.yaml")}
+    staged_names = {f.name for f in staging_dir.glob("*.yaml")}
     for m in matches:
         cve = m["cveID"]
-        if cve in live_cves or f"{cve.lower()}.yaml" in staged_cves:
+        if cve in live_cves or f"{cve.lower()}.yaml" in staged_names:
             skipped += 1
             continue
         pack = build_hunt_pack(m)

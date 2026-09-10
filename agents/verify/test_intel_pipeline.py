@@ -95,6 +95,15 @@ def run():
     r2 = stage_packs(matches, staging)  # identical re-run
     if r2["staged"] != 0 or r2["skipped"] != 2:
         failures.append(f"dedupe failed: {r2}")
+    # dedupe is by meta.cve_id CONTENT, not filename: a staged file with the
+    # same CVE under a DIFFERENT name (legacy prototype naming) still dedupes
+    (staging / "cve-2026-1111-with-slug.yaml").write_text(
+        (staging / "cve-2026-1111.yaml").read_text())
+    r2b = stage_packs([m for m in matches if m["cveID"] == "CVE-2026-1111"],
+                      staging)
+    if r2b["staged"] != 0 or r2b["skipped"] != 1:
+        failures.append(f"cve_id-content dedupe failed: {r2b}")
+    (staging / "cve-2026-1111-with-slug.yaml").unlink()
     # promoted-to-live pack also dedupes
     (hunts / "cve-2026-3333.yaml").write_text(
         (staging / "cve-2026-3333.yaml").read_text().replace(
