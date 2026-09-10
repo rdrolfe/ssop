@@ -30,11 +30,31 @@ class _FakeCaseStore:
         self.cases = []
         self.events = []
 
-    def recent_host_cases(self, host, rule_id=None, window_s=3600):
-        return [c for c in self.cases
-                if c["source"]["agent"] == str(host)
-                and (rule_id is None or c["source"]["rule_id"] == str(rule_id))
-                and c["status"] != "closed"]
+    def recent_host_cases(self, host, rule_id=None, window_s=3600,
+                          open_only=False):
+        # mirrors the real scan: closed cases never match; the ts window is
+        # enforced only when a window exists (open_only=True = no time bound)
+        cutoff = None
+        if not open_only and window_s is not None:
+            from datetime import datetime, timezone
+            cutoff = datetime.now(timezone.utc).timestamp() - window_s
+        out = []
+        for c in self.cases:
+            if c["source"]["agent"] != str(host):
+                continue
+            if rule_id is not None and c["source"]["rule_id"] != str(rule_id):
+                continue
+            if c["status"] == "closed":
+                continue
+            if cutoff is not None:
+                try:
+                    from datetime import datetime as dt
+                    if dt.fromisoformat(c.get("ts", "")).timestamp() < cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            out.append(c)
+        return out
 
     def open_case(self, source, title, observables=None, assignee=None):
         cid = f"case-{len(self.cases):04d}"
@@ -105,6 +125,29 @@ def run():
     r4 = router.dispatch_infra(_alert(rid=554))
     if len(store4.cases) != 2 or r4.get("attached"):
         failures.append(f"different rule merged into one case: {r4}")
+
+    # 5. open case OLDER than the default 1h window -> still attaches
+    #    (the 40704 lesson: slow-drip recurrence re-minted all day because
+    #    each mint was >1h from the last; open_only removes the time bound)
+    store5 = _FakeCaseStore()
+    router.get_cases = lambda: store5
+    orig_rhc = _FakeCaseStore.recent_host_cases
+
+    def _no_window(self, host, rule_id=None, window_s=3600, open_only=False):
+        return orig_rhc(self, host, rule_id=rule_id,
+                        window_s=None if open_only else window_s,
+                        open_only=open_only)
+
+    _FakeCaseStore.recent_host_cases = _no_window
+    try:
+        router.dispatch_infra(_alert())
+        old = {"ts": "2020-01-01T00:00:00+00:00"}  # ancient open case
+        store5.cases[0]["ts"] = old["ts"]
+        r5 = router.dispatch_infra(_alert())
+        if len(store5.cases) != 1 or r5.get("attached") is not True:
+            failures.append(f"old open case did not attach: {r5}")
+    finally:
+        _FakeCaseStore.recent_host_cases = orig_rhc
 
     if failures:
         print("FAIL")

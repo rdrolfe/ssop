@@ -859,21 +859,28 @@ class CaseStore:
         return out
 
     def recent_host_cases(self, host: str, rule_id: str | None = None,
-                          window_s: int = 3600) -> list[dict[str, Any]]:
+                      window_s: int | None = 3600,
+                      open_only: bool = False) -> list[dict[str, Any]]:
         """Find open/recent cases on the SAME HOST (and optionally rule).
 
         Host-based recidivism: alerts without an entity pair (srcip/dstip —
         e.g. sysmon host events) have nothing to chain on, so every event
         minted its own case (the BOTS Cerber replay: 133 cases for one
-        campaign on we8105desk). Same host + same rule within the window =
-        one campaign chain, not N cases. Mirrors recent_entity_cases.
+        campaign on we8105desk). Same host + same rule within the window = one campaign chain, not N cases. Mirrors recent_entity_cases.
 
         Scans Qdrant (the receipt spine carries no `source`). Keeps cases
         with matching source.agent (+ source.rule_id when given), status !=
         closed, and a recent ts.
+
+        open_only=True: NO time bound — an open case IS the unresolved
+        incident, however old it is. dispatch_infra uses this: a still-open
+        case for agent+rule_id must absorb every new identical dispatch
+        until a human closes it (the 40704 lesson: a 1h window re-minted
+        one case per sweep all day because each mint was >1h from the last).
         """
         out: list[dict[str, Any]] = []
-        cutoff = datetime.now(timezone.utc).timestamp() - window_s
+        cutoff = (datetime.now(timezone.utc).timestamp() - window_s
+                  if window_s is not None else None)
         try:
             mem = self._get_memory()
             for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
@@ -888,12 +895,13 @@ class CaseStore:
                     continue
                 if rule_id and str(src.get("rule_id")) != str(rule_id):
                     continue
-                try:
-                    ts = payload.get("ts", "")
-                    if datetime.fromisoformat(ts).timestamp() < cutoff:
-                        continue
-                except (ValueError, TypeError):
-                    pass
+                if cutoff is not None:
+                    try:
+                        ts = payload.get("ts", "")
+                        if datetime.fromisoformat(ts).timestamp() < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 out.append(payload)
         except Exception as e:  # noqa: BLE001 — recidivism must never break triage
             logger.warning("recent_host_cases scan failed: %s", e)

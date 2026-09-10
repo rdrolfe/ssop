@@ -363,8 +363,8 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
         ix = get_indexer()
         from tools.observables import extract_observables
         obs = extract_observables(alert)
-        chain = cases.recent_host_cases(agent, rule_id=rid) if hasattr(
-            cases, "recent_host_cases") else []
+        chain = cases.recent_host_cases(agent, rule_id=rid, open_only=True) \
+            if hasattr(cases, "recent_host_cases") else []
         if chain:
             # DEDUPE (mirrors dispatch_security's existing_chain): an open
             # case for the same agent+rule_id within the recidivism window
