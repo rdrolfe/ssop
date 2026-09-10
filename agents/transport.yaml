@@ -92,3 +92,25 @@ securityonion_rules:
   2045481: {category: threat,  role: analyst}      # ET MALWARE 0x9.biz
   2049500: {category: threat,  role: analyst}      # ET MALWARE BIOPASS RAT (approx)
   default: {category: operational, role: null}
+
+# --- EGRESS REGISTRY (enforced by agents/verify/check_egress.py) -----------
+# Every EXTERNAL (non-lab) network destination an agent module may contact
+# MUST be declared here. The gate fails the matrix on any undeclared
+# external endpoint found in agents/**.py. SOVEREIGNTY NOTE: the sovereignty
+# claim covers AI INFERENCE (no cloud provider owns our decisions) — it does
+# NOT forbid external data-plane calls; it requires them DECLARED.
+#   class: lookup   — sends indicator values (hash/domain/url/ip), receives
+#                     reputation. Value-only egress.
+#   class: submit   — uploads artifacts (files/URLs). A DISCLOSURE event;
+#                     each entry must be explicitly operator-approved.
+external_calls:
+  greynoise:
+    endpoint: api.greynoise.io
+    class: lookup
+    data_sent: indicator-value (ip)
+    used_by: [tools/enrichment.py]
+  virustotal:
+    endpoint: www.virustotal.com
+    class: lookup            # submission (class: submit) is DISABLED by
+    data_sent: indicator-value (hash/domain/url)  # default: VT_SUBMIT_ENABLED=0
+    used_by: [tools/enrichment.py]

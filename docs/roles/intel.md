@@ -51,3 +51,34 @@ with zero code change (YAML library = the hunt-pack format).
 Intel flow exercised by the hunt-pack schema fixtures + the intel
 INGEST→MATCH→GENERATE→STAGE state machine; hunt packs validated as
 `hunt.py` loads them.
+
+---
+
+## External data plane (egress registry)
+
+The ontology is sovereign in **AI inference** — no cloud provider owns our
+decisions. It is NOT airgapped: external **data-plane** calls exist and are
+DECLARED in `agents/transport.yaml` (`external_calls:`) and ENFORCED by
+`agents/verify/check_egress.py` (undeclared external endpoint in any
+`agents/**.py` = matrix FAIL). Adding an external capability means making
+the disclosure decision explicitly, at build time.
+
+| Provider | Endpoint | Class | Data sent | Used by |
+|---|---|---|---|---|
+| GreyNoise | api.greynoise.io | lookup | IP value | `tools/enrichment.py` |
+| VirusTotal | www.virustotal.com | lookup | hash/domain/url value | `tools/enrichment.py` |
+
+**Submission class (file/URL upload — a DISCLOSURE event) is DISABLED by
+default** (`VT_SUBMIT_ENABLED=0`). Hash/URL lookups leak only the indicator
+value itself. Enabling submission is an explicit operator act.
+
+VT quota (free public API): **4 req/min + 500 req/day, one shared bucket
+for ALL request types** — lookups and submissions alike. The client
+(`EnrichmentClient`) throttles at both windows and caches verdicts; the
+budget is spine-wide, not per-role.
+
+**Roles and external calls:** the capability lives in
+`tools/enrichment.py` (tool layer, role-agnostic). The analyst enriches
+escalated cases automatically; hunt can pivot hashes found mid-hunt; the
+responder can pre-check a target. Authority stays with the roles — the
+capability doesn't.

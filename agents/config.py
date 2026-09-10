@@ -227,6 +227,14 @@ class Settings:
     greynoise_url: str = _env("GREYNOISE_URL", "https://api.greynoise.io/v3/community/")
     greynoise_key: str = _env("GREYNOISE_KEY", "")
     enrichment_timeout_s: int = _env_int("ENRICHMENT_TIMEOUT_S", 15)
+    # VirusTotal (egress-registered: transport.yaml external_calls). Free
+    # public API: 4 req/min + 500 req/day shared across ALL request types.
+    vt_api_key: str = _env("VT_API_KEY", "")  # empty = provider disabled
+    vt_url: str = _env("VT_URL", "https://www.virustotal.com/api/v3")
+    # Submission (file/URL upload) is a DISCLOSURE decision, distinct from
+    # lookup: default OFF, flip explicitly via env. Hash/URL lookups are
+    # lookup-class (value-only egress); submission sends the artifact.
+    vt_submit_enabled: bool = _env("VT_SUBMIT_ENABLED", "0") == "1"
 
     # --- SOAR responder ---
     approval_expiry_min: int = _env_int("APPROVAL_EXPIRY_MIN", 15)
