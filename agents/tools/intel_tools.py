@@ -305,6 +305,111 @@ def run_intel(staging_dir: Path, ix: Any,
             report["nvd_enriched"] = _nvd_enrich(cases, report.get("matched") or [])
         except Exception as e:  # noqa: BLE001 — enrichment never breaks intel
             report["nvd_error"] = str(e)
+        # CPE version-range disposition (P2): vulnerable | patched | unknown
+        # per (CVE, agent); all-patched cases auto-close with evidence,
+        # unknown legs NEVER close (snap stubs, unparseable versions).
+        try:
+            report["version_disposition"] = _disposition_open_intel_cases(cases, ix)
+        except Exception as e:  # noqa: BLE001 — disposition never breaks intel
+            report["disposition_error"] = str(e)
     except Exception as e:  # noqa: BLE001 — intel failure must not break cadence
         report["error"] = str(e)
     return report
+
+
+def _disposition_open_intel_cases(cases: Any, ix: Any) -> dict[str, Any]:
+    """CPE version-range disposition pass over OPEN intel cases (P2).
+
+    For each open case with backend=intel: fetch the CVE's vulnerable
+    version ranges from NVD (restricted to the case's product), compare
+    the agent's installed package.version, and
+      - all legs `patched` -> close the case (version_check event carries
+        the fleet version + the bounds it was compared against)
+      - any `vulnerable` leg -> stays open + `version_vulnerable` event
+        (real exposure — human, then hunt pack gets priority)
+      - any `unknown` leg (snap transitional stubs, unparseable upstream
+        strings, NVD returned no ranges) -> stays open + `version_unknown`
+        event. Absence of parseable evidence is never treated as safety.
+    """
+    from tools.version_match import (disposition_version, fetch_cpe_ranges,
+                                     normalize_version)
+    # fleet version map: product_lower -> {agent: raw_version}
+    versions: dict[str, dict[str, str]] = {}
+    try:
+        body = {"size": 5000, "query": {"match_all": {}},
+                "_source": ["agent.name", "package.name", "package.version"]}
+        d = ix.search(body, index=INVENTORY_INDEX)
+        for h in d.get("hits", {}).get("hits", []):
+            s = h.get("_source", {})
+            agent = (s.get("agent") or {}).get("name") or "?"
+            name = ((s.get("package") or {}).get("name") or "").strip().lower()
+            ver = (s.get("package") or {}).get("version") or ""
+            if name:
+                versions.setdefault(name, {})[agent] = ver
+    except Exception:  # noqa: BLE001 — inventory down -> all legs unknown
+        versions = {}
+
+    out = {"closed": 0, "kept_vulnerable": 0, "kept_unknown": 0, "scanned": 0}
+    for c in _open_intel_cases_all(cases):
+        src = c.get("source") or {}
+        intel = src.get("intel") or {}
+        cve = src.get("doc_id") or ""
+        product = (intel.get("product") or "").strip().lower()
+        agent = src.get("agent") or "?"
+        out["scanned"] += 1
+        ranges = fetch_cpe_ranges(cve, product) if cve and product else []
+        raw = versions.get(product, {}).get(agent)
+        disp = disposition_version(raw, ranges)
+        evidence = {"cve_id": cve, "product": product, "agent": agent,
+                    "fleet_version": raw,
+                    "normalized": normalize_version(raw or ""),
+                    "nvd_ranges": len(ranges), "disposition": disp}
+        if disp == "patched":
+            cases.close_case(
+                c["case_id"], role="intel",
+                reason="Version check: installed version outside all NVD "
+                       "vulnerable ranges (CPE version-range match)")
+            cases.append_event(c["case_id"], "intel", "version_check", evidence)
+            out["closed"] += 1
+        elif disp == "vulnerable":
+            events = [e.get("type") for e in (c.get("timeline") or [])]
+            if "version_vulnerable" not in events:
+                cases.append_event(c["case_id"], "intel", "version_vulnerable",
+                                   evidence)
+            out["kept_vulnerable"] += 1
+        else:
+            # Idempotent: one version_unknown event per case (the daily timer
+            # re-runs this pass — repeated identical events are spine noise).
+            events = [e.get("type") for e in (c.get("timeline") or [])]
+            if "version_unknown" not in events:
+                cases.append_event(c["case_id"], "intel", "version_unknown",
+                                   evidence)
+            out["kept_unknown"] += 1
+    return out
+
+
+def _open_intel_cases_all(cases: Any) -> list[dict[str, Any]]:
+    """Every OPEN intel case from the working store (single scan)."""
+    try:
+        mem = cases._get_memory()
+        res = mem.search_memory("cases", "[INTEL]", limit=200, scroll_limit=10000)
+    except Exception:  # noqa: BLE001 — store down -> empty, retried next run
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in res:
+        content = str(r.get("content") or "")
+        if not content.startswith("case-"):
+            continue
+        cid = content.split(" ", 1)[0]
+        if cid in seen:
+            continue
+        seen.add(cid)
+        c = cases.get_case(cid)
+        if not c or c.get("status") == "closed":
+            continue
+        if (c.get("source") or {}).get("backend") != "intel":
+            continue
+        out.append(c)
+    return out
+
