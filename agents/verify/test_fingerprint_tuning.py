@@ -167,6 +167,69 @@ def main() -> int:
     if not s:
         fails += 1
 
+    # 9. ENTITY-SCOPED tuning (thread #4): a deny on one ENTITY must not
+    #    silence the rule globally. Same rule + same entity -> suppress;
+    #    same rule + DIFFERENT entity -> override (re-triage).
+    from tools.ontology import fingerprint_from_alert, entity_scope_from_alert
+
+    # network rule: tuned on the noisy pair 10.0.0.9 > 192.168.250.100
+    net_fp = {"rule_id": "87101", "groups": ["suricata"], "level": 3,
+              "category": "threat", "description": "ET SCAN check.",
+              "entity_scope": "pair:10.0.0.9>192.168.250.100"}
+    led.write("87101", "auto_fp", "deny: noisy scanner tuple", source="human",
+              fingerprint=net_fp)
+    t87101 = led.lookup("87101")
+    assert t87101 is not None
+
+    same_tuple = {"rule": {"id": "87101", "level": 3,
+                           "description": "ET SCAN check.", "groups": ["suricata"]},
+                  "srcip": "10.0.0.9", "dstip": "192.168.250.100"}
+    s, reason = tuned_rule_suppresses(t87101, same_tuple, category="threat")
+    print(f"same tuple: suppress={s} (want True) — {reason[:55]}")
+    if not s:
+        fails += 1
+
+    other_tuple = {"rule": {"id": "87101", "level": 3,
+                            "description": "ET SCAN check.", "groups": ["suricata"]},
+                   "srcip": "10.0.0.9", "dstip": "192.168.1.77"}
+    s, reason = tuned_rule_suppresses(t87101, other_tuple, category="threat")
+    print(f"DIFFERENT tuple: suppress={s} (want False) — {reason[:55]}")
+    if s:
+        fails += 1
+
+    # host rule (sysmon-style, no pair): tuned on one host, fires on another
+    host_fp = {"rule_id": "991053", "groups": ["drill"], "level": 7,
+               "category": "operational", "description": "Drill beacon.",
+               "entity_scope": "host:we8105desk"}
+    led.write("991053", "auto_fp", "deny: drill host", source="human",
+              fingerprint=host_fp)
+    t991053 = led.lookup("991053")
+    assert t991053 is not None
+
+    same_host = {"rule": {"id": "991053", "level": 7,
+                          "description": "Drill beacon.", "groups": ["drill"]},
+                 "agent": {"name": "we8105desk"}}
+    s, _ = tuned_rule_suppresses(t991053, same_host, category="operational")
+    print(f"same host: suppress={s} (want True)")
+    if not s:
+        fails += 1
+
+    other_host = {"rule": {"id": "991053", "level": 7,
+                           "description": "Drill beacon.", "groups": ["drill"]},
+                  "agent": {"name": "vault-secrets"}}
+    s, reason = tuned_rule_suppresses(t991053, other_host, category="operational")
+    print(f"DIFFERENT host: suppress={s} (want False) — {reason[:55]}")
+    if s:
+        fails += 1
+
+    # scope helpers behave
+    if entity_scope_from_alert(same_tuple) != "pair:10.0.0.9>192.168.250.100":
+        fails += 1
+    if entity_scope_from_alert(same_host) != "host:we8105desk":
+        fails += 1
+    if entity_scope_from_alert({}) != "":
+        fails += 1
+
     print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")
     return 0 if fails == 0 else 1
 

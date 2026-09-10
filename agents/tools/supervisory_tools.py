@@ -111,6 +111,19 @@ class SupervisoryClient:
                     if vd and vd.get("rule_id"):
                         from tools.ontology import fingerprint_from_verdict
                         fingerprint = fingerprint_from_verdict(vd)
+                    # Entity-scoped tuning: prefer the RAW alert when the
+                    # ticket carries it (router security escalations now do)
+                    # — recovers the network pair scope that a verdict dict
+                    # cannot express. Falls back to the verdict's host scope.
+                    raw_alert = ((ticket.get("detail") or {}).get("alert")
+                                 if isinstance(ticket.get("detail"), dict) else None)
+                    if fingerprint and isinstance(raw_alert, dict) and raw_alert:
+                        from tools.ontology import fingerprint_from_alert, entity_scope_from_alert
+                        scoped = fingerprint_from_alert(raw_alert)
+                        if scoped.get("rule_id") == fingerprint.get("rule_id"):
+                            fingerprint = scoped
+                        else:  # shape mismatch — keep verdict scope, still scope it
+                            fingerprint["entity_scope"] = entity_scope_from_alert(raw_alert)
                     # Merge with the prior entry: routine supervisory denies
                     # update decision/fingerprint/rationale but must NOT
                     # clobber human-scoped fields (exclude_hosts, tuned_by)

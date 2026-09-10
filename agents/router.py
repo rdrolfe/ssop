@@ -511,7 +511,12 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                 result["case_id"] = case_id
                 result["escalated"] = True
             escalator.escalate(tier=2, title=f"[ROUTER-ANALYST] {v['description'][:60]}",
-                               detail={"case_id": case_id, "verdict": v}, actor="router")
+                               detail={"case_id": case_id, "verdict": v,
+                                       # raw alert rides along so the
+                                       # supervisory deny can fingerprint the
+                                       # ENTITY it denied (pair/host scope),
+                                       # not just the rule shape
+                                       "alert": alert}, actor="router")
             # SOAR enrichment loop: if the analyst recommended a playbook,
             # hand the alert + recommendation to the responder (it gates on
             # tier + approval; tier2 produces the approval ticket).

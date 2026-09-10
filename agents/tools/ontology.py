@@ -76,8 +76,15 @@ def categorize_alert(alert: dict[str, Any]) -> str:
 # now explicit: the same alert shape always gets the same outcome.
 
 def _canonical_fingerprint(rule_id: Any, groups: Any, level: Any,
-                           category: str, description: Any) -> dict:
-    """Normalize a fingerprint to its canonical, comparable form."""
+                           category: str, description: Any,
+                           entity_scope: str | None = None) -> dict:
+    """Normalize a fingerprint to its canonical, comparable form.
+
+    entity_scope: the ENTITY the tuning decision applies to — the (src,dst)
+    pair for network events (both sides required), the agent host for
+    host-only events (sysmon/infra-style: no srcip/dstip pair). Empty/None
+    means rule-wide (legacy semantics: the entry suppresses every entity).
+    """
     groups_n = sorted(str(g).lower() for g in (groups or []) if g is not None)
     desc_l = str(description or "").lower()
     try:
@@ -90,7 +97,30 @@ def _canonical_fingerprint(rule_id: Any, groups: Any, level: Any,
         "level": level_n,
         "category": category or "",
         "threat_desc": any(t in desc_l for t in THREAT_DESC_TOKENS),
+        "entity_scope": str(entity_scope or ""),
     }
+
+
+def entity_scope_from_alert(alert: dict) -> str:
+    """The entity scope of an alert, for entity-scoped tuning.
+
+    Split semantics (mirrors entity_pair vs recent_host_cases):
+      - network events with BOTH src and dst IPs -> "pair:src>dst" (exact
+        5-tuple-ish: one noisy tuple silenced, other tuples still triage)
+      - host events without a full pair -> "host:<agent>" (one noisy host
+        silenced across its destinations)
+    Never raises: malformed input degrades to "" (rule-wide).
+    """
+    try:
+        from tools.observables import entity_pair
+        pair = entity_pair(alert)
+        if pair:
+            return f"pair:{pair[0]}>{pair[1]}"
+        agent = alert.get("agent") or {}
+        host = (agent.get("name") if isinstance(agent, dict) else "") or ""
+        return f"host:{host}" if host else ""
+    except Exception:  # noqa: BLE001 — scope must never break fingerprinting
+        return ""
 
 
 def fingerprint_from_alert(alert: dict) -> dict:
@@ -99,20 +129,28 @@ def fingerprint_from_alert(alert: dict) -> dict:
     category = categorize_alert(alert)
     return _canonical_fingerprint(
         rule.get("id"), rule.get("groups"), rule.get("level"), category,
-        rule.get("description"))
+        rule.get("description"),
+        entity_scope=entity_scope_from_alert(alert))
 
 
 def fingerprint_from_verdict(v: dict) -> dict | None:
     """Fingerprint a classify/verdict dict (rule_id/groups/level/category/
     description at TOP level — the shape the analyst verdict and the
     escalation ticket detail carry). Returns None when no rule_id (can't
-    fingerprint a hunt finding or a malformed ticket)."""
+    fingerprint a hunt finding or a malformed ticket).
+
+    NOTE: verdict dicts carry no raw alert, so entity_scope here is limited
+    to the agent host when present (v["agent"]). Network-pair scope is only
+    recoverable via fingerprint_from_alert on the raw alert.
+    """
     rule_id = v.get("rule_id")
     if not rule_id:
         return None
+    agent = v.get("agent") or ""
     return _canonical_fingerprint(
         rule_id, v.get("groups"), v.get("level"), v.get("category") or "",
-        v.get("description"))
+        v.get("description"),
+        entity_scope=f"host:{agent}" if agent else "")
 
 
 def fingerprint_materially_differs(stored: dict, current: dict) -> bool:
@@ -129,6 +167,14 @@ def fingerprint_materially_differs(stored: dict, current: dict) -> bool:
     is still the class the human decided on.
     """
     if stored.get("rule_id") != current.get("rule_id"):
+        return True
+    # ENTITY-SCOPED tuning (thread #4): the deny tuned a specific ENTITY
+    # (pair or host), not the rule globally. Same rule from a DIFFERENT
+    # entity is a material delta — the human never adjudicated THAT entity,
+    # so it must re-triage, not silently suppress.
+    stored_scope = str(stored.get("entity_scope") or "")
+    cur_scope = str(current.get("entity_scope") or "")
+    if stored_scope and cur_scope and stored_scope != cur_scope:
         return True
     if current.get("threat_desc") and not stored.get("threat_desc"):
         return True
