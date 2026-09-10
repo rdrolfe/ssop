@@ -217,5 +217,8 @@ fixtures:
       verdict: note
       category: authentication
       drill: false
+      # Router contract: dispatch to analyst IS correct for an untuned
+      # auth-failed (the analyst notes it — analyst/hunt drivers PASS note).
+      router_role: analyst
       # note (medium auth-failed heuristic) — but must NOT be drill-suppressed
       # (real alert_id + real entities); the drill invariant asserts this.
