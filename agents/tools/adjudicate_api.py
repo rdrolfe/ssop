@@ -369,13 +369,17 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 except OSError as e:
                     self._send(500, {"ok": False, "error": f"cases read: {e}"})
                     return
+                seen_ids: set[str] = set()
                 for line in lines:
                     try:
                         rec = _json.loads(line)
                     except _json.JSONDecodeError:
                         continue
                     cid = rec.get("case_id") or rec.get("id")
-                    v = _view(cid) if cid else None
+                    if not cid or cid in seen_ids:
+                        continue  # dedupe: multiple receipts per case (open+events)
+                    seen_ids.add(cid)
+                    v = _view(cid)
                     if v:
                         out.append(v)
                 self._send(200, {"ok": True, "cases": out})
