@@ -55,6 +55,8 @@ class EnrichmentClient:
         self.vt_key = settings.vt_api_key
         self.vt_url = settings.vt_url
         self.vt_submit = settings.vt_submit_enabled
+        self.otx_key = settings.otx_api_key
+        self.otx_url = settings.otx_url
         self._cache: dict[str, dict[str, Any]] = cache or {}  # key: type|value
         # VT quota: 4 req/min + 500 req/day (free public API — one shared
         # bucket across ALL request types, lookups and submissions alike).
@@ -77,9 +79,17 @@ class EnrichmentClient:
         """
         otype = observable.get("type", "")
         if otype == "ip":
-            return ["greynoise"]
-        if otype in ("hash", "domain", "url") and self.vt_key:
-            return ["virustotal"]
+            providers = ["greynoise"]
+            if self.otx_key:
+                providers.append("otx")
+            return providers
+        if otype in ("hash", "domain", "url"):
+            providers = []
+            if self.vt_key:
+                providers.append("virustotal")
+            if self.otx_key:
+                providers.append("otx")
+            return providers
         # remaining types: no keyless provider enabled yet — extend here.
         return []
 
@@ -209,6 +219,68 @@ class EnrichmentClient:
             "ts": datetime.now(timezone.utc).isoformat(),
         }
 
+    # --- AlienVault OTX (egress-registered, lookup-class) ---
+
+    _OTX_TYPE_MAP = {"ip": "IPv4", "hash": "file", "domain": "domain",
+                     "url": "url"}
+
+    def _otx_lookup(self, observable: dict[str, str]) -> dict[str, Any]:
+        """OTX /indicators/{type}/{value}/general — pulse memberships,
+        malware families, adversary context. High-capacity (10k req/hr with
+        a free key) CONTEXT provider; VT remains the verdict authority.
+
+        Honest mapping: OTX pulse membership is CONTEXT, not a malicious
+        verdict. status=malicious only when a known malware family is
+        attached; otherwise the raw pulse context rides as classification
+        "context" — the analyst weights it, we don't over-claim.
+        """
+        otype = observable.get("type", "")
+        value = str(observable.get("value", ""))
+        otype_param = self._OTX_TYPE_MAP.get(otype)
+        if not otype_param or not value:
+            return _cached_verdict(observable, "otx")
+        req = urllib.request.Request(
+            f"{self.otx_url.rstrip('/')}/indicators/{otype_param}/{value}/general",
+            headers={"X-OTX-API-KEY": self.otx_key})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {"provider": "otx", "status": "unknown",
+                        "classification": "not_found",
+                        "raw": {"found": False}, "ts": datetime.now(
+                            timezone.utc).isoformat()}
+            logger.warning("otx HTTP %s for %s: %s", e.code, value, e)
+            return _cached_verdict(observable, "otx")
+        except (urllib.error.URLError, json.JSONDecodeError) as e:
+            logger.warning("otx lookup failed for %s: %s", value, e)
+            return _cached_verdict(observable, "otx")
+        pulses = data.get("pulse_info") or {}
+        names = [p.get("name", "") for p in (pulses.get("pulses") or [])]
+        count = int(pulses.get("count", 0) or 0)
+        families = data.get("malware_families") or []
+        # Only a known malware-family attachment earns a "malicious" claim.
+        if families:
+            status = "malicious"
+            classification = "malware family: " + ", ".join(
+                str(f.get("family", f)) if isinstance(f, dict) else str(f)
+                for f in families[:3])
+        elif count > 0:
+            status = "suspicious"
+            classification = f"{count} pulse(s): {', '.join(names[:2])}"
+        else:
+            status = "unknown"
+            classification = "no pulses"
+        return {
+            "provider": "otx",
+            "status": status,
+            "classification": classification,
+            "raw": {"pulse_count": count, "pulses": names[:5],
+                    "malware_families": [str(f) for f in families[:5]]},
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+
     # --- main entry ---
 
     def enrich_observable(self, observable: dict[str, str]) -> dict[str, Any]:
@@ -229,6 +301,9 @@ class EnrichmentClient:
                     verdict["observable"] = observable
                 elif provider == "virustotal":
                     verdict = self._vt_lookup(observable)
+                    verdict["observable"] = observable
+                elif provider == "otx":
+                    verdict = self._otx_lookup(observable)
                     verdict["observable"] = observable
             except Exception as e:  # noqa: BLE001 — enrichment must degrade
                 logger.warning("enrich %s via %s failed: %s", key, provider, e)

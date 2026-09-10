@@ -69,3 +69,23 @@ tickets.
 classification, escalation on attack categories, tuning suppress, recheck
 attach. SO-native hunts proven live (Grid Node SSH brute-force → escalate →
 approve → block-src-ip).
+
+---
+
+## Threat-intel workflow — roadmap (operator 2026-09-09)
+
+The hunt role is the natural consumer of BULK threat intel. Current
+per-indicator lookups (GreyNoise/VT/OTX via `tools/enrichment.py`, role-
+agnostic — hunt calls the same client the analyst does) cover pivoting on
+found indicators. The planned next step is **MISP (self-hosted) or similar
+feed-matching**: pooled community feeds pulled LOCALLY (sovereignty
+doctrine — the data plane comes to us), matched against hunt query
+results in bulk BEFORE resorting to per-indicator external lookups. That
+converts hunt from "pivot then look up each" to "match thousands of known
+indicators at once, look up only the survivors."
+
+Enablers already in place: observables extraction (typed
+ip/hash/domain/url on every case), egress registry + gate (any new feed
+source is a registry entry + gate pass), enrichment client (shared,
+role-agnostic). Adding MISP = a `tools/` feed client + a hunt workflow
+that batches matches — no role-layer changes.

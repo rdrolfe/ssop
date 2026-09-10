@@ -114,3 +114,13 @@ external_calls:
     class: lookup            # submission (class: submit) is DISABLED by
     data_sent: indicator-value (hash/domain/url)  # default: VT_SUBMIT_ENABLED=0
     used_by: [tools/enrichment.py]
+  otx:
+    endpoint: otx.alienvault.com
+    class: lookup
+    data_sent: indicator-value (IPv4/hash/domain/url)
+    used_by: [tools/enrichment.py]
+# ROADMAP (operator 2026-09-09): MISP (self-hosted) or similar feed platform
+# is a PLANNED addition — bulk feed-matching wired into HUNT workflows
+# (hunt queries matched against pooled community feeds before/alongside
+# live lookups). Self-hosted fits the sovereignty doctrine: the data plane
+# comes to us instead of us going to it.

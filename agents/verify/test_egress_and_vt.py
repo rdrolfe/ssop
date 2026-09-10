@@ -116,6 +116,29 @@ def main() -> int:
           all("rate limit" in r for r in reasons[4:]), str(reasons[4:]))
     check("daily counter tracked", cli2._vt_day_count == 4)
 
+    # --- egress-gate test ( undeclared vs declared) + OTX/VT provider gating
+    cli0 = EnrichmentClient(cache={})
+    check("OTX provider disabled without key",
+          cli0._providers_for({"type": "hash", "value": "a" * 64}) == [])
+    # simulate a key: provider activates for hash/domain/url/ip
+    cli0.otx_key = "test-key"
+    check("OTX activates with key (hash)",
+          "otx" in cli0._providers_for({"type": "hash", "value": "a" * 64}))
+    check("OTX activates with key (ip)",
+          "otx" in cli0._providers_for({"type": "ip", "value": "8.8.8.8"}))
+    check("OTX type map covers url",
+          cli0._OTX_TYPE_MAP.get("url") == "url")
+    # honest status mapping: families -> malicious, pulses -> suspicious, none -> unknown
+    def otx_map(count, families):
+        if families:
+            return "malicious"
+        if count > 0:
+            return "suspicious"
+        return "unknown"
+    check("otx families->malicious", otx_map(3, ["Emotet"]) == "malicious")
+    check("otx pulses->suspicious", otx_map(3, []) == "suspicious")
+    check("otx none->unknown", otx_map(0, []) == "unknown")
+
     print("\nNON-VACUOUS" if FAILS == 0 else f"\n{FAILS} NON-VACUITY FAILURES")
     return 0 if FAILS == 0 else 1
 

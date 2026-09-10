@@ -67,6 +67,13 @@ the disclosure decision explicitly, at build time.
 |---|---|---|---|---|
 | GreyNoise | api.greynoise.io | lookup | IP value | `tools/enrichment.py` |
 | VirusTotal | www.virustotal.com | lookup | hash/domain/url value | `tools/enrichment.py` |
+| AlienVault OTX | otx.alienvault.com | lookup | IPv4/hash/domain/url value | `tools/enrichment.py` |
+
+Provider roles: **VT = verdict authority** (AV-engine malicious/clean),
+**OTX = context authority** (pulses, malware families — high capacity:
+10k req/hr with free key), **GreyNoise = scanner reputation** (IP only,
+keyless). OTX honest mapping: malware-family attachment → malicious;
+pulse membership alone → suspicious (context, not verdict).
 
 **Submission class (file/URL upload — a DISCLOSURE event) is DISABLED by
 default** (`VT_SUBMIT_ENABLED=0`). Hash/URL lookups leak only the indicator

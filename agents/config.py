@@ -235,6 +235,11 @@ class Settings:
     # lookup: default OFF, flip explicitly via env. Hash/URL lookups are
     # lookup-class (value-only egress); submission sends the artifact.
     vt_submit_enabled: bool = _env("VT_SUBMIT_ENABLED", "0") == "1"
+    # AlienVault OTX (egress-registered). Free key = 10,000 req/hr (vs
+    # 1,000 keyless) — the high-capacity CONTEXT provider (pulse
+    # memberships, malware families); VT remains the verdict authority.
+    otx_api_key: str = _env("OTX_API_KEY", "")  # empty = provider disabled
+    otx_url: str = _env("OTX_URL", "https://otx.alienvault.com/api/v1")
 
     # --- SOAR responder ---
     approval_expiry_min: int = _env_int("APPROVAL_EXPIRY_MIN", 15)
