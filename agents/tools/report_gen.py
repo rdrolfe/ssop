@@ -79,6 +79,8 @@ def _role_label(role: str, type_: str) -> str:
         ("supervisory", "verdict"): "Supervisor verdict",
         ("supervisory", "adjudication"): "Adjudication",
         ("responder", "playbook_run"): "Responder",
+        ("responder", "execution"): "Responder execution",
+        ("router", "adjudication"): "Router adjudication",
     }
     return labels.get((role, type_), f"{role}/{type_}")
 

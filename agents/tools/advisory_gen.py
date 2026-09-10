@@ -80,9 +80,18 @@ def _decision(case: dict[str, Any]) -> tuple[str, str]:
     rationale = (sup.get("rationale") or "").strip()
     if not decision:
         for ev in reversed(case.get("timeline", [])):
+            d = ev.get("detail") or {}
+            if not isinstance(d, dict):
+                continue
+            # Router adjudication authorizes infra/fleet-sysadmin cases
+            # (operator policy 2026-09-09) — counts as the decision.
+            if ev.get("role") == "router" and ev.get("type") == "adjudication":
+                decision = d.get("decision") or ""
+                if not rationale:
+                    rationale = (d.get("rationale") or "").strip()
+                break
             if ev.get("role") != "supervisory":
                 continue
-            d = ev.get("detail") or {}
             if ev.get("type") in ("adjudication", "verdict"):
                 decision = d.get("decision") or d.get("verdict") or ""
                 if not rationale:
@@ -140,9 +149,31 @@ def _lessons_learned(case: dict[str, Any]) -> list[str]:
 
 
 def _key_actions(case: dict[str, Any]) -> list[str]:
-    """The playbook recommended by the supervisor is the key action."""
-    sup = case.get("supervisory") or {}
+    """The playbook recommended by the supervisor is the key action.
+
+    When the responder has EXECUTED on the case, the executed playbook +
+    its step results are the key actions (actions taken, not actions
+    pending) — the CISA template's "Key Actions" reads best as a record.
+    """
     actions = []
+    executed = [
+        (ev.get("detail") or {})
+        for ev in case.get("timeline", [])
+        if ev.get("role") == "responder" and ev.get("type") == "execution"
+    ]
+    for ex in executed:
+        pb = ex.get("playbook")
+        if not pb:
+            continue
+        steps = ex.get("results") or []
+        ok_steps = [s for s in steps if s.get("ok")]
+        detail = "; ".join(str(s.get("detail", "")) for s in ok_steps[:3])
+        actions.append(
+            f"Executed playbook `{pb}` (tier {ex.get('tier', '?')}) — "
+            f"{len(ok_steps)}/{len(steps)} steps ok: {detail}")
+    if executed:
+        return actions
+    sup = case.get("supervisory") or {}
     pb = sup.get("recommended_playbook")
     if pb:
         actions.append(f"Execute playbook `{pb}` (per supervisory decision).")
