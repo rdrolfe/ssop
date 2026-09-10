@@ -32,6 +32,14 @@ on ANY agent's package list; matched agents attach. NVD enrichment
 (`fetch_nvd_since`) is a P1 second pass — KEV alone is already
 exploited-in-the-wild signal.
 
+**KNOWN LIMITATION (2026-09-10 fleet patching):** name-only matching
+ignores VERSION RANGES, so patched/newer installs still match — the
+fleet's Firefox (snap, current), Ghostscript 10.06, and Git 2.53 all
+flagged against KEV entries targeting older lines. Dispositioning those
+cases is manual until CPE version-range matching lands (NVD provides the
+version bounds; the join key is product). Verify installed version
+against the KEV entry before treating a match as actionable.
+
 ### 3. GENERATE (`intel_tools.py:92-124`)
 Builds a valid hunt pack (YAML, `analyze: generic`) targeting the inventory
 indices, with a `meta` block: `{cve_id, source, matched_agents, cvss,
