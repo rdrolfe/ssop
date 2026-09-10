@@ -365,26 +365,44 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
         obs = extract_observables(alert)
         chain = cases.recent_host_cases(agent, rule_id=rid) if hasattr(
             cases, "recent_host_cases") else []
-        case = cases.open_case(
-            source={"alert_id": alert.get("id", ""), "agent": agent,
-                    "rule_desc": rule.get("description", ""), "rule_id": rid,
-                    "category": category, "level": level,
-                    "backend": getattr(ix, "backend", ""), "index": "",
-                    "doc_id": alert.get("id", ""), "occurred_at": alert.get(
-                        "timestamp", "")},
-            title=f"[ROUTER] {category.upper()} alert lvl={level} on {agent}",
-            observables=obs,
-            assignee="responder",  # infra events action the responder role
-        )
-        case_id = case["case_id"]
-        result["case_id"] = case_id
-        cases.append_event(case_id, "router", "dispatch", {
-            "verdict": "escalate", "recommended_playbook": recommended,
-            "level": level, "category": category, "agent": agent,
-            "rationale": f"infra event on {agent}: "
-                         f"{rule.get('description', '')[:80]}",
-        })
-        logger.info("infra case minted: %s (recommended %s)", case_id, recommended)
+        if chain:
+            # DEDUPE (mirrors dispatch_security's existing_chain): an open
+            # case for the same agent+rule_id within the recidivism window
+            # is the SAME incident — attach evidence, never re-mint.
+            # (This was called but ignored, minting one case per sweep:
+            # 37 duplicate 40704 cases in one day before the fix.)
+            case_id = chain[0]["case_id"]
+            result["case_id"] = case_id
+            result["attached"] = True
+            cases.append_event(case_id, "router", "dispatch", {
+                "verdict": "escalate", "recommended_playbook": recommended,
+                "level": level, "category": category, "agent": agent,
+                "rationale": f"infra event on {agent}: "
+                             f"{rule.get('description', '')[:80]}",
+            })
+            logger.info("infra dispatch attached to open case %s "
+                        "(repeated agent+rule)", case_id)
+        else:
+            case = cases.open_case(
+                source={"alert_id": alert.get("id", ""), "agent": agent,
+                        "rule_desc": rule.get("description", ""), "rule_id": rid,
+                        "category": category, "level": level,
+                        "backend": getattr(ix, "backend", ""), "index": "",
+                        "doc_id": alert.get("id", ""), "occurred_at": alert.get(
+                            "timestamp", "")},
+                title=f"[ROUTER] {category.upper()} alert lvl={level} on {agent}",
+                observables=obs,
+                assignee="responder",  # infra events action the responder role
+            )
+            case_id = case["case_id"]
+            result["case_id"] = case_id
+            cases.append_event(case_id, "router", "dispatch", {
+                "verdict": "escalate", "recommended_playbook": recommended,
+                "level": level, "category": category, "agent": agent,
+                "rationale": f"infra event on {agent}: "
+                             f"{rule.get('description', '')[:80]}",
+            })
+            logger.info("infra case minted: %s (recommended %s)", case_id, recommended)
     except Exception:
         logger.exception("infra case mint failed for %s", agent)
         result["error"] = result.get("error") or "case mint failed"
