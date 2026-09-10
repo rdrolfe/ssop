@@ -160,3 +160,62 @@ fixtures:
       no_dispatch: true
       category: authentication
       no_case: true
+
+  # --- layer-2 drill gate (2026-09-10): synthetic-corpus replay families ---
+  # The atomic/e2e/tech families are settled FPs (170+ supervisory denies in
+  # the spine). is_drill_replay() must note them — no case, no dispatch.
+  - id: drill-atomic-t1046-replay
+    description: "Atomic T1046 replay on BOTSv1 host with synthetic alert_id — drill gate notes it, no case"
+    alert:
+      timestamp: "2026-09-10T19:30:11.745095Z"
+      rule: {id: 991046, level: 7, groups: [suricata, ids, scan], description: "ET SCAN Behavioral Unusual Port Scan detected"}
+      agent: {id: "001", name: we8105desk.waynecorpinc.local}
+      data: {srcip: "192.168.250.100", dstip: "10.10.1.11", id: atomic-t1046-scan}
+      _id: atomic-t1046-scan
+    expect:
+      verdict: note
+      no_case: true
+      no_dispatch: true
+      category: operational
+
+  - id: drill-atomic-t1053-replay
+    description: "Atomic T1053 threat-desc replay (lvl 10, ET MALWARE desc) — drill gate holds even with threat tokens"
+    alert:
+      timestamp: "2026-09-10T12:00:14.188009Z"
+      rule: {id: 991053, level: 10, groups: [persistence, process_creation, sysmon], description: "ET MALWARE Scheduled Task Creation for Persistence"}
+      agent: {id: "001", name: we8105desk.waynecorpinc.local}
+      data: {id: atomic-t1053-task}
+      _id: atomic-t1053-task
+    expect:
+      verdict: note
+      no_case: true
+      no_dispatch: true
+      category: threat
+
+  - id: drill-tech-synthetic-on-real-host
+    description: "tech- synthetic alert_id on a REAL host (Raspberry Robin shape) — prefix alone triggers the gate"
+    alert:
+      timestamp: "2026-09-08T18:09:33.000Z"
+      rule: {id: 2045417, level: 12, groups: [suricata, malware, dns], description: "ET MALWARE Raspberry Robin"}
+      agent: {id: "003", name: vault-secrets.waynecorpinc.local}
+      data: {srcip: "10.6.6.66", dstip: "8.8.8.8"}
+      _id: tech-1ee0dbb4
+    expect:
+      verdict: note
+      no_case: true
+      no_dispatch: true
+
+  - id: drill-gate-does-not-swallows-live
+    description: "REAL alert_id on the drill host with a real dst IP — gate must NOT suppress (live finding on shared host)"
+    alert:
+      timestamp: "2026-09-10T20:00:00.000Z"
+      rule: {id: 5710, level: 5, groups: [authentication_failed, sshd], description: "sshd: authentication failed"}
+      agent: {id: "001", name: we8105desk.waynecorpinc.local}
+      data: {srcip: "203.0.113.66", dstip: "192.168.1.20"}
+      _id: 8f3a2b1c-real-doc-991046-never
+    expect:
+      verdict: note
+      category: authentication
+      drill: false
+      # note (medium auth-failed heuristic) — but must NOT be drill-suppressed
+      # (real alert_id + real entities); the drill invariant asserts this.

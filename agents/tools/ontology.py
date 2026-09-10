@@ -123,6 +123,55 @@ def entity_scope_from_alert(alert: dict) -> str:
         return ""
 
 
+def is_drill_replay(alert: dict) -> tuple[bool, str]:
+    """True when the alert is a known synthetic drill replay (layer-2 gate).
+
+    Match = synthetic alert_id prefix (atomic-/e2e-/tech- — these are
+    injected doc keys; real indexer docs never carry them) OR (drill host
+    AND all entity IPs inside drill ranges). An alert on a drill host with
+    a REAL alert_id and real entity IPs still triages normally — the gate
+    can never swallow a live finding on a shared host.
+    Returns (is_drill, reason).
+    """
+    try:
+        alert_id = str(alert.get("_id") or alert.get("id")
+                       or alert.get("data", {}).get("id") or "")
+        if any(alert_id.startswith(p) for p in settings.drill_alert_prefixes):
+            agent = alert.get("agent") or {}
+            host = (agent.get("name") if isinstance(agent, dict) else "") or ""
+            return True, f"synthetic alert_id {alert_id} (host {host or 'unknown'})"
+        agent = alert.get("agent") or {}
+        host = (agent.get("name") if isinstance(agent, dict) else "") or ""
+        if host not in settings.drill_hosts:
+            return False, ""
+        # No synthetic prefix: suppress only if every entity IP is drill-side.
+        ips = [str(v) for v in
+               (alert.get("data", {}).get("srcip"),
+                alert.get("data", {}).get("dstip")) if v]
+        if ips and all(_ip_in_drill_range(ip) for ip in ips):
+            return True, (f"drill host {host}, all entities in drill ranges "
+                          f"({', '.join(ips)})")
+        return False, ""
+    except Exception:  # noqa: BLE001 — the gate must never break triage
+        return False, ""
+
+
+def _ip_in_drill_range(ip: str) -> bool:
+    """True when ip falls inside any settings.drill_entity_ips CIDR."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for rng in settings.drill_entity_ips:
+        try:
+            if addr in ipaddress.ip_network(rng, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def fingerprint_from_alert(alert: dict) -> dict:
     """Fingerprint a RAW alert (rule nested under alert['rule'])."""
     rule = alert.get("rule") or {}

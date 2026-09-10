@@ -170,6 +170,26 @@ class Settings:
         _env("ANALYST_FP_RULE_IDS", "510").split(",")
     )
 
+    # --- known drill hosts / synthetic alert ids (layer-2 drill gate) ---
+    # Synthetic-corpus agents (BOTSv1 test-bed etc.) whose alerts are drill
+    # replays by construction. Alerts from these hosts carrying a synthetic
+    # alert_id prefix (atomic-/e2e-/tech-) are noted, never escalated, in
+    # BOTH the router and the analyst verdict paths. A material delta (real
+    # entity IP outside TEST-NET, non-synthetic alert_id) bypasses the gate.
+    # Env-overridable; never hardcoded in role logic (ssop-code-standards).
+    drill_hosts: frozenset[str] = frozenset(
+        h for h in _env("SSOP_DRILL_HOSTS",
+                        "we8105desk.waynecorpinc.local").split(",") if h)
+    drill_alert_prefixes: tuple[str, ...] = tuple(
+        p for p in _env("SSOP_DRILL_ALERT_PREFIXES",
+                        "atomic-,e2e-,tech-").split(",") if p)
+    # Entity IPs that are drill infrastructure (TEST-NET / drill subnet) —
+    # an alert whose entities are ALL drill-side stays suppressed even if
+    # its alert_id lacks a synthetic prefix.
+    drill_entity_ips: frozenset[str] = frozenset(
+        ip for ip in _env("SSOP_DRILL_ENTITY_IPS",
+                          "192.168.250.0/24,10.6.6.0/24,10.10.0.0/16").split(",") if ip)
+
     # --- router ---
     router_interval_s: int = _env_int("ROUTER_INTERVAL_S", 180)
     burst_window_min: int = _env_int("ROUTER_BURST_WINDOW_MIN", 10)

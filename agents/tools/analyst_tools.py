@@ -116,6 +116,21 @@ class AnalystClient:
                 "rationale": f"rule {rule_id} in noise class (baseline event) — noted, no escalation",
                 **c,
             }
+        # DRILL GATE (layer-2): known synthetic-corpus hosts firing synthetic
+        # alert ids (atomic-/e2e-/tech-) or TEST-NET-only entities are drill
+        # replays by construction — note them, never escalate. Checked BEFORE
+        # the tuning ledger so a new drill rule (no ledger entry yet) can't
+        # mint a case; the ledger remains the per-rule policy of record.
+        from tools.ontology import is_drill_replay
+        drill, drill_reason = is_drill_replay(alert)
+        if drill:
+            return {
+                "verdict": "note",
+                "confidence": "high",
+                "rationale": f"drill replay suppressed (layer-2 gate): {drill_reason} — noted, no escalation",
+                "drill": True,
+                **c,
+            }
         # STATEFUL STEP — consult the tuning ledger: has this rule_id been
         # adjudicated? If yes, the prior decision is policy (idempotent; we
         # never re-decide a tuned class). Human-written entries are final.

@@ -293,6 +293,21 @@ def inv_reconcile_consistent(fixture: Dict[str, Any], outcome: Dict[str, Any], s
     return Check("reconcile", CHECK_OK, f"case {case_id} dual-written (Qdrant + JSONL)")
 
 
+def inv_drill_gate_respected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
+    """expect.drill:false -> the verdict must NOT be drill-suppressed.
+
+    Guards the layer-2 gate's escape hatch: a live finding on a drill host
+    (real alert_id, real entities) must triage normally. The analyst verdict
+    sets outcome['drill']=True only when is_drill_replay() fired.
+    """
+    expected = fixture.get("expect", {}).get("drill")
+    if expected is None or expected:
+        return Check("drill", CHECK_SKIP, "no expectation")
+    if outcome.get("drill"):
+        return Check("drill", CHECK_FAIL, "verdict was drill-suppressed but fixture expects live triage")
+    return Check("drill", CHECK_OK, "not drill-suppressed")
+
+
 # registry
 INVARIANTS: List[tuple[str, Callable[[Dict, Dict, Stores], Check]]] = [
     ("verdict", inv_verdict_matches),
@@ -303,4 +318,5 @@ INVARIANTS: List[tuple[str, Callable[[Dict, Dict, Stores], Check]]] = [
     ("reconcile", inv_reconcile_consistent),
     ("tuned", inv_tuned_when_expected),
     ("no_new_case", inv_no_new_case_when_expected),
+    ("drill", inv_drill_gate_respected),
 ]

@@ -243,6 +243,17 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
     groups = rule.get("groups", [])
     if rid in NOISE_RULES:
         return "operational", None
+    # DRILL GATE (layer-2): synthetic-corpus hosts firing synthetic alert ids
+    # are drill replays — never dispatch, same shared helper the analyst uses
+    # (tools.ontology, single source of truth). See settings.drill_* knobs.
+    try:
+        from tools.ontology import is_drill_replay
+        drill, _reason = is_drill_replay(alert)
+        if drill:
+            return "operational", None
+    except Exception as e:  # noqa: BLE001 — gate must never break dispatch
+        import logging
+        logging.getLogger(__name__).warning("drill gate failed for %s: %s", rid, e)
     # Tuned rules (auto_fp / operational) are not dispatched — the analyst
     # noted them and a human confirmed; no role should re-engage. EXCEPT: a
     # tuned rule firing with a MATERIAL fingerprint delta (new attack groups,
