@@ -90,7 +90,8 @@
 
   <div class="col todo">
     <h2><span class="dot"></span> Coming up</h2>
-    <div class="item"><div class="t">P1: Intel role + hunt packs</div><div class="d">CISA KEV + NVD (both keyless) → syscollector inventory match → auto-generated hunt YAML. Fully specified in docs/wayfinder/ — ready to build</div></div>
+    <div class="item"><div class="t">Intel role P1 <span class="tag commit">2141353 · 5d2e4df</span></div><div class="d">CISA KEV → fleet inventory match → spine case per (CVE, agent) + staged hunt pack for review. 7 live matches: Git/kb-vec, Firefox ×5 + Ghostscript/vault-secrets. Dedupe open-only, idempotent (re-run: 0 minted, 0 staged)</div></div>
+    <div class="item"><div class="t">Intel doctrine (user-corrected)</div><div class="d">The inventory match IS evidence (syscollector fact + KEV fact) → spine case. The hunt pack is the proposed detection → staged file. Two artifacts, two authorities</div></div>
     <div class="item"><div class="t">P1: SOAR responder actions</div><div class="d">Playbook schema + action registry designed (ADR-004); whitelisted actions + verify fixtures speced in wayfinder tickets</div></div>
     <div class="item"><div class="t">Ontology phase 2: reasoner gate</div><div class="d">owlready2/HermiT proves the authority invariants. Correctly deferred until decision model settles — before MISP</div></div>
     <div class="item"><div class="t">MISP integration</div><div class="d">Hunt feed-matching consumes the formal model; blocked on phase 2</div></div>
