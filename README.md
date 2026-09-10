@@ -30,6 +30,10 @@ and audit trails — then a platform can *be* a SOC instead of *assist* a SOC.
    with its own context window and its own tool surface. The analyst literally cannot
    touch infrastructure — it has no SSH tool. The infra manager can act, but only
    commands in its sudoers whitelist. Roles are scoped by construction, not by prompt.
+   (Vocabulary note, 2026-09-10: "separation of duties" + "governed semantic context
+   layer" — see idea 4 — deliberately mirror AWS's Context Ontology Accelerator
+   terminology; our implementation is SOC-native and fleet-resident rather than
+   AWS-hosted, but the architectural pattern is the same.)
 
 2. **Cryptographic identity for every actor.** Every role holds a SPIFFE/SPIRE SVID
    (a short-lived, auto-rotating X.509 identity), and SSH audit records carry the
@@ -42,6 +46,19 @@ and audit trails — then a platform can *be* a SOC instead of *assist* a SOC.
    to TWO stores — a Qdrant working memory and an append-only JSONL receipt — so the
    stores can be cross-referenced for integrity. A reconciliation check detects
    divergence. The role that acts is never the role that verifies.
+
+4. **A governed semantic context layer.** The roles don't guess: every alert is
+   categorized by a single ontology module (one categorizer, parity-enforced),
+   every decision is validated against declared authority boundaries (approval
+   tiers, protected entities, tuning fingerprints), and the whole model is
+   serialized as a machine-readable decision ontology
+   ([`docs/ontology/ssop.ttl`](docs/ontology/ssop.ttl) — OWL/Turtle, generated
+   from code). In the vocabulary of AWS's Context Ontology Accelerator: SSOP is
+   a **governed semantic context layer** where agents retrieve context, validate
+   it against declared business logic, and make explainable decisions — with the
+   SOC domain model (roles, tiers, authority invariants) that a general-purpose
+   semantic layer doesn't ship. Phase 2 runs a reasoner over the ontology so the
+   authority invariants are machine-proven, not just prose.
 
 ## The roles (built and running)
 

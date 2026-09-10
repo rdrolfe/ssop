@@ -43,6 +43,7 @@ HERMETIC = [
     "agents/verify/test_adjudicate_fingerprint.py",
     "agents/verify/test_case_lifecycle.py",
     "agents/verify/test_egress_and_vt.py",
+    "agents/verify/test_ontology_export.py",
 ]
 
 
