@@ -1,243 +1,169 @@
-"""Intel role tools: threat-intel ingestion, fleet matching, hunt-pack generation.
+#!/usr/bin/env python3
+"""Intel tools: CISA KEV -> fleet match -> staged hunt packs.
 
-The intel role reads advisories (CISA KEV + NVD), matches them against fleet
-inventory (Wazuh syscollector states indices), and generates hunt packs as
-YAML in a staging area for human/supervisory review.
+The intel role's engine (wayfinder: intel-sources + fleet-inventory-source +
+hunt-pack-schema tickets, all resolved):
 
-Flow: INGEST -> MATCH -> GENERATE -> STAGE -> (PROMOTE after review)
-Per wayfinder ticket hunt-pack-schema: packs are valid hunt YAML targeting
-the inventory indices; quality gate = environment match + dedupe +
-staging-review.
+  INGEST   fetch the CISA KEV catalog (1 GET, keyless, public-domain —
+           sovereign: we only PULL, no environment data leaves).
+  MATCH    KEV vendorProject/product vs fleet inventory
+           (wazuh-states-inventory-packages-*). Mandatory gate: products we
+           don't run are skipped entirely — 1,700 entries collapse to the
+           handful that matter.
+  GENERATE one hunt-pack YAML per matched CVE, targeting the INVENTORY
+           indices (honest: checks presence of the vulnerable product, not
+           speculative exploitation IOCs).
+  STAGE    packs land in staging/ for human (or supervisory) review and
+           promotion. The machine proposes; the human disposes.
 
-Hygiene: config-driven (config.py), registry singletons, logging, imports at top.
+NVD enrichment (CVSS detail) is a P1 second pass — KEV alone is already
+exploited-in-the-wild signal.
 """
-
-from __future__ import annotations
-
 import json
 import re
-import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from config import settings
-from logging_setup import get_logger
-from tools.indexer_client import IndexerClient
-
-logger = get_logger(__name__)
+KEV_URL = ("https://www.cisa.gov/sites/default/files/feeds/"
+           "known_exploited_vulnerabilities.json")
+INVENTORY_INDEX = "wazuh-states-inventory-packages-*"
 
 
-class IntelError(RuntimeError):
-    """Raised when intel ingestion fails."""
+def fetch_kev(url: str = KEV_URL, timeout: int = 60) -> dict[str, Any]:
+    """Fetch and parse the KEV catalog. Returns {catalogVersion, vulnerabilities}.
+
+    Raises on network/parse failure — callers decide degradation policy.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "ssop-intel/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode())
+    if not isinstance(data.get("vulnerabilities"), list):
+        raise ValueError("KEV feed missing vulnerabilities[]")
+    return data
 
 
-class IntelClient:
-    """Threat-intel ingestion + hunt-pack generation."""
+def fleet_products(ix: Any) -> dict[str, list[str]]:
+    """Distinct lowercased product -> sorted agent list, from inventory.
 
-    def __init__(self, indexer: IndexerClient | None = None) -> None:
-        self._indexer = indexer or IndexerClient()
-        self.kev_url = settings.kev_url
-        self.nvd_url = settings.nvd_url
-        self.staging_dir: Path = settings.hunt_staging_dir
-        self.hunts_dir: Path = settings.hunts_dir
-        self.inventory_index = getattr(self._indexer, "inventory_index",
-                                       settings.inventory_index)
+    Reads the packages states index DIRECTLY (the gotcha from the
+    fleet-inventory ticket: inventory is NOT in wazuh-alerts-*).
+    """
+    body = {"size": 2000, "query": {"match_all": {}},
+            "_source": ["agent.name", "package.name"]}
+    d = ix.search(body, index=INVENTORY_INDEX)
+    pkgs: dict[str, set[str]] = {}
+    for h in d.get("hits", {}).get("hits", []):
+        s = h.get("_source", {})
+        agent = (s.get("agent") or {}).get("name") or "?"
+        name = (s.get("package") or {}).get("name") or ""
+        if name:
+            pkgs.setdefault(name.strip().lower(), set()).add(agent)
+    return {k: sorted(v) for k, v in sorted(pkgs.items())}
 
-    # --- INGEST ---
 
-    def fetch_kev(self) -> list[dict[str, Any]]:
-        """Fetch the CISA KEV catalog (one GET, no auth)."""
+def match_kev(kev: dict[str, Any], products: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """KEV entries whose product is in the fleet. Environment gate applied.
+
+    Matching is case-insensitive on the lowercased product name. Vendor is
+    checked too when the bare product is ambiguous? No — product-only: the
+    inventory records package names, not vendor hierarchies, and a product
+    name collision across vendors is rarer than a vendor-string mismatch.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for v in kev.get("vulnerabilities", []):
+        cve = str(v.get("cveID") or "")
+        prod = str(v.get("product") or "").strip().lower()
+        if not cve or cve in seen or not prod:
+            continue
+        agents = products.get(prod)
+        if agents:  # THE GATE: product must exist in our fleet
+            seen.add(cve)
+            out.append({**v, "_matched_agents": agents})
+    return out
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40]
+
+
+def build_hunt_pack(match: dict[str, Any]) -> dict[str, Any]:
+    """A generated hunt pack, valid per load_hunts() (name/category/
+    hypothesis/analyze/query) + an intel `meta` block the loader ignores."""
+    cve = match["cveID"]
+    product = match.get("product") or "product"
+    vendor = match.get("vendorProject") or ""
+    agents = match.get("_matched_agents") or []
+    name = match.get("vulnerabilityName") or f"{vendor} {product} vulnerability"
+    return {
+        "name": f"{cve.lower()} {product}".strip(),
+        "category": "threat",
+        "technique_id": "T1190",  # exploit public-facing app — presence check
+        "hypothesis": (f"Exploited {cve} ({name}) may be present — checking "
+                       f"fleet for the vulnerable product {product}"),
+        "analyze": "generic",
+        "query": {
+            "size": 100,
+            "query": {"bool": {"filter": [
+                {"term": {"package.name": product}},
+            ]}},
+            "_source": ["timestamp", "agent.name", "package"],
+        },
+        "meta": {
+            "cve_id": cve,
+            "source": "cisa-kev",
+            "matched_agents": agents,
+            "vendor": vendor,
+            "product": product,
+            "date_added": match.get("dateAdded", ""),
+            "generated": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
+def stage_packs(matches: list[dict[str, Any]], staging_dir: Path) -> dict[str, int]:
+    """Write one YAML per matched CVE into staging/, skipping CVEs already
+    staged or already promoted into the live hunts dir. Returns counts."""
+    import yaml
+    live_dir = staging_dir.parent
+    staged = written = skipped = 0
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    live_cves: set[str] = set()
+    for f in live_dir.glob("*.yaml"):
         try:
-            with urllib.request.urlopen(self.kev_url, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-        except (urllib.error.URLError, json.JSONDecodeError) as e:
-            logger.error("KEV fetch failed: %s", e)
-            raise IntelError(f"KEV fetch failed: {e}") from e
-        vulns = data.get("vulnerabilities", [])
-        logger.info("KEV: %d entries (version %s)", len(vulns), data.get("catalogVersion"))
-        return vulns
-
-    def fetch_nvd_since(self, days: int = 1) -> list[dict[str, Any]]:
-        """Fetch NVD CVEs published in the last N days (keyless date-range)."""
-        from datetime import timedelta
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00.000")
-        end = now.strftime("%Y-%m-%dT00:00:00.000")
-        url = f"{self.nvd_url}?pubStartDate={start}&pubEndDate={end}&resultsPerPage=2000"
-        try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-        except (urllib.error.URLError, json.JSONDecodeError) as e:
-            logger.error("NVD fetch failed: %s", e)
-            raise IntelError(f"NVD fetch failed: {e}") from e
-        vulns = data.get("vulnerabilities", [])
-        logger.info("NVD: %d CVEs published in last %d days", len(vulns), days)
-        return vulns
-
-    # --- MATCH (fleet inventory) ---
-
-    def inventory_products(self) -> dict[str, list[str]]:
-        """Return {agent_name: [package names]} from the inventory indices.
-
-        Queries wazuh-states-inventory-packages-* directly (the states
-        indices, NOT wazuh-alerts-* — per the fleet-inventory ticket).
-        """
-        body = {
-            "size": 10000,
-            "_source": ["agent.name", "package.name"],
-            "query": {"match_all": {}},
-        }
-        try:
-            data = self._indexer.search(body, index=self.inventory_index)
-        except Exception as e:
-            logger.error("inventory query failed: %s", e)
-            raise IntelError(f"inventory query failed: {e}") from e
-        by_agent: dict[str, list[str]] = {}
-        for h in data.get("hits", {}).get("hits", []):
-            src = h.get("_source", {})
-            agent = src.get("agent", {}).get("name", "?")
-            pkg = src.get("package", {}).get("name", "")
-            if pkg:
-                by_agent.setdefault(agent, []).append(pkg.lower())
-        logger.info("inventory: %d agents, %d packages total",
-                    len(by_agent), sum(len(v) for v in by_agent.values()))
-        return by_agent
-
-    def match_kev_to_inventory(self, kev_entries: list[dict[str, Any]],
-                               inventory: dict[str, list[str]]) -> list[dict[str, Any]]:
-        """Match KEV entries against fleet packages (product name match).
-
-        Environment-match filter: a KEV entry survives only if its product
-        appears in ANY agent's package list. Returns matched entries with
-        matched_agents attached.
-        """
-        matched = []
-        for entry in kev_entries:
-            product = (entry.get("product") or "").lower()
-            if not product:
-                continue
-            # WORD-BOUNDARY match: product matches a package name exactly or
-            # as a whole token (e.g. "ray" matches "ray" but not "raycast";
-            # "core" doesn't match every kernel package). Prevents the
-            # substring flood (342 packs) while catching real products.
-            hit_agents = [
-                a for a, pkgs in inventory.items()
-                if any(
-                    p == product
-                    or re.search(rf"(^|[^a-z0-9]){re.escape(product)}($|[^a-z0-9])", p)
-                    for p in pkgs
-                )
-            ]
-            if hit_agents:
-                entry = dict(entry)
-                entry["matched_agents"] = hit_agents
-                matched.append(entry)
-        logger.info("matched %d of %d KEV entries to fleet inventory",
-                    len(matched), len(kev_entries))
-        return matched
-
-    # --- GENERATE ---
-
-    def generate_pack(self, entry: dict[str, Any]) -> dict[str, Any]:
-        """Build a hunt pack (valid hunt YAML) from a matched KEV entry."""
-        cve_id = entry.get("cveID", "cve-unknown")
-        product = entry.get("product", "unknown")
-        slug = re.sub(r"[^a-z0-9]+", "-", f"{cve_id}-{product}".lower()).strip("-")
-        hypothesis = (
-            f"Exploited {cve_id} ({product}) may be present — "
-            f"checking fleet inventory for the vulnerable product"
-        )
-        pack = {
-            "name": slug,
-            "category": "threat",
-            "hypothesis": hypothesis,
-            "analyze": "generic",
-            # Target dataset: inventory packs run against the fleet inventory
-            # index (current state), NOT the alert index — HuntClient resolves
-            # "inventory" through the active transport and skips alert-style
-            # time filtering.
-            "target": "inventory",
-            "query": {
-                "size": 100,
-                "query": {"bool": {"filter": [
-                    {"match": {"package.name": product}}
-                ]}},
-                "_source": ["timestamp", "agent.name", "package"],
-            },
-            "meta": {
-                "cve_id": cve_id,
-                "source": "cisa-kev",
-                "matched_agents": entry.get("matched_agents", []),
-                "cvss": entry.get("cvss", ""),
-                "date_added": entry.get("dateAdded", ""),
-            },
-        }
-        return pack
-
-    # --- STAGE ---
-
-    def stage_pack(self, pack: dict[str, Any]) -> Path | None:
-        """Write a generated pack to the staging area (dedupe by cve_id).
-
-        Returns the path if written, None if a pack for the same CVE already
-        exists (in staging or the live library) — the dedupe gate.
-        """
-        cve_id = pack.get("meta", {}).get("cve_id", "")
-        # dedupe: existing staging pack with same cve_id?
-        self.staging_dir.mkdir(parents=True, exist_ok=True)
-        for f in self.staging_dir.glob("*.yaml"):
-            try:
-                existing = yaml.safe_load(f.read_text())
-                if existing.get("meta", {}).get("cve_id") == cve_id:
-                    logger.info("dedupe: %s already staged (%s)", cve_id, f.name)
-                    return None
-            except (yaml.YAMLError, OSError):
-                continue
-        # dedupe: live library pack with same cve_id?
-        for f in self.hunts_dir.glob("*.yaml"):
-            try:
-                existing = yaml.safe_load(f.read_text())
-                if existing.get("meta", {}).get("cve_id") == cve_id:
-                    logger.info("dedupe: %s already live (%s)", cve_id, f.name)
-                    return None
-            except (yaml.YAMLError, OSError):
-                continue
-        path = self.staging_dir / f"{pack['name']}.yaml"
+            live_cves.add(str((yaml.safe_load(f.read_text()) or {})
+                              .get("meta", {}).get("cve_id", "")))
+        except Exception:  # noqa: BLE001 — unreadable live file can't dedupe
+            pass
+    staged_cves = {f.name for f in staging_dir.glob("*.yaml")}
+    for m in matches:
+        cve = m["cveID"]
+        if cve in live_cves or f"{cve.lower()}.yaml" in staged_cves:
+            skipped += 1
+            continue
+        pack = build_hunt_pack(m)
+        path = staging_dir / f"{cve.lower()}.yaml"
         path.write_text(yaml.safe_dump(pack, sort_keys=False))
-        logger.info("staged hunt pack %s (%s)", path.name, cve_id)
-        return path
+        staged += 1
+    return {"staged": staged, "skipped": skipped, "matched": len(matches)}
 
-    # --- main flow ---
 
-    def run(self, days: int = 1, dry_run: bool = False) -> dict[str, Any]:
-        """INGEST -> MATCH -> GENERATE -> STAGE. Returns a report."""
-        report = {"ts": datetime.now(timezone.utc).isoformat(), "fetched": 0,
-                  "matched": 0, "staged": 0, "deduped": 0, "packs": []}
-        try:
-            kev = self.fetch_kev()
-            report["fetched"] = len(kev)
-            inventory = self.inventory_products()
-            matched = self.match_kev_to_inventory(kev, inventory)
-            report["matched"] = len(matched)
-            for entry in matched:
-                pack = self.generate_pack(entry)
-                if dry_run:
-                    report["packs"].append({"cve": entry.get("cveID"), "pack": pack["name"]})
-                    report["staged"] += 1
-                else:
-                    path = self.stage_pack(pack)
-                    if path:
-                        report["staged"] += 1
-                        report["packs"].append({"cve": entry.get("cveID"), "path": str(path)})
-                    else:
-                        report["deduped"] += 1
-        except IntelError as e:
-            report["error"] = str(e)
-            logger.error("intel run failed: %s", e)
-        report["summary"] = (f"fetched={report['fetched']} matched={report['matched']} "
-                             f"staged={report['staged']} deduped={report['deduped']}")
-        return report
+def run_intel(staging_dir: Path, ix: Any,
+              kev_fetcher=fetch_kev) -> dict[str, Any]:
+    """Full state machine: INGEST -> MATCH -> GENERATE -> STAGE."""
+    report: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(), "source": "cisa-kev"}
+    try:
+        kev = kev_fetcher()
+        report["catalog_version"] = kev.get("catalogVersion")
+        report["catalog_size"] = len(kev.get("vulnerabilities", []))
+        products = fleet_products(ix)
+        report["fleet_products"] = len(products)
+        matches = match_kev(kev, products)
+        report["matched"] = [m["cveID"] for m in matches]
+        report.update(stage_packs(matches, staging_dir))
+    except Exception as e:  # noqa: BLE001 — intel failure must not break cadence
+        report["error"] = str(e)
+    return report

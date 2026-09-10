@@ -11,26 +11,29 @@ human/supervisory's).
 
 ## Decision flow
 
-### 1. INGEST (`intel_tools.py:51-78`)
+### 1. INGEST (`intel_tools.py:34-45`)
 - `fetch_kev()` — CISA KEV catalog (one GET, no auth)
-- `fetch_nvd_since(days)` — NVD CVEs published in the last N days (keyless
-  date-range)
+- `fetch_nvd_since(days)` — P1 second pass (not yet implemented): NVD CVEs
+  published in the last N days (keyless date-range)
 
-### 2. MATCH — environment filter (`intel_tools.py:109-140`)
+### 2. MATCH — environment filter (`intel_tools.py:66-86`)
 For each KEV entry, match its `product` against the fleet's installed
-packages (`inventory_products()`, from
-`wazuh-states-inventory-packages-*` — NOT `wazuh-alerts-*`). WORD-BOUNDARY
-match: product matches a package exactly or as a whole token — "ray" matches
-"ray" but not "raycast" (prevents the substring flood of 342 packs). An
-entry survives only if it appears on ANY agent's package list; matched
-agents attach.
+packages (`fleet_products()`, from
+`wazuh-states-inventory-packages-*` — NOT `wazuh-alerts-*`).
+CASE-INSENSITIVE EXACT match on the lowercased product name (the inventory
+records package names; vendor hierarchies don't exist there, and a
+vendor-string mismatch suppresses more true matches than a product-name
+collision adds false ones). An entry survives only if its product appears
+on ANY agent's package list; matched agents attach. NVD enrichment
+(`fetch_nvd_since`) is a P1 second pass — KEV alone is already
+exploited-in-the-wild signal.
 
-### 3. GENERATE (`intel_tools.py:144-173`)
+### 3. GENERATE (`intel_tools.py:92-124`)
 Builds a valid hunt pack (YAML, `analyze: generic`) targeting the inventory
 indices, with a `meta` block: `{cve_id, source, matched_agents, cvss,
 date_added}` — honest provenance.
 
-### 4. STAGE — dedupe gate (`intel_tools.py:177-206`)
+### 4. STAGE — dedupe gate (`intel_tools.py:126-151`)
 Writes to `agents/hunts/staging/` UNLESS a pack with the same `cve_id`
 already exists (in staging OR the live library) → deduped, not staged.
 
