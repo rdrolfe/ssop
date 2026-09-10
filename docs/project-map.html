@@ -76,6 +76,8 @@
     <div class="item"><div class="t">Drill churn fixed <span class="tag commit">b561768</span></div><div class="d">Escalate-tuned rules settle: router suppresses fingerprint matches; approve no longer re-writes the tuning ledger. Queue 0, verified over sweeps</div></div>
     <div class="item"><div class="t">Infra-case dedupe <span class="tag commit">70f824d · a75dd9a</span></div><div class="d">dispatch_infra ignored its own dedupe lookup — minted 37 dup 40704 cases/day. Now attaches to ANY open case (open_only, no time bound); 36 dups closed; first/closed/other-rule still mint</div></div>
     <div class="item"><div class="t">Alert provenance <span class="tag commit">ad0dcef</span></div><div class="d">occurred_at gap root-caused: router read hit @timestamp for cursor but never stamped it down; infra read wrong key, security read dead v["ts"]. One intake stamp + contract-based mints. Hermetic-proven; live mint pending</div></div>
+    <div class="item"><div class="t">Entity-scoped tuning <span class="tag commit">76ffa62</span></div><div class="d">Deny scopes to the ENTITY (pair:src&gt;dst for network, host for host-only) — same rule from a different entity re-triages instead of suppressing. Fixes rule-global tuning (991053: 77 mints before one global deny)</div></div>
+    <div class="item"><div class="t">Deny path verified</div><div class="d">All 5 denied drill rules wrote auto_fp and zero re-minted — the drill loop's last unproven leg closes</div></div>
     <div class="item"><div class="t">40704 tuning — decision (b) <span class="tag verify">watching</span></div><div class="d">No tuning entry; dedupe absorbs it. Tune only if it keeps attaching noise for a few days</div></div>
   </div>
 
