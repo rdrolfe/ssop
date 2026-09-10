@@ -36,6 +36,7 @@ HERMETIC = [
     "agents/verify/test_close_reason.py",
     "agents/verify/test_compose_rationale.py",
     "agents/verify/test_fingerprint_tuning.py",
+    "agents/verify/test_infra_dedupe.py",
     "agents/verify/test_registry_reentrancy.py",
     "agents/verify/test_strong_tp_gate.py",
     "agents/verify/test_technique_mapping.py",
