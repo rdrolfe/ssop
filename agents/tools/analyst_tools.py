@@ -80,8 +80,9 @@ class AnalystClient:
             "description": description,
             "agent": agent.get("name"),
             "agent_id": agent.get("id"),
-            "alert_id": alert.get("id"),
-            "timestamp": alert.get("timestamp"),
+            "alert_id": alert.get("_id") or alert.get("id"),
+            # ts-field aware: Wazuh carries @timestamp, not "timestamp"
+            "timestamp": alert.get("timestamp") or alert.get("@timestamp"),
         }
 
     def verdict(self, alert: Dict[str, Any]) -> Dict[str, Any]:

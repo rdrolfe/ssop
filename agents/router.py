@@ -336,9 +336,23 @@ def _recommend_playbook(category: str, level: int, rule_id: str = "") -> str | N
     except Exception:  # noqa: BLE001 — enrichment must never break dispatch
         return None
 
+def _security_occurred_at(alert: dict[str, Any], ix: Any) -> str:
+    """occurred_at via the alert contract for security-path case minting.
+
+    The analyst verdict never carried a "ts" key, so the mint read a dead
+    key and every security case got occurred_at="". The contract's
+    _occurred_at is ts-field aware (Wazuh=@timestamp) and ISO-normalizes.
+    """
+    try:
+        from tools.alert_contract import _occurred_at, _flatten
+        return _occurred_at(_flatten(alert),
+                            ts_field=getattr(ix, "field_timestamp", "timestamp"))
+    except Exception:  # noqa: BLE001 — provenance must never break the mint
+        return ""
+
+
 def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
     """Infra-class alert: sense the affected host, escalate if needed.
-
     ALSO mints a spine case for the infra event (with the recommended
     playbook attached) so the fleet-sysadmin chain — infra alert →
     recommended playbook → responder execution → receipts — is auditable
@@ -383,13 +397,20 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
             logger.info("infra dispatch attached to open case %s "
                         "(repeated agent+rule)", case_id)
         else:
+            from tools.alert_contract import _occurred_at, _flatten
+            from tools.observables import extract_observables
+            flat = _flatten(alert)
             case = cases.open_case(
-                source={"alert_id": alert.get("id", ""), "agent": agent,
+                source={"alert_id": alert.get("_id", ""), "agent": agent,
                         "rule_desc": rule.get("description", ""), "rule_id": rid,
                         "category": category, "level": level,
                         "backend": getattr(ix, "backend", ""), "index": "",
-                        "doc_id": alert.get("id", ""), "occurred_at": alert.get(
-                            "timestamp", "")},
+                        "doc_id": alert.get("_id", ""),
+                        # occurred_at via the alert contract: ts-field aware
+                        # (Wazuh=@timestamp), multi-candidate, ISO-normalized —
+                        # NOT a raw alert.get("timestamp") that misses.
+                        "occurred_at": _occurred_at(flat, ts_field=getattr(
+                            ix, "field_timestamp", "timestamp"))},
                 title=f"[ROUTER] {category.upper()} alert lvl={level} on {agent}",
                 observables=obs,
                 assignee="responder",  # infra events action the responder role
@@ -468,7 +489,9 @@ def dispatch_security(alert: dict[str, Any]) -> dict[str, Any]:
                             # guesses the engine from rule_id heuristics.
                             "backend": getattr(ix, "backend", ""),
                             "index": "", "doc_id": v.get("alert_id", ""),
-                            "occurred_at": v.get("ts", "")},
+                            # occurred_at from the alert contract, not v["ts"]
+                            # (a key the verdict never carried — silent empty).
+                            "occurred_at": _security_occurred_at(alert, ix)},
                     title=f"[ROUTER] {v['category'].upper()} alert lvl={v['level']} on {v['agent']}",
                     observables=obs,
                     techniques=v.get("techniques") or [],
@@ -688,6 +711,15 @@ def run(limit: int = 50, dry_run: bool = False) -> dict[str, Any]:
             source = h.get("_source", {})
             alert_id = h.get("_id") or str(uuid.uuid4())
             ts = source.get(ts_field) or source.get("timestamp", "")
+            # Stamp intake provenance ONTO the alert (the hit-level _id and
+            # the ACTIVE transport's ts field). Downstream dispatch paths
+            # (infra/security) previously guessed field names — with the
+            # Wazuh transport (ts_field=@timestamp) both came out EMPTY:
+            # cases minted with occurred_at="" and alert_id="" (the
+            # occurred_at gap). One stamp here, every path inherits.
+            source["_id"] = alert_id
+            if ts and not source.get(ts_field):
+                source[ts_field] = ts
             if cursor.is_known(alert_id):
                 # Already handled on an earlier run — safe to advance past it.
                 pending_cursor_ts = ts or pending_cursor_ts
