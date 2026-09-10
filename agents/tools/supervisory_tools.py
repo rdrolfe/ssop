@@ -125,13 +125,29 @@ class SupervisoryClient:
                         if prior.get("exclude_hosts"):
                             prior_exclude = [str(h) for h in prior["exclude_hosts"]]
                             prior_tuned_by = str(prior.get("tuned_by", ""))
-                    TuningLedger().write(
-                        rule_id=rule_id, decision=tuning_decision,
-                        rationale=f"supervisory {decision}: {rationale}", source="human",
-                        fingerprint=fingerprint,
-                        exclude_hosts=prior_exclude,
-                        tuned_by=(prior_tuned_by if prior_exclude else ""),
-                    )
+                    # APPROVE is not a tuning decision: an approve means
+                    # "this case warranted escalation" — re-writing the
+                    # ledger on every identical alert caused the Sep 10
+                    # churn loop (router re-dispatched an escalate-tuned
+                    # rule every sweep because each approve refreshed the
+                    # entry). DENY/fp remain durable policy (auto_fp);
+                    # approve only writes when NO prior entry exists, so
+                    # the first approve records the escalation precedent
+                    # without refreshing it forever.
+                    if tuning_decision == "escalate" and prior is not None:
+                        logger.info(
+                            "tuning write skipped for %s: decision=approve "
+                            "on an already-tuned rule (prior decision=%s) — "
+                            "approve is not a tuning decision", rule_id,
+                            prior.get("decision"))
+                    else:
+                        TuningLedger().write(
+                            rule_id=rule_id, decision=tuning_decision,
+                            rationale=f"supervisory {decision}: {rationale}", source="human",
+                            fingerprint=fingerprint,
+                            exclude_hosts=prior_exclude,
+                            tuned_by=(prior_tuned_by if prior_exclude else ""),
+                        )
                 except Exception:  # noqa: BLE001 — tuning write must not break adjudication
                     logger.warning("tuning write skipped during adjudication of %s", ticket["ticket_id"])
         # Re-ship the adjudicated ticket to the indexer so the console

@@ -252,11 +252,17 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
         from tools.tuning_tools import TuningLedger, tuned_rule_suppresses
         from tools.ontology import categorize_alert
         tuning = TuningLedger().lookup(rid)
-        if tuning and tuning.get("decision") in ("auto_fp", "operational"):
+        if tuning and tuning.get("decision") in (
+                "auto_fp", "operational", "escalate"):
             # Same shared decision helper the analyst uses — single source of
             # truth, so both paths reach the identical outcome on the same
             # alert (thread #1 + #2). Fingerprint-aware when the ledger stores
             # one; legacy entries fall back to the config-gated strong-TP gate.
+            # decision=escalate (a supervisory APPROVE recorded as durable
+            # tuning): a fingerprint match means this exact alert was already
+            # escalated AND approved — re-minting it every sweep is the
+            # Sep 10 churn loop (6 identical approve tickets in one day).
+            # A material delta still overrides -> (security, analyst).
             _cat = categorize_alert(alert)
             suppress, _reason = tuned_rule_suppresses(tuning, alert, category=_cat)
             if suppress:
