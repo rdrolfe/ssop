@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>SSOP — The Ontology Project Map</h1>
-<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-08-31.</b></div>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-09-10.</b></div>
 
 <div class="legend">
   <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
@@ -39,86 +39,78 @@
 <div class="grid">
   <div class="col done">
     <h2><span class="dot"></span> Core spine (done)</h2>
-    <div class="item"><div class="t">Case spine (Qdrant + JSONL receipt)</div><div class="d">CaseStore, dual-write, recidivism attach</div></div>
+    <div class="item"><div class="t">Case spine (Qdrant + JSONL receipt)</div><div class="d">CaseStore, dual-write, recidivism attach, reconcile audit</div></div>
     <div class="item"><div class="t">Decision spine</div><div class="d">router → analyst/hunt/infra → supervisory</div></div>
-    <div class="item"><div class="t">Tuning ledger + feedback loop</div><div class="d">Qdrant rule→decision; human adjudication feeds analyst</div></div>
+    <div class="item"><div class="t">Tuning ledger + feedback loop</div><div class="d">Fingerprint signatures: identical suppresses, material delta overrides to human</div></div>
     <div class="item"><div class="t">Playbook library (8) + recommendation</div><div class="d">Data-grounded per-role matrix, most-specific match</div></div>
-    <div class="item"><div class="t">Verify matrix 30/30 GREEN</div><div class="d">Fixtures encode data-driven decisions; isolation fixed (tickets + cases)</div></div>
-    <div class="item"><div class="t">Entity-recidivism fixed (was dead) <span class="tag commit">5960caa</span></div><div class="d">attach-on-repeat was broken in 5 places (receipt scan, missing srcip key, live-shape, router re-mint, vacuous test) — all fixed; probes prove attach fires, novel still escalates</div></div>
-    <div class="item"><div class="t">Invariants hardened (non-vacuous) <span class="tag commit">e5080e9</span></div><div class="d">dedupe/case/reconcile were dead or vacuous — now exercise the real dispatch + write paths; 30/30 actually asserts the behavior</div></div>
+    <div class="item"><div class="t">Verify matrix + offline suite</div><div class="d">Fixtures × role drivers, all green; non-vacuous tests enforced in CI</div></div>
+    <div class="item"><div class="t">Alert contract</div><div class="d">normalize_alert: any backend → evidence contract; ts-field aware occurred_at</div></div>
   </div>
 
   <div class="col done">
     <h2><span class="dot"></span> Closed-loop roles (done + live)</h2>
-    <div class="item"><div class="t">Recognition layer <span class="tag commit">validated</span></div><div class="d">HTTP exfil / DNS tunneling / Windows process / Suricata — 0 FP across stages</div></div>
-    <div class="item"><div class="t">Investigation layer <span class="tag commit">e169aa0</span></div><div class="d">threat-pattern correlation + entity scoring + kill-chain hypothesis</div></div>
-    <div class="item"><div class="t">Supervisor (evidence-aware) <span class="tag commit">94a9b46</span></div><div class="d">adjudicate_with_investigation — approve/deny grounded in scored evidence</div></div>
-    <div class="item"><div class="t">Responder (approval gate) <span class="tag commit">add1dce</span></div><div class="d">obeys supervisor verdict — refuses denied cases</div></div>
-    <div class="item"><div class="t">Pane of glass <span class="tag commit">9179566</span></div><div class="d">Closed Loop console — severity, kill-chain, hypothesis, adjudication</div></div>
+    <div class="item"><div class="t">Recognition + investigation layers</div><div class="d">Threat-pattern correlation, entity scoring, kill-chain hypothesis</div></div>
+    <div class="item"><div class="t">Supervisor (evidence-aware)</div><div class="d">adjudicate_with_investigation — approve/deny grounded in scored evidence</div></div>
+    <div class="item"><div class="t">Responder = fleet-sysadmin <span class="tag commit">5983456</span></div><div class="d">tier0/1 SRE moves live-proven (3 worked examples in docs/roles/responder.md); tier2 dormant; .13 sanctioned</div></div>
+    <div class="item"><div class="t">Router adjudication authority</div><div class="d">authorizes infra cases (never tier2); dispatch_infra mints spine cases; advisory renders executions as Key Actions</div></div>
+    <div class="item"><div class="t">Pane of glass + human console</div><div class="d">Closed Loop console embedded in Wazuh dashboards; tickets/tuned-rules tabs</div></div>
   </div>
 
   <div class="col done">
-    <h2><span class="dot"></span> Two-backend doctrine (done)</h2>
-    <div class="item"><div class="t">SO transport flip + two-backend run</div><div class="d">Matrix 30/30 against SO (.76) — doctrine PROVEN</div></div>
-    <div class="item"><div class="t">Ontology parity test</div><div class="d">Same C2 event → identical execution on Wazuh + SO shapes</div></div>
-    <div class="item"><div class="t">Result normalization</div><div class="d">signal.rule.* → rule.* at the transport layer</div></div>
-    <div class="item"><div class="t">Two-backend comparison (real data) <span class="tag commit">8f6cbd6</span></div><div class="d">20/20 escalate on both — transport flips, spine doesn't</div></div>
-    <div class="item"><div class="t">FULL-LOOP capstone <span class="tag commit">c9309d4</span></div><div class="d">Whole spine identical on both backends — recognize → investigate → supervise → respond</div></div>
-    <div class="item"><div class="t">Apples-to-apples <span class="tag commit">b2ae9cb</span></div><div class="d">dns + suricata ingested into SO → identical evidence counts (3 vs 3), explicit diff</div></div>
-    <div class="item"><div class="t">Live SO cadence (real alerts) <span class="tag commit">6fbb2ec</span></div><div class="d">Live sweeps on SO surfaced a transport gap (config pointed at Zeek conns + rule defs, not alert events) — fixed index + ECS→ontology normalization; analyst now classifies real SO alerts, escalated a legit lvl-12 op alert</div></div>
+    <h2><span class="dot"></span> Sovereignty &amp; egress (done)</h2>
+    <div class="item"><div class="t">Sovereignty doctrine</div><div class="d">Sovereign in AI inference, not airgapped. Egress registry (transport.yaml), lookup-vs-submit classes (submit=disclosure, default off), check_egress gate</div></div>
+    <div class="item"><div class="t">VT + OTX enrichment <span class="tag commit">03f14e3 · 4172d96</span></div><div class="d">hash/domain/url providers, throttled, cache-first — keys NOT registered for lab (public-deployment options open)</div></div>
+    <div class="item"><div class="t">GreyNoise — next enrichment</div><div class="d">Keyless IP lookup = first definitive enrichment; not yet wired</div></div>
+    <div class="item"><div class="t">Capabilities in tools/, authority in roles</div><div class="d">The standing rule that keeps enrichment and response auditable</div></div>
   </div>
 
   <div class="col done">
-    <h2><span class="dot"></span> Ground-truth validation (done)</h2>
-    <div class="item"><div class="t">Data presence — 11/11 anchors</div><div class="d">All published BOTSv1 answers present (APT + ransomware scenarios)</div></div>
-    <div class="item"><div class="t">Full-spine APT scenario <span class="tag commit">e7ec306</span></div><div class="d">7/7 — infected workstation 192.168.250.100 through the whole loop</div></div>
-    <div class="item"><div class="t">Full-spine ransomware scenario <span class="tag commit">618f322</span></div><div class="d">7/7 — Cerber drops (121214.tmp, 3791.exe) recognized + escalated</div></div>
-    <div class="item"><div class="t">Sysmon data ingested <span class="tag commit">618f322</span></div><div class="d">830K docs → bots-sysmon-op-poc (process-exec with hashes)</div></div>
-    <div class="item"><div class="t">Wired into live analyst <span class="tag commit">c8e61c1</span></div><div class="d">sysmon index in the sweep — real 121214.tmp → escalate, level 8, threat</div></div>
-    <div class="item"><div class="t">Hunt role vs ground truth <span class="tag commit">d2ac0f7</span></div><div class="d">3 BOTS hunts (http-exfil, dns-tunnel, cerber) converge + escalate on published answers</div></div>
+    <h2><span class="dot"></span> Ontology (phase 1 done)</h2>
+    <div class="item"><div class="t">Formal OWL export <span class="tag commit">bbacfe0</span></div><div class="d">docs/ontology/ssop.ttl GENERATED from code by ontology_export.py; --check drift gate; code↔OWL mirror test non-vacuous in suite</div></div>
+    <div class="item"><div class="t">Authority axioms declared</div><div class="d">8 classes, 8 roles, 6 categories, 3 tiers; tier2 requires Supervisory; router never authorizes tier2; single-categorizer constraint</div></div>
+    <div class="item"><div class="t">AWS accelerator = vocabulary only <span class="tag parked">reference</span></div><div class="d">Vocabulary + pattern reference; NOT infra (AWS-native conflicts with sovereignty)</div></div>
   </div>
 
-  <div class="col done">
-    <h2><span class="dot"></span> Reliability &amp; ops (done)</h2>
-    <div class="item"><div class="t">Supervisor queue-drain fix <span class="tag commit">2719a68</span></div><div class="d">dedupe closes repeats, close-node no-op, reconcile repair — queue 174→0, consistent=True</div></div>
-    <div class="item"><div class="t">Qdrant hardening <span class="tag commit">acf6f90</span></div><div class="d">timeout + transient-retry + self-healing reconcile — a blip can't strand a case again</div></div>
-    <div class="item"><div class="t">Boot-evidence watchdog <span class="tag commit">888cedb</span></div><div class="d">graceful-shutdown marker + boot check — an unclean stop (crash/OOM) now leaves a trail instead of a mystery</div></div>
+  <div class="col doing">
+    <h2><span class="dot"></span> State machine hardening (this week)</h2>
+    <div class="item"><div class="t">Drill churn fixed <span class="tag commit">b561768</span></div><div class="d">Escalate-tuned rules settle: router suppresses fingerprint matches; approve no longer re-writes the tuning ledger. Queue 0, verified over sweeps</div></div>
+    <div class="item"><div class="t">Infra-case dedupe <span class="tag commit">70f824d · a75dd9a</span></div><div class="d">dispatch_infra ignored its own dedupe lookup — minted 37 dup 40704 cases/day. Now attaches to ANY open case (open_only, no time bound); 36 dups closed; first/closed/other-rule still mint</div></div>
+    <div class="item"><div class="t">Alert provenance <span class="tag commit">ad0dcef</span></div><div class="d">occurred_at gap root-caused: router read hit @timestamp for cursor but never stamped it down; infra read wrong key, security read dead v["ts"]. One intake stamp + contract-based mints. Hermetic-proven; live mint pending</div></div>
+    <div class="item"><div class="t">40704 tuning — decision (b) <span class="tag verify">watching</span></div><div class="d">No tuning entry; dedupe absorbs it. Tune only if it keeps attaching noise for a few days</div></div>
   </div>
 
-  <div class="col done">
-    <h2><span class="dot"></span> Security &amp; ship (done)</h2>
-    <div class="item"><div class="t">Security scan + fixes <span class="tag commit">e2a77e8</span></div><div class="d">bandit 0 HIGH — configurable host keys, /tmp perms, log-not-pass</div></div>
-    <div class="item"><div class="t">Code cleanup <span class="tag commit">2c3d521</span></div><div class="d">ruff 543 → 40 (deliberate blind-except only)</div></div>
-    <div class="item"><div class="t">Secret hygiene <span class="tag commit">db4546b</span></div><div class="d">no hardcoded creds — env-driven, .env.gitignored</div></div>
-    <div class="item"><div class="t">Public GitHub repo <span class="tag commit">shipped</span></div><div class="d">rdrolfe/ssop — MIT, 13-step deployment guide, single clean commit</div></div>
-  </div>
-
-  <div class="col done">
-    <h2><span class="dot"></span> Human surface (done + live)</h2>
-    <div class="item"><div class="t">Supervisory console upgrade <span class="tag commit">da8595a</span></div><div class="d">Tabbed SSOP Human Console — Tickets (case join) + Tuned Rules + Closed Loop (severity, kill-chain, evidence, rationale)</div></div>
-    <div class="item"><div class="t">/cases endpoint <span class="tag commit">da8595a</span></div><div class="d">Closed-loop view — investigation + adjudication per case, decisions now surface in the timeline</div></div>
-    <div class="item"><div class="t">Wazuh dashboard embedding <span class="tag commit">6a04f2c</span></div><div class="d">SSOP Human Console as a markdown-link panel on ssop-pane + SOC Workbench — one click from the primary pane</div></div>
-  </div>
-
-    <div class="col done">
-    <h2><span class="dot"></span> Operationalize the lab (done + live)</h2>
-    <div class="item"><div class="t">Attack-plane coverage <span class="tag commit">0f94cdf</span></div><div class="d">.13 Suricata routed in-path (/31 via .13) + SPAN mirror (tc mirred) — both SIEMs see unicast attack traffic</div></div>
-    <div class="item"><div class="t">Live targets + ART <span class="tag commit">59b4aa9</span></div><div class="d">ubuntu-target (.77), win-target (.78), c2-sink (.79) — Atomic Red Team, Wazuh agents, dual-plane</div></div>
-    <div class="item"><div class="t">Live full-chain on new data <span class="tag commit">b58660b</span></div><div class="d">scan → STREAM + HTTP + scheduled-task through both SIEMs; spine recognizes/escalates/denies on real signals</div></div>
-    <div class="item"><div class="t">Tuning override (evidence-gated) <span class="tag commit">dd06501</span></div><div class="d">tuned-FP rule + strong TP evidence → escalate with tuning_override; weak evidence stays noted. Proven live.</div></div>
-    <div class="item"><div class="t">Sweep cadence 5m / limit 100 <span class="tag commit">b219f0b</span></div><div class="d">24× faster detection at ~29min CPU/day; coverage knob documented as adjustable nozzle</div></div>
-    <div class="item"><div class="t">Env bootstrap fix <span class="tag commit">e52790b</span></div><div class="d">config.py owns load_dotenv — kills intermittent indexer 401; matrix 30/30</div></div>
-    <div class="item"><div class="t">Live approve path <span class="tag commit">22e30ae</span></div><div class="d">Investigator correlates live alert stream by attack shape → recognize/escalate → 3-stage chain → supervisor APPROVES → responder unblocked (dry-run)</div></div>
-    <div class="item"><div class="t">Live hunt sweep (proactive) <span class="tag commit">6923f5f</span></div><div class="d">Hunt role wired into cadence (15m timer) — 5 live hunts over 1-day window, hunt-recidivism attach + once-per-case escalation; found real auth/apparmor signals</div></div>
-    <div class="item"><div class="t">Hunt flood fixed <span class="tag commit">6fe9834</span></div><div class="d">chronic-FP hunt re-ticketed every 15m (64 tickets) — deny never wrote tuning (no rule_id); now keys hunt:&lt;id&gt; + tuning-respect + 24h re-arm cooldown. Queue drained to 3 legit analyst tickets</div></div>
+  <div class="col doing">
+    <h2><span class="dot"></span> Drill loop (live, phased)</h2>
+    <div class="item"><div class="t">Hardening phase 1 <span class="tag commit">passed</span></div><div class="d">First scheduled fire 2026-09-10 06:00 OK — atomic injector 99&lt;TID&gt; every 30m</div></div>
+    <div class="item"><div class="t">Co-close loop</div><div class="d">User = harness overlord, not meatsuit analyst; co-closing tickets as they build</div></div>
+    <div class="item"><div class="t">Deny path — last unproven leg</div><div class="d">Trace one deny → verify fingerprint tuning suppresses identical future mints (if not, bug)</div></div>
   </div>
 
   <div class="col todo">
     <h2><span class="dot"></span> Coming up</h2>
-    <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Revisit after core work — local-model path</div></div>
+    <div class="item"><div class="t">P1: Intel role + hunt packs</div><div class="d">CISA KEV + NVD (both keyless) → syscollector inventory match → auto-generated hunt YAML. Fully specified in docs/wayfinder/ — ready to build</div></div>
+    <div class="item"><div class="t">P1: SOAR responder actions</div><div class="d">Playbook schema + action registry designed (ADR-004); whitelisted actions + verify fixtures speced in wayfinder tickets</div></div>
+    <div class="item"><div class="t">Ontology phase 2: reasoner gate</div><div class="d">owlready2/HermiT proves the authority invariants. Correctly deferred until decision model settles — before MISP</div></div>
+    <div class="item"><div class="t">MISP integration</div><div class="d">Hunt feed-matching consumes the formal model; blocked on phase 2</div></div>
+    <div class="item"><div class="t">Reporting end-goal</div><div class="d">CISA advisory from spine evidence, mirrored SO+Wazuh, human-actionable writeups; bake-off gate = engine-parity-in-IRIS 12/12</div></div>
+    <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Local-model path — revisit after core work</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Two-backend doctrine (done)</h2>
+    <div class="item"><div class="t">SO transport + ontology parity</div><div class="d">Same C2 event → identical execution on Wazuh + SO; spine doesn't flip</div></div>
+    <div class="item"><div class="t">Ground truth: BOTSv1</div><div class="d">APT + ransomware scenarios 7/7 through the whole spine; hunts converge on published answers</div></div>
+    <div class="item"><div class="t">Live lab operationalized</div><div class="d">.13 attack plane in-path + SPAN; ART targets .77/.78/.79; live full-chain on both SIEMs</div></div>
+  </div>
+
+  <div class="col done">
+    <h2><span class="dot"></span> Ops &amp; ship (done)</h2>
+    <div class="item"><div class="t">Reliability</div><div class="d">Queue-drain fix, Qdrant timeout+retry+self-heal reconcile, boot-evidence watchdog</div></div>
+    <div class="item"><div class="t">Security &amp; hygiene</div><div class="d">bandit 0 HIGH, ruff clean, secret hygiene (env-driven), TLS verification with SSOP CA</div></div>
+    <div class="item"><div class="t">Public repo <span class="tag commit">shipped</span></div><div class="d">github.com/rdrolfe/ssop — MIT, deployment guide</div></div>
   </div>
 </div>
 
-<div class="sub" style="margin-top:20px">Repo: <span style="font-family:monospace">github.com/rdrolfe/ssop</span> · Guide: <span style="font-family:monospace">docs/DEPLOYMENT.md</span> · Ground truth: <span style="font-family:monospace">docs/wayfinder/tickets/botsv1-ground-truth.md</span></div>
+<div class="sub" style="margin-top:20px">Repo: <span style="font-family:monospace">github.com/rdrolfe/ssop</span> · Guide: <span style="font-family:monospace">docs/DEPLOYMENT.md</span> · Decisions: <span style="font-family:monospace">docs/wayfinder/</span> · Roles: <span style="font-family:monospace">docs/roles/</span></div>
 </body>
 </html>
