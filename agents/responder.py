@@ -570,6 +570,25 @@ def run(alert: dict[str, Any], case_id: str = "", dry_run: bool = False,
                 if recommended_playbook is None:
                     recommended_playbook = (ev.get("detail") or {}).get("recommended_playbook")
                 break
+        # 2b. INFRA EVENTS: the ROUTER is the approving authority (the case
+        # was minted by dispatch_infra with assignee=responder — there is no
+        # supervisory pass for fleet-sysadmin events, by operator policy
+        # 2026-09-09). A router adjudication event with decision=approve
+        # authorizes tier0/tier1 playbooks. Tier2 STILL requires the
+        # supervisory run_id approval path — the router never authorizes
+        # quarantine/block/revert-class actions.
+        if supervisor_decision is None:
+            assignee = (case.get("assignee") or "").lower()
+            for ev in reversed(case.get("timeline", [])):
+                if (ev.get("role") == "router" and ev.get("type") == "adjudication"
+                        and (ev.get("detail") or {}).get("decision") == "approve"):
+                    supervisor_decision = "approve"
+                    if recommended_playbook is None:
+                        recommended_playbook = (ev.get("detail") or {}).get(
+                            "recommended_playbook")
+                    logger.info("infra case %s: router adjudication authorizes "
+                                "execution (assignee=%s)", case_id, assignee)
+                    break
         # 3. Analyst verdict category (live alerts carry no `category`;
         #    the analyst's classification is what drove the escalation
         #    and the playbook recommendation — selection must see it).

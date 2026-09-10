@@ -57,3 +57,65 @@ entities), approval flow (tier0/1/2, expiry), execution stop-on-failure,
 adversarial probes. Proven live: drill chain recommend → approve →
 block-src-ip; NAC experiment rolled back per doctrine (recommend/ticket,
 not enforcement).
+
+---
+
+## Worked examples — proven live 2026-09-09 (fleet-sysadmin role)
+
+Operator framing (2026-09-09): the responder is a **sysadmin role with
+responder capabilities** — (a) the agent managing OUR fleet, (b) a library
+of example chains for operators. The tier0/tier1 playbooks are SRE moves
+(service checks, restarts, disk clean); the tier2 containment playbooks
+stay dormant until a real containment target exists.
+
+Sanctioned target: `192.168.1.13` (network host) — REMOVED from
+`settings.protected_entities` for this role; every other fleet host
+remains fail-closed protected. Demo service: `ssop-demo-svc` on .13
+(harmless sleep, systemd unit written via the whitelisted sudo path).
+
+### Example 1 — tier1 read-only: service-impact-check
+
+```
+alert (synthetic, rule 40704 systemd/infra, level 4, agent=.13)
+  → responder.run(recommended="service-impact-check")
+    → select: matches trigger (category infra, level>=4)
+    → guard: target .13 not protected (sanctioned), param resolves
+    → tier1: execute [verify_service_state] → "suricata is active"
+```
+Result: `blocked=false, tier=tier1, results[0].ok=true`.
+
+### Example 2 — tier1 execute: restart-flapping-service
+
+```
+alert (rule 541 systemd/operational, level 5, agent=.13, service=ssop-demo-svc)
+  → responder.run(recommended="restart-flapping-service")
+    → select → guard → tier1 execute:
+       service_restart   ok (whitelisted systemctl restart)
+       verify_service_state ok ("active (expected active)")
+```
+
+### Example 3 — FULL LOOP: router → case → responder → spine receipt
+
+1. Synthetic alert doc `resp-flap-proof` (rule 541) injected into the live
+   Wazuh index (`deploy/lab/prove_responder_full.py`).
+2. Router sweep classifies via RULE_MAP `541 → (infra, infra)`;
+   **`dispatch_infra` mints a spine case** (`assignee=responder`) with the
+   recommended playbook attached — infra events are auditable like security
+   cases.
+3. Router records the adjudication event (decision=approve) — for infra
+   events the ROUTER is the approving authority (operator policy: no
+   supervisory pass on fleet-sysadmin events). Tier2 NEVER gets router
+   authorization — only the supervisory run_id path.
+4. `responder.run(case_id=...)` reads the router approval from the spine
+   (approval-gate extension 2b), executes restart + verify, appends the
+   `responder_execution` event.
+5. Verified: spine timeline carries `responder/execution` with all steps ok.
+
+### Rules for extending
+
+- New infra trigger → add the rule id to RULE_MAP (`infra`, `infra`) +
+  update this doc (the docs gate enforces citation drift).
+- New playbook → `agents/playbooks/*.yaml`; tier0/1 auto-fire on
+  trigger+recommendation; tier2 requires supervisory run_id approval.
+- Re-protecting .13 → re-add `192.168.1.13` to `protected_entities` in
+  `agents/config.py` — the guard then blocks everything again (fail-closed).

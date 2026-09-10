@@ -47,7 +47,12 @@ In priority order:
    - `suricata` / `ids` → security/analyst
    - `low_diskspace` → infra/infra
    - `syscheck` / `fim` → security/analyst
-5. **Ontology fallback**: an unmatched rule/group is
+5. **Wazuh RULE_MAP infra entries**: `531/501/502` (disk), `5402/5403`
+   (sudo), `541/542/543` (systemd service health) → infra/infra.
+   `dispatch_infra` senses + heals via the self-heal path AND mints a
+   spine case (assignee=responder, recommended playbook attached) so
+   fleet-sysadmin actions are auditable end-to-end.
+6. **Ontology fallback**: an unmatched rule/group is
    categorized via `tools.ontology.categorize_alert` (the single source of
    truth) — `threat`/`authentication`/`integrity` → security/analyst,
    `compliance`/`operational` → no dispatch. The router must never silently

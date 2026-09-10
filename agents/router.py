@@ -73,6 +73,12 @@ RULE_MAP: dict[str, tuple[str, str | None]] = {
     "531":   ("infra", "infra"),
     "502":   ("infra", "infra"),
     "501":   ("infra", "infra"),
+    # systemd service health (crash-loop / flapping / unit failures) —
+    # fleet-sysadmin territory: infra-manager senses, responder executes
+    # tier0/1 playbooks (restart-flapping-service, service-impact-check).
+    "541":   ("infra", "infra"),
+    "542":   ("infra", "infra"),
+    "543":   ("infra", "infra"),
     # syscheck / FIM
     "550":   ("security", "analyst"),
     "553":   ("security", "analyst"),
@@ -325,7 +331,14 @@ def _recommend_playbook(category: str, level: int, rule_id: str = "") -> str | N
         return None
 
 def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
-    """Infra-class alert: sense the affected host, escalate if needed."""
+    """Infra-class alert: sense the affected host, escalate if needed.
+
+    ALSO mints a spine case for the infra event (with the recommended
+    playbook attached) so the fleet-sysadmin chain — infra alert →
+    recommended playbook → responder execution → receipts — is auditable
+    end-to-end like every security case. Without the case, the responder
+    has no spine record to attach execution receipts to.
+    """
     agent = alert.get("agent", {}).get("name", "unknown")
     rule = alert.get("rule") or {}  # tolerate rule=None (e.g. SO zeek.notice)
     rid = str(rule.get("id", ""))
@@ -336,7 +349,39 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
         "rule_id": rule.get("id"), "ts": datetime.now(timezone.utc).isoformat(),
     }
     # Enrichment: attach the recommended playbook for infra-class alerts
-    result["recommended_playbook"] = _recommend_playbook(category, level, rid)
+    recommended = _recommend_playbook(category, level, rid)
+    result["recommended_playbook"] = recommended
+    # Mint the spine case (dedupe: one open infra case per agent+rule_id)
+    try:
+        cases = get_cases()
+        ix = get_indexer()
+        from tools.observables import extract_observables
+        obs = extract_observables(alert)
+        chain = cases.recent_host_cases(agent, rule_id=rid) if hasattr(
+            cases, "recent_host_cases") else []
+        case = cases.open_case(
+            source={"alert_id": alert.get("id", ""), "agent": agent,
+                    "rule_desc": rule.get("description", ""), "rule_id": rid,
+                    "category": category, "level": level,
+                    "backend": getattr(ix, "backend", ""), "index": "",
+                    "doc_id": alert.get("id", ""), "occurred_at": alert.get(
+                        "timestamp", "")},
+            title=f"[ROUTER] {category.upper()} alert lvl={level} on {agent}",
+            observables=obs,
+            assignee="responder",  # infra events action the responder role
+        )
+        case_id = case["case_id"]
+        result["case_id"] = case_id
+        cases.append_event(case_id, "router", "dispatch", {
+            "verdict": "escalate", "recommended_playbook": recommended,
+            "level": level, "category": category, "agent": agent,
+            "rationale": f"infra event on {agent}: "
+                         f"{rule.get('description', '')[:80]}",
+        })
+        logger.info("infra case minted: %s (recommended %s)", case_id, recommended)
+    except Exception:
+        logger.exception("infra case mint failed for %s", agent)
+        result["error"] = result.get("error") or "case mint failed"
     try:
         sh = get_selfheal()
         try:
