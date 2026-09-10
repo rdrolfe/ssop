@@ -5,9 +5,13 @@ proactive intelligence: reads advisories (CISA KEV + NVD), matches them
 against fleet inventory (Wazuh syscollector states indices), and generates
 hunt packs into a staging area for human/supervisory review.
 
-Flow: **INGEST → MATCH → GENERATE → STAGE → (PROMOTE after review)**.
-Separation of duties: intel generates, it does NOT promote (review is
-human/supervisory's).
+Flow: **INGEST → MATCH → GENERATE → STAGE → ESCALATE → (PROMOTE after
+review)**. The inventory match IS evidence (syscollector observes the
+package on the agent; KEV says it's exploited in the wild — the join is
+two grounded fleet facts), so each match mints a spine case per
+(CVE, agent), open-only deduped, assigned to supervisory. The staged
+hunt pack is the proposed DETECTION and stays a file for review — two
+different artifacts, two different authorities.
 
 ## Decision flow
 

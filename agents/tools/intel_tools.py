@@ -150,9 +150,87 @@ def stage_packs(matches: list[dict[str, Any]], staging_dir: Path) -> dict[str, i
     return {"staged": staged, "skipped": skipped, "matched": len(matches)}
 
 
+def mint_match_cases(matches: list[dict[str, Any]], cases: Any) -> dict[str, int]:
+    """The inventory match IS evidence — mint spine cases for it.
+
+    KEV says "exploited in the wild"; syscollector says "this package is
+    installed on THIS agent, observed at scan time". The join is two
+    grounded observations about the fleet, not a proposal: it belongs on
+    the spine as a threat case with full provenance (CVE, package record,
+    matched agents), assigned to supervisory for triage. The staged hunt
+    pack remains a separate artifact — that's the proposed DETECTION, and
+    reviewing a proposed detection stays human.
+
+    Dedupe mirrors dispatch_infra's open-only rule: one OPEN case per
+    (CVE, agent). A re-run attaches nothing new when the case is open; a
+    closed case re-mints if the product is still present (re-surfacing).
+    """
+    minted = 0
+    for m in matches:
+        cve = m["cveID"]
+        for agent in m.get("_matched_agents", []):
+            existing = _open_intel_case(cases, cve, agent)
+            if existing:
+                cases.append_event(existing, "intel", "dispatch", {
+                    "verdict": "match", "cve_id": cve,
+                    "product": m.get("product", ""),
+                    "rationale": f"KEV re-match: {cve} product still "
+                                 f"present on {agent}",
+                })
+                continue
+            product = m.get("product") or ""
+            vendor = m.get("vendorProject") or ""
+            name = m.get("vulnerabilityName") or f"{vendor} {product}"
+            cases.open_case(
+                source={
+                    "alert_id": "",  # no SIEM alert — intel-generated case
+                    "agent": agent,
+                    "rule_desc": f"KEV: {name}",
+                    "rule_id": cve,   # CVE is the natural intel rule key
+                    "category": "threat",
+                    "level": 8,  # exploited-in-the-wild on our host
+                    "backend": "intel",
+                    "index": "cisa-kev",
+                    "doc_id": cve,
+                    "occurred_at": m.get("dateAdded") or "",
+                    "intel": {
+                        "cve_id": cve, "vendor": vendor, "product": product,
+                        "date_added": m.get("dateAdded", ""),
+                        "due_date": m.get("dueDate", ""),
+                        "source_url": KEV_URL,
+                    },
+                },
+                title=f"[INTEL] {cve} ({product}) present on {agent}",
+                observables=[
+                    {"type": "cve", "value": cve},
+                    {"type": "product", "value": product},
+                ],
+                assignee="supervisory",
+            )
+            minted += 1
+    return {"minted": minted}
+
+
+def _open_intel_case(cases: Any, cve: str, agent: str) -> str | None:
+    """Open case for this (CVE, agent) pair, if any — the intel dedupe key."""
+    try:
+        for c in cases.recent_host_cases(agent, window_s=None, open_only=True):
+            src = c.get("source") or {}
+            if src.get("backend") == "intel" and src.get("doc_id") == cve:
+                return c["case_id"]
+    except Exception:  # noqa: BLE001 — dedupe must never break intel
+        return None
+    return None
+
+
 def run_intel(staging_dir: Path, ix: Any,
-              kev_fetcher=fetch_kev) -> dict[str, Any]:
-    """Full state machine: INGEST -> MATCH -> GENERATE -> STAGE."""
+              kev_fetcher=fetch_kev, cases: Any | None = None) -> dict[str, Any]:
+    """Full state machine: INGEST -> MATCH -> GENERATE -> STAGE -> ESCALATE.
+
+    `cases` (a CaseStore) is optional for tests; when absent the registry
+    provides it. Case minting is fail-open: a spine outage must not lose
+    the staging report (it's retried next run; staging dedupe holds).
+    """
     report: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(), "source": "cisa-kev"}
     try:
@@ -164,6 +242,13 @@ def run_intel(staging_dir: Path, ix: Any,
         matches = match_kev(kev, products)
         report["matched"] = [m["cveID"] for m in matches]
         report.update(stage_packs(matches, staging_dir))
+        if cases is None:
+            from tools.registry import get_cases as _get_cases
+            cases = _get_cases()
+        try:
+            report["cases"] = mint_match_cases(matches, cases)
+        except Exception as e:  # noqa: BLE001 — spine down must not lose staging
+            report["case_error"] = str(e)
     except Exception as e:  # noqa: BLE001 — intel failure must not break cadence
         report["error"] = str(e)
     return report
