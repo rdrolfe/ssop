@@ -147,7 +147,7 @@ def stage_packs(matches: list[dict[str, Any]], staging_dir: Path) -> dict[str, i
         path = staging_dir / f"{cve.lower()}.yaml"
         path.write_text(yaml.safe_dump(pack, sort_keys=False))
         staged += 1
-    return {"staged": staged, "skipped": skipped, "matched": len(matches)}
+    return {"staged": staged, "skipped": skipped, "matched_count": len(matches)}
 
 
 def mint_match_cases(matches: list[dict[str, Any]], cases: Any) -> dict[str, int]:
@@ -223,6 +223,57 @@ def _open_intel_case(cases: Any, cve: str, agent: str) -> str | None:
     return None
 
 
+def _nvd_enrich(cases: Any, cves: list[str]) -> int:
+    """Best-effort CVSS/description enrichment on open intel cases.
+
+    Rate-limit courtesy: NVD keyless is ~5 req/30s — the daily match set is
+    a handful, so a flat 2.5s sleep between requests is safely under it.
+    Cases are found via search_memory (the Qdrant payload embeds the whole
+    case as `content`, no separate source field). Point ids are uuid5 of
+    the case_id (not the case_id itself), so resolve back via get_case on
+    a content probe, not the id.
+    """
+    import time
+    import uuid as _uuid
+    from tools.nvd_tools import fetch_nvd
+    updated = 0
+    for cve in cves:
+        info = fetch_nvd(cve)
+        if not info:
+            continue
+        mem = cases._get_memory()
+        results = mem.search_memory("cases", cve, limit=20)
+        seen: set[str] = set()
+        for r in results:
+            pid = str(r.get("id") or "")
+            # point id is uuid5(NAMESPACE_URL, case_id) — probe by content
+            # prefix to recover the case_id
+            content = r.get("content", "")
+            if not content.startswith("case-"):
+                continue
+            cid = content.split(" ", 1)[0]
+            if cid in seen or pid != str(_uuid.uuid5(_uuid.NAMESPACE_URL, cid)):
+                continue  # event point or unrelated hit
+            seen.add(cid)
+            case = cases.get_case(cid)
+            if not case or case.get("status") == "closed":
+                continue
+            if (case.get("source") or {}).get("doc_id") != cve:
+                continue
+            intel = (case.get("source") or {}).get("intel") or {}
+            if intel.get("cvss") is not None:
+                continue  # already enriched
+            intel.update(info)
+
+            def _mut(c, _intel=intel):
+                c["source"]["intel"] = _intel
+
+            cases._mutate_case(cid, _mut, event="nvd_enrich", role="intel")
+            updated += 1
+        time.sleep(2.5)
+    return updated
+
+
 def run_intel(staging_dir: Path, ix: Any,
               kev_fetcher=fetch_kev, cases: Any | None = None) -> dict[str, Any]:
     """Full state machine: INGEST -> MATCH -> GENERATE -> STAGE -> ESCALATE.
@@ -249,6 +300,11 @@ def run_intel(staging_dir: Path, ix: Any,
             report["cases"] = mint_match_cases(matches, cases)
         except Exception as e:  # noqa: BLE001 — spine down must not lose staging
             report["case_error"] = str(e)
+        # NVD enrichment (P1 second pass): CVSS/description on matched CVEs
+        try:
+            report["nvd_enriched"] = _nvd_enrich(cases, report.get("matched") or [])
+        except Exception as e:  # noqa: BLE001 — enrichment never breaks intel
+            report["nvd_error"] = str(e)
     except Exception as e:  # noqa: BLE001 — intel failure must not break cadence
         report["error"] = str(e)
     return report
