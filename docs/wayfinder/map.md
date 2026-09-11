@@ -54,6 +54,12 @@ spec (or an ADR) a builder can implement without re-deciding.
   20-fixture spec in `agents/verify/fixtures_soar.yaml` (separate file) —
   trigger matching (5), guard (5), approval flow (6), execution (2),
   adversarial probes (2). Validated; drives a responder driver when built.
+- [Stateful analyst decision logic — tuning ledger + evidence chain](tickets/stateful-decision-logic.md):
+  BUILT + LIVE (verified 2026-09-11, d87cd27/00a47f8; matrix 45/45). Tuning
+  ledger (Qdrant `tuning`, human-final) consulted before heuristics with
+  fingerprint-aware suppression; entity recidivism (pair + host) attaches
+  instead of minting; drill-replay gate in router+analyst; 5 W's + How
+  evidence chain on case mint.
 
 ## Destination reached
 
@@ -69,10 +75,6 @@ All P1 tickets closed. The way is clear — hand off to build tickets:
 
 ## Not yet specified
 
-- [Stateful analyst decision logic — tuning ledger + evidence chain](tickets/stateful-decision-logic.md):
-  novelty → entity-recidivism → tuning → novel-gate flow; Qdrant `tuning`
-  collection (human-written source of truth, analyst seeds); 5 W's + How
-  evidence chain on escalation. SPEC'd, not yet built.
 - Intel role cadence: scheduled (like analyst) vs event-driven (feed arrival
   → hunt pack) — a build-time decision, not blocking the spec.
 - How playbook runs surface in the pane of glass (new event type vs
