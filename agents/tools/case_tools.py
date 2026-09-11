@@ -121,6 +121,62 @@ def _normalize_state(state: str) -> str:
     return state
 
 
+def case_decision(case: dict[str, Any]) -> tuple[str, str]:
+    """Resolve a case's decision + rationale from EITHER spine shape.
+
+    THE DECISION IS A TWO-SHAPE FIELD, and every reader must share THIS
+    helper. Some cases carry the human verdict in the top-level `supervisory`
+    block (written by the console /case-decision path, the supervisory duty,
+    or case_verdict); others carry it purely as a timeline event — hunt
+    findings and router-dispatched INFRA cases, where the router is the
+    approving authority (operator policy 2026-09-09, tier0/1 only).
+
+    Why one helper: when two renderers derive the decision independently they
+    drift, and the drift is public — one surface reports a human-DENIED case
+    as "under review" while another reports the deny. `advisory_gen` and
+    `report_gen` both render this field, and the decision write-back path
+    uses it to test idempotency; all three call here.
+
+    Returns ("", "") when the case genuinely carries no decision. Callers
+    choose their own wording for that state ("under review" in a deliverable,
+    "undecided" in a queue check) — the helper never invents one.
+    """
+    sup = case.get("supervisory") or {}
+    if isinstance(sup, dict) and sup.get("decision"):
+        return str(sup["decision"]), str(sup.get("rationale") or "").strip()
+    for ev in reversed(case.get("timeline", []) or []):
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("detail") or {}
+        if not isinstance(d, dict):
+            continue
+        # Router adjudication authorizes infra/fleet-sysadmin cases — the
+        # advisory must not call a router-approved case "under review".
+        if ev.get("role") == "router" and ev.get("type") == "adjudication":
+            dec = d.get("decision") or ""
+            if dec:
+                return str(dec), str(d.get("rationale") or "").strip()
+        if ev.get("role") != "supervisory":
+            continue
+        if ev.get("type") in ("adjudication", "verdict"):
+            dec = d.get("decision") or d.get("verdict") or ""
+            if dec:
+                return str(dec), str(d.get("rationale") or "").strip()
+    return "", ""
+
+
+def can_decide(state: str) -> bool:
+    """True when the lifecycle machine allows <state> -> decided.
+
+    Public companion to `case_decision` for the write-back path: a caller that
+    is about to record a decision must ask the MACHINE first rather than
+    force a transition and swallow the error. closed/archived are terminal
+    (a closed case is only reachable again via reopened), so their decisions
+    are reported as unreachable, never fabricated.
+    """
+    return "decided" in _CASE_TRANSITIONS.get(_normalize_state(state), set())
+
+
 class CaseStore:
     """Incident spine backed by Qdrant (working) + JSONL (receipt).
 

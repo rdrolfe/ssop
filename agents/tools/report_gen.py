@@ -289,14 +289,19 @@ def _md_core(case: dict[str, Any]) -> list[str]:
             L.append("")
             L.append(f"Recommended playbook: **`{sup['recommended_playbook']}`**")
     else:
-        for ev in reversed(timeline):
-            if ev.get("role") == "supervisory" and ev.get("type") in ("adjudication", "verdict"):
-                d = ev.get("detail", {})
-                L.append(f"**{(d.get('decision') or d.get('verdict') or '?').upper()}** — {_ts(ev.get('ts'))}")
-                if d.get("rationale"):
-                    L.append("")
-                    L.append(d["rationale"])
-                break
+        # Fall back to the SHARED derivation (timeline event OR router
+        # adjudication) — the local loop here used to scan only supervisory
+        # events, so a router-approved INFRA case rendered as "No supervisory
+        # decision recorded" while the advisory showed the approval. One
+        # helper, both surfaces (case_tools.case_decision). Lazy import:
+        # this module already imports case_tools lazily (cycle-averse).
+        from tools.case_tools import case_decision
+        decision, rationale = case_decision(case)
+        if decision:
+            L.append(f"**{decision.upper()}**")
+            if rationale:
+                L.append("")
+                L.append(rationale)
         else:
             L.append("_No supervisory decision recorded._")
     L.append("")

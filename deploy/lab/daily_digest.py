@@ -45,12 +45,27 @@ def main() -> int:
     lines.append(f"**Backend:** {backend}")
 
     # Hosts / services (TCP reachability)
+    # Qdrant note: kb-vec binds its API to 127.0.0.1, so the platform reaches it
+    # through ssop-qdrant-tunnel.service (an SSH forward to 127.0.0.1:16333 on
+    # this host). Probing 192.168.1.94:6333 directly is ALWAYS refused — it
+    # reported a false "kb-vec DOWN" every day while the spine was perfectly
+    # reachable. Probe the EFFECTIVE endpoint from settings, and surface the
+    # tunnel unit, because THAT is what actually fails when the spine goes away.
+    try:
+        import urllib.parse as _urlparse
+
+        from config import settings as _settings
+        _p = _urlparse.urlparse(_settings.qdrant_url or "")
+        qdrant_probe = (_p.hostname or "127.0.0.1",
+                        int(_p.port or _settings.qdrant_port or 16333))
+    except Exception:  # noqa: BLE001 — probe must never kill the digest
+        qdrant_probe = ("127.0.0.1", 16333)
     hosts = {
         "infra-ops": ("192.168.1.29", [22]),
         "telemetry(Wazuh)": ("192.168.1.75", [22, 9200]),
         "securityonion": ("192.168.1.76", [22, 9200]),
         "network(Suricata)": ("192.168.1.13", [22]),
-        "kb-vec(Qdrant)": ("192.168.1.94", [6333]),
+        f"qdrant({qdrant_probe[0]}:{qdrant_probe[1]})": (qdrant_probe[0], [qdrant_probe[1]]),
         "vault-secrets": ("192.168.1.90", [22]),
         "ubuntu-target": ("192.168.1.77", [22]),
         "win-target": ("192.168.1.78", [22]),
@@ -61,6 +76,10 @@ def main() -> int:
     down = [h for h, (ip, ps) in hosts.items() if not any(port_open(ip, p) for p in ps)]
     lines.append(f"**Hosts:** {len(up)}/{len(hosts)} up"
                  + (f" | DOWN: {', '.join(down)}" if down else ""))
+
+    # The tunnel is a single point of failure for every store-backed feature.
+    qt = sh("systemctl is-active ssop-qdrant-tunnel.service 2>/dev/null")
+    lines.append(f"**Qdrant tunnel:** {qt or 'n/a'}")
 
     # Timers
     t = sh("systemctl list-timers ssop-analyst.timer ssop-hunt.timer --no-pager 2>/dev/null | grep -E 'ssop-(analyst|hunt)' | awk '{print $NF}' | tr '\\n' ' '")
@@ -107,6 +126,46 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         lines.append(f"**Cases:** ERR {e}")
 
+    # Decision coverage — the reporting end-goal's number. Of the cases on the
+    # spine, how many carry a decision, and of those, how many compile into a
+    # deliverable (advisory)? Rendered from the case dicts this scan already
+    # holds (render_advisory(case=...)) so the check costs no extra store
+    # round-trips — a per-case get_case is the pattern that stalled /reports.
+    # A decided case that renders thin is a real defect, so it is named.
+    try:
+        from tools.advisory_gen import render_advisory
+        from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision
+        cs2 = CaseStore()
+        total = decided = rendered = thin = new_undecided = 0
+        thin_ids: list[str] = []
+        for r in cs2._get_memory().search_memory(
+                CASE_COLLECTION, "case-", limit=5000, scroll_limit=20000):
+            c = CaseStore._parse_content(r.get("content", ""))
+            if not isinstance(c, dict):
+                continue
+            total += 1
+            if case_decision(c)[0]:
+                decided += 1
+                try:
+                    md = render_advisory(c.get("case_id", ""), case=c)
+                except Exception:  # noqa: BLE001 — a render failure is the finding
+                    md = ""
+                if md and len(md) >= 300:
+                    rendered += 1
+                else:
+                    thin += 1
+                    if len(thin_ids) < 3:
+                        thin_ids.append(str(c.get("case_id", "?")))
+            elif str(c.get("state") or "") == "new":
+                new_undecided += 1
+        lines.append(
+            f"**Coverage:** {decided}/{total} cases decided | advisories render: "
+            f"{rendered}/{decided}"
+            + (f" | THIN: {thin} {thin_ids}" if thin else "")
+            + f" | undecided (state=new): {new_undecided}")
+    except Exception as e:  # noqa: BLE001 — coverage must never kill the digest
+        lines.append(f"**Coverage:** ERR {e}")
+
     # Boot evidence
     be = sh("tail -1 ~/.ssop/state/boot-evidence.log 2>/dev/null")
     lines.append("**Boot evidence:** " + (be if be else "n/a"))
@@ -115,9 +174,15 @@ def main() -> int:
     d = sh("df -h / | tail -1 | awk '{print $5\" used, \"$4\" avail\"}'")
     lines.append("**Disk (/):** " + d)
 
-    # Matrix
-    m = sh("timeout 115 python3 -m verify.matrix 2>&1 | grep -E 'SSOP verify matrix'", timeout=130)
-    lines.append("**Matrix:** " + (m.split("=== ")[-1] if m else "n/a"))
+    # Matrix — MUST run in the runtime venv. The digest used to call the
+    # system `python3`, which has no dotenv/langgraph, so the gate died in
+    # 0.5s and the line printed "n/a" as though there were nothing to report:
+    # an unrun check that looks like a passing check. Use the venv explicitly,
+    # give it room under load, and say so when it genuinely did not run.
+    m = sh("timeout 250 ./agent-env/bin/python3 -m verify.matrix 2>&1 | grep -E 'SSOP verify matrix'",
+           timeout=280)
+    lines.append("**Matrix:** " + ((m.split("=== ")[-1] if m else
+                                    "n/a (did not run — check ./agent-env/bin/python3 -m verify.matrix)")))
 
     # Docs citations (ontology spec drift gate)
     dc = sh("timeout 20 python3 -m verify.check_docs 2>&1", timeout=30)

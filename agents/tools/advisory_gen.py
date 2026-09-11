@@ -27,6 +27,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from tools.case_tools import case_decision
+
 
 # Kill-chain stage -> MITRE ATT&CK tactic (best-effort, deterministic).
 # The spine's kill_chain entries are "STAGE: description"; we map the
@@ -70,33 +72,16 @@ def _stage_techniques(stage: str) -> list[str]:
 
 
 def _decision(case: dict[str, Any]) -> tuple[str, str]:
-    """Resolve the supervisory decision + rationale, falling back to the
-    timeline when the verdict rides an event instead of the top-level
-    `supervisory` block (hunt findings and router-dispatched cases). The
-    report already scans the timeline; the advisory must not report
-    "under review" for a human-denied case."""
-    sup = case.get("supervisory") or {}
-    decision = sup.get("decision") or ""
-    rationale = (sup.get("rationale") or "").strip()
-    if not decision:
-        for ev in reversed(case.get("timeline", [])):
-            d = ev.get("detail") or {}
-            if not isinstance(d, dict):
-                continue
-            # Router adjudication authorizes infra/fleet-sysadmin cases
-            # (operator policy 2026-09-09) — counts as the decision.
-            if ev.get("role") == "router" and ev.get("type") == "adjudication":
-                decision = d.get("decision") or ""
-                if not rationale:
-                    rationale = (d.get("rationale") or "").strip()
-                break
-            if ev.get("role") != "supervisory":
-                continue
-            if ev.get("type") in ("adjudication", "verdict"):
-                decision = d.get("decision") or d.get("verdict") or ""
-                if not rationale:
-                    rationale = (d.get("rationale") or "").strip()
-                break
+    """Resolve the supervisory decision + rationale for the advisory.
+
+    Delegates to the SHARED `case_tools.case_decision` (the two-shape field:
+    top-level `supervisory` block OR a timeline event, including router
+    adjudication for infra cases). The only thing added here is the
+    deliverable's wording for the genuinely-undecided state — a rendered
+    advisory must never say "under review" for a case a human already
+    denied, which is exactly the drift the shared helper prevents.
+    """
+    decision, rationale = case_decision(case)
     return (decision or "under review"), rationale
 
 
@@ -192,21 +177,25 @@ def json_dumps_lower(d: dict) -> str:
     return json.dumps(d, default=str).lower()
 
 
-def render_advisory(case_id: str, backend: str = "spine") -> str:
+def render_advisory(case_id: str, backend: str = "spine",
+                    case: dict[str, Any] | None = None) -> str:
     """Render a decided spine case as a CISA-style advisory (markdown).
 
     backend param is honored for the footer (which SIEM surface the facts
     were read from) so the same advisory product can be produced from either
     side of the bake-off.
+
+    `case` lets a caller that ALREADY holds the case dict (a store scan, a
+    coverage sweep) render without a per-case fetch — a get_case() round-trip
+    per case is what stalled /reports as the spine grew (one Qdrant scan is
+    the pattern, never per-id lookups).
     """
-    if backend == "so":
-        from tools.report_gen import render_so_case_report  # reuse the SO reader
-        # The SO reader returns markdown; we re-derive the case by parsing
-        # it back is heavy — instead reuse the same spine-shaped compile.
-        case = _case_from_so(case_id)
-    else:
-        from tools.case_tools import CaseStore
-        case = CaseStore().get_case(case_id)
+    if case is None:
+        if backend == "so":
+            case = _case_from_so(case_id)
+        else:
+            from tools.case_tools import CaseStore
+            case = CaseStore().get_case(case_id)
     if not case:
         raise KeyError(f"case {case_id} not found ({backend} backend)")
 

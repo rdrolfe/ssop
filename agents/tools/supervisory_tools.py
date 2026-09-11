@@ -26,6 +26,26 @@ from tools.registry import get_analyst, get_cases
 
 logger = get_logger(__name__)
 
+# Ticket decisions -> the case spine's canonical decision vocabulary.
+#
+# The spine's vocabulary is approve | deny | fp | operational (the console
+# /case-decision path and the OWL :Decision model both use it); tickets
+# additionally carry false_positive / auto_fp. Normalizing HERE — once, at
+# the write-back boundary — keeps every spine reader (advisory, report,
+# digest, recidivism) keyed on one set, while the TICKET keeps the human's
+# exact string as the audit record. "operational" is deliberately NOT folded
+# into fp: expected fleet activity is not a false positive, and the
+# distinction is what the tuning ledger already records.
+_TICKET_TO_CASE_DECISION: dict[str, str] = {
+    "approve": "approve",
+    "approved": "approve",
+    "deny": "deny",
+    "fp": "fp",
+    "false_positive": "fp",
+    "auto_fp": "fp",
+    "operational": "operational",
+}
+
 
 class SupervisoryClient:
     """Adjudication + reconciliation logic for the supervisory role."""
@@ -167,8 +187,97 @@ class SupervisoryClient:
         # (/tickets reads ssop-events) stops showing it as open — the
         # "phantom open tickets" fix.
         self._reship(ticket)
+        # WRITE THE DECISION BACK TO THE SPINE. The tuning ledger and the
+        # ticket file are not where the spine's readers look: a human verdict
+        # that never reaches the case leaves it state=new forever, so the
+        # advisory/report surface it has no decision and the digest's coverage
+        # number lies. Best-effort by construction (never raises).
+        wb = self.sync_case_decision(ticket, decision, rationale)
+        if wb.get("outcome") not in ("no_case_id", "already_decided"):
+            logger.info("case write-back for ticket %s: %s %s",
+                        ticket.get("ticket_id"), wb.get("outcome"), wb.get("case_id", ""))
         logger.info("adjudicated %s -> %s (%s)", ticket["ticket_id"], decision, rationale[:50])
         return ticket
+
+    @staticmethod
+    def ticket_case_id(ticket: dict[str, Any]) -> str:
+        """Resolve the spine case a ticket belongs to.
+
+        Router-spread tickets carry `case_id` TOP-LEVEL (the router's
+        escalate() spreads detail); analyst/hunt tickets carry it under
+        `detail`. Both shapes are live, so both are read.
+        """
+        cid = ticket.get("case_id")
+        if not cid:
+            det = ticket.get("detail")
+            if isinstance(det, dict):
+                cid = det.get("case_id")
+        return str(cid or "")
+
+    def sync_case_decision(self, ticket: dict[str, Any], decision: str | None = None,
+                           rationale: str | None = None,
+                           dry_run: bool = False,
+                           attach: bool = True) -> dict[str, Any]:
+        """Write a ticket's decision back onto its case in the spine.
+
+        THE GAP THIS CLOSES: adjudicate() historically wrote the tuning ledger
+        and re-shipped the ticket but never recorded the DECISION on the case
+        — so a human-approved ticket left its case state=new permanently, the
+        advisory rendered it "under review", and the two surfaces told
+        different stories about the same incident. The reverse path (console
+        /case-decision) always wrote the spine first; tickets must too. Rule:
+        every worker that records a decision records it where the readers look.
+
+        Idempotent and replay-safe, which is what lets the backlog sweep reuse
+        it verbatim: a case that already carries a decision is SKIPPED
+        (decide() raises CaseStateError on decided -> decided), a closed or
+        archived case is reported as unreachable by the lifecycle machine
+        rather than forced, and a missing case is a no-op. Never raises — a
+        failed spine write must not fail the ticket adjudication that
+        triggered it.
+
+        Returns {case_id, outcome, ...} where outcome is one of:
+        no_case_id | missing | read_failed | already_decided | would_write |
+        unreachable:<state> | written | write_failed.
+        """
+        decision = str(decision if decision is not None else ticket.get("decision") or "").strip()
+        rationale = str(rationale if rationale is not None else ticket.get("rationale") or "")
+        cid = self.ticket_case_id(ticket)
+        if not cid:
+            return {"case_id": "", "outcome": "no_case_id"}
+        mapped = _TICKET_TO_CASE_DECISION.get(decision.lower(), decision.lower())
+        if not mapped:
+            return {"case_id": cid, "outcome": "no_case_id", "detail": "ticket carries no decision"}
+        try:
+            case = self._cases.get_case(cid)
+        except Exception:  # noqa: BLE001 — a read failure must not break adjudication
+            logger.warning("case read failed during decision write-back for %s", cid)
+            return {"case_id": cid, "outcome": "read_failed"}
+        if not case:
+            return {"case_id": cid, "outcome": "missing"}
+        from tools.case_tools import case_decision, can_decide
+        existing, _ = case_decision(case)
+        if existing:
+            return {"case_id": cid, "outcome": "already_decided", "decision": existing}
+        state = str(case.get("state") or "new")
+        if not can_decide(state):
+            # closed/archived cases are terminal for the lifecycle machine.
+            # Honest report, never a forced transition. Checked BEFORE the
+            # dry-run branch on purpose: a dry run that predicts writes the
+            # apply will refuse is a lying tool (it predicted 89, landed 2,
+            # until this ordering was fixed).
+            return {"case_id": cid, "outcome": f"unreachable:{state}"}
+        if dry_run:
+            return {"case_id": cid, "outcome": "would_write",
+                    "decision": mapped, "state": state}
+        note = rationale.strip() or f"ticket {ticket.get('ticket_id', '')} {mapped}"
+        try:
+            self.case_verdict(cid, mapped, note, attach=attach)
+        except Exception:  # noqa: BLE001 — record honestly, never propagate
+            logger.warning("case write-back failed for %s (ticket %s)",
+                           cid, ticket.get("ticket_id"))
+            return {"case_id": cid, "outcome": "write_failed"}
+        return {"case_id": cid, "outcome": "written", "decision": mapped}
 
     @staticmethod
     def _reship(ticket: dict[str, Any]) -> None:
@@ -213,7 +322,8 @@ class SupervisoryClient:
         """Audit-integrity check: Qdrant vs JSONL case spine."""
         return self._cases.reconcile()
 
-    def case_verdict(self, case_id: str, decision: str, rationale: str) -> dict[str, Any] | None:
+    def case_verdict(self, case_id: str, decision: str, rationale: str,
+                     attach: bool = True) -> dict[str, Any] | None:
         """Record a supervisory verdict on a case — via the lifecycle machine.
 
         Writes BOTH the top-level `supervisory` field AND a timeline
@@ -222,6 +332,12 @@ class SupervisoryClient:
         timeline consistent. The case leaves the queue (state=decided) but
         stays OPEN until the responder/close step closes it — approve is a
         decision, not a close (real SOC semantics).
+
+        `attach=False` records the decision WITHOUT publishing the report +
+        advisory into the SO case surface. Used by the backlog replay
+        (`sync_case_decision`): re-publishing artifacts for a thousand
+        historical cases would flood the SOC surface for no gain, while the
+        spine write — the part readers actually consume — must still land.
         """
         case = self._cases.decide(case_id, decision, rationale, role="supervisory")
         if not case:
@@ -243,12 +359,15 @@ class SupervisoryClient:
                 logger.warning("assign after case_verdict failed for %s", case_id)
         # Attach the generated report + advisory INTO the case on the SO
         # surface (meatsuit sees the full report as part of the case, not a
-        # separate link). Best-effort — never breaks adjudication.
-        try:
-            from tools.attach_case_report import attach_case_artifacts
-            attach_case_artifacts(case_id)
-        except Exception:  # noqa: BLE001 — attach must never break adjudication
-            logger.warning("report attach skipped after case_verdict %s", case_id)
+        # separate link). Best-effort — never breaks adjudication. Skipped on
+        # a backlog replay (attach=False): publishing artifacts for a
+        # thousand historical cases would flood the SOC surface for no gain.
+        if attach:
+            try:
+                from tools.attach_case_report import attach_case_artifacts
+                attach_case_artifacts(case_id)
+            except Exception:  # noqa: BLE001 — attach must never break adjudication
+                logger.warning("report attach skipped after case_verdict %s", case_id)
         return case
 
     def adjudicate_with_investigation(self, case_id: str) -> dict[str, Any]:
