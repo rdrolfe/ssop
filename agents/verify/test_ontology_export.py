@@ -49,8 +49,14 @@ def main() -> int:
               f":{tier} a owl:Class ;\n    rdfs:subClassOf :Tier" in ttl)
 
     # 3. authority axioms present
-    check("tier2 requiresApprovalFrom Supervisory axiom",
-          "owl:hasValue :Supervisory" in ttl)
+    # (Phase 2 note: the machine-checkable form is the allValuesFrom
+    # restriction + role disjointness — the reasoner proves the composed
+    # invariant in verify/check_ontology.py. This structural check pins
+    # the axioms' presence in the artifact.)
+    check("tier2 approvedBy-only-Supervisory restriction",
+          "owl:allValuesFrom :Supervisory" in ttl)
+    check("approving-authority disjointness axiom",
+          "owl:AllDisjointClasses" in ttl)
     check("router-never-tier2 invariant documented",
           "Router never authorizes tier2" in ttl)
     check("classifiedAs single-categorizer property",

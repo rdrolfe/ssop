@@ -148,19 +148,35 @@ def render() -> str:
                  + (f"    rdfs:comment \"{comment}\" .\n" if comment else " .\n"))
 
     L.append("## ---- authority invariants (axioms; phase 2 proves) ----\n")
+    # Machine-checkable authority axioms (phase 2 = verify/check_ontology.py
+    # runs HermiT over these; see the design note at the top of that file).
+    # Tier2 decisions are approved by SUPERVISORY ONLY: allValuesFrom makes
+    # every approvedBy filler of a Tier2 decision a Supervisory instance.
+    # Role disjointness then makes a Router-instance filler a contradiction —
+    # which is exactly the operator policy "router never authorizes tier2".
+    # The reasoner only bites when the filler is a named INDIVIDUAL of class
+    # Router (a class IRI used as a property value punns as an individual and
+    # HermiT ignores class disjointness for it) — the check's probes do that.
     L.append(
         ":Tier2 a owl:Class ;\n"
-        "    rdfs:subClassOf [\n"
-        "        a owl:Restriction ;\n"
-        "        owl:onProperty :requiresApprovalFrom ;\n"
-        "        owl:hasValue :Supervisory\n"
-        "    ] .\n"
-        "# Router never authorizes tier2 (operator policy 2026-09-09):\n"
-        "# expressed as approvedBy values for tier2 decisions having range\n"
-        "# Supervisory only — the check_ontology reasoner (phase 2) treats\n"
-        "# any tier2 decision approvedBy router as INCONSISTENT.\n"
-        "# responder-executed case implies a Decision exists with "
-        "approvedBy in {Supervisory, Router}.\n")
+        "    rdfs:subClassOf :Tier ,\n"
+        "        [ a owl:Restriction ;\n"
+        "          owl:onProperty :approvedBy ;\n"
+        "          owl:allValuesFrom :Supervisory ] .\n"
+        "\n"
+        "# Approving-authority roles are pairwise disjoint: a thing approved\n"
+        "# by Router is NOT approved by Supervisory (and vice versa).\n"
+        "[] a owl:AllDisjointClasses ;\n"
+        "    owl:members ( :Supervisory :Router ) .\n"
+        "\n"
+        "# Router never authorizes tier2 (operator policy 2026-09-09) is the\n"
+        "# composition of the two axioms above: Tier2 -> approvedBy only\n"
+        "# Supervisory, and Supervisory disjointWith Router. verify/\n"
+        "# check_ontology.py proves it by feeding a Router-individual-approved\n"
+        "# Tier2 decision to the reasoner and requiring inconsistency, plus a\n"
+        "# positive control (Supervisory-approved stays consistent).\n"
+        "# responder-executed case implies a Decision exists with approvedBy\n"
+        "# in {Supervisory, Router}.\n")
     return "\n".join(L)
 
 

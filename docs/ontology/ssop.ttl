@@ -165,13 +165,21 @@
 ## ---- authority invariants (axioms; phase 2 proves) ----
 
 :Tier2 a owl:Class ;
-    rdfs:subClassOf [
-        a owl:Restriction ;
-        owl:onProperty :requiresApprovalFrom ;
-        owl:hasValue :Supervisory
-    ] .
-# Router never authorizes tier2 (operator policy 2026-09-09):
-# expressed as approvedBy values for tier2 decisions having range
-# Supervisory only — the check_ontology reasoner (phase 2) treats
-# any tier2 decision approvedBy router as INCONSISTENT.
-# responder-executed case implies a Decision exists with approvedBy in {Supervisory, Router}.
+    rdfs:subClassOf :Tier ,
+        [ a owl:Restriction ;
+          owl:onProperty :approvedBy ;
+          owl:allValuesFrom :Supervisory ] .
+
+# Approving-authority roles are pairwise disjoint: a thing approved
+# by Router is NOT approved by Supervisory (and vice versa).
+[] a owl:AllDisjointClasses ;
+    owl:members ( :Supervisory :Router ) .
+
+# Router never authorizes tier2 (operator policy 2026-09-09) is the
+# composition of the two axioms above: Tier2 -> approvedBy only
+# Supervisory, and Supervisory disjointWith Router. verify/
+# check_ontology.py proves it by feeding a Router-individual-approved
+# Tier2 decision to the reasoner and requiring inconsistency, plus a
+# positive control (Supervisory-approved stays consistent).
+# responder-executed case implies a Decision exists with approvedBy
+# in {Supervisory, Router}.
