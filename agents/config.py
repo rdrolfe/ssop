@@ -227,13 +227,16 @@ class Settings:
         "192.168.1.94",   # kb-vec (Qdrant)
         "192.168.1.75",   # telemetry (Wazuh SIEM)
         "192.168.1.90",   # vault-secrets
+        "192.168.1.169",  # proxmox host (hypervisor)
+        "192.168.1.1",    # network gateway
         "127.0.0.1", "localhost",
         "169.254.0.0/16",
     ])
     # NOTE: 192.168.1.13 (network host) is NOT in the protected set — it is
     # the sanctioned responder TARGET for the fleet-sysadmin role (tier0/1
-    # playbooks: service checks, restarts, disk clean). Adding it back here
-    # re-enables fail-closed protection if the responder scope ever changes.
+    # playbooks: service checks, restarts, disk clean) and for containment
+    # (firewall_block_ip lands there). Adding it back re-enables fail-closed
+    # protection if the responder scope ever changes.
 
     # --- intel role ---
     kev_url: str = _env("KEV_URL", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")

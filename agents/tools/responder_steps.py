@@ -132,9 +132,9 @@ def step_verify_service_state(host: str, service: str, expected: str = "active",
 
 
 def step_verify_firewall_rule(host: str, src_ip: str, timeout_s: int = 30) -> StepResult:
-    """Verify a firewall rule is present (read-only, tier0)."""
+    """Verify a firewall rule is present (read-only, tier0) via the wrapper."""
     try:
-        out = _ssh_run(host, f"sudo -n /usr/sbin/iptables -L INPUT -n 2>/dev/null | grep {src_ip} || echo NOT_PRESENT", timeout_s)
+        out = _ssh_run(host, f"sudo -n /usr/local/sbin/ssop-containment-iptables.sh list 2>/dev/null | grep ' {src_ip} ' || echo NOT_PRESENT", timeout_s)
         ok = "NOT_PRESENT" not in out
         return StepResult(ok, f"firewall rule for {src_ip} on {host}: {'present' if ok else 'absent'}", "verify_firewall_rule")
     except StepError as e:
@@ -146,18 +146,33 @@ def step_verify_firewall_rule(host: str, src_ip: str, timeout_s: int = 30) -> St
 # ---------------------------------------------------------------------------
 
 def step_firewall_block_ip(host: str, src_ip: str, ttl_s: int = 3600) -> StepResult:
-    """Block a source IP at the host firewall (iptables, whitelisted).
+    """Block a source IP at the host firewall via the hardened wrapper.
 
-    sudoers allows ONLY: iptables -I INPUT -s <ip> -j DROP (and -D to
-    unblock). The block is the containment action; ttl_s is advisory
-    (the playbook's verify step confirms the rule is present).
+    sudoers allows ONLY /usr/local/sbin/ssop-containment-iptables.sh — the
+    wrapper force-sets the verb/target/chain (iptables -I INPUT -s <ip>
+    -j DROP) and validates strict dotted-quad IPv4, so no caller-supplied
+    flags can ever match the rule. ttl_s is advisory (the playbook's
+    verify step confirms the rule is present).
+
+    Honest scope: INPUT chain contains traffic HITTING the host — NOT
+    traffic transiting it (FORWARD). The playbook claim must say so.
     """
     try:
-        _ssh_run(host, f"sudo -n /usr/sbin/iptables -I INPUT -s {src_ip} -j DROP", 30)
-        return StepResult(True, f"blocked {src_ip} at {host} firewall", "firewall_block_ip")
+        _ssh_run(host, f"sudo -n /usr/local/sbin/ssop-containment-iptables.sh block {src_ip}", 30)
+        return StepResult(True, f"blocked {src_ip} at {host} firewall (INPUT only — transit traffic NOT contained)", "firewall_block_ip")
     except StepError as e:
         logger.error("firewall_block_ip %s/%s failed: %s", host, src_ip, e)
         return StepResult(False, str(e), "firewall_block_ip")
+
+
+def step_firewall_unblock_ip(host: str, src_ip: str) -> StepResult:
+    """Remove a block added by step_firewall_block_ip (rollback leg)."""
+    try:
+        _ssh_run(host, f"sudo -n /usr/local/sbin/ssop-containment-iptables.sh unblock {src_ip}", 30)
+        return StepResult(True, f"unblocked {src_ip} at {host} firewall", "firewall_unblock_ip")
+    except StepError as e:
+        logger.error("firewall_unblock_ip %s/%s failed: %s", host, src_ip, e)
+        return StepResult(False, str(e), "firewall_unblock_ip")
 
 
 def step_config_revert(host: str, path: str, backup: str = "") -> StepResult:
@@ -194,6 +209,7 @@ STEP_REGISTRY: dict[str, Any] = {
     "verify_firewall_rule": step_verify_firewall_rule,
     # containment actions (sudoers extended):
     "firewall_block_ip": step_firewall_block_ip,
+    "firewall_unblock_ip": step_firewall_unblock_ip,
     "config_revert": step_config_revert,
 }
 
