@@ -47,6 +47,24 @@ calls made by the operator on 2026-09-12:
    only. Feeds are pinned deliberately (a modest set), not bulk-imported from
    the default list.
 
+**Feed set and licences (2026-09-12, from primary sources — quoted in
+`docs/feeds-and-licensing.md`):**
+
+- Enabled: **CIRCL OSINT** (TLP:CLEAR — the only explicit redistribution grant)
+  and **botvrij.eu** (use permitted, resale prohibited).
+- Enabled **in-lab only**: **abuse.ch** family (URLhaus / Feodo / ThreatFox /
+  MalwareBazaar / SSLBL) — ToS forbids derivative works without express consent.
+- **Not ingested:** OTX. The EULA forbids copying/duplicating the corpus, but
+  permits end use — so OTX remains a *live per-indicator lookup* while MISP
+  provides bulk matching. Lookup and ingestion are different acts, and only one
+  of them is licensed.
+- **Not enabled at all:** every other MISP default feed, until its licence is
+  read and recorded. Unknown is not permission.
+- **Structural rule:** feed-derived packs are materialised at runtime into a
+  non-committed path, so unlicensed indicators cannot reach the public tree.
+- **A `distribution` level is not a redistribution right** — it governs
+  instance-to-instance sharing (3 = all communities), not publication.
+
 **Alternatives Considered**
 
 | Option | Pros | Cons | Why Rejected |

@@ -50,14 +50,25 @@ comment in `agents/tools/ontology_export.py`, `docs/project-map.html`).
   HUNT only. No analyst case auto-enrichment in this build. No `submit` class
   entry — contributing our observables back to MISP or any feed is disclosure,
   OFF by default (sovereignty doctrine). Role-layer authority unchanged.
+- [Feed set + licensing](tickets/misp-feed-set-and-licensing.md): pinned set —
+  **CIRCL OSINT** (TLP:CLEAR, explicitly redistributable) and **botvrij.eu**
+  (use permitted, no resale) plus the **abuse.ch family** (IN-LAB ONLY: ToS
+  forbids derivative works). **OTX stays a live lookup, not an ingested feed**
+  (EULA forbids duplication; a lookup is permitted use). Every other MISP
+  default feed is unlicensed-and-unenabled. Structural rule: feed-derived packs
+  are generated at runtime into a non-committed path, so nothing unlicensed can
+  reach the public tree by accident. Record: `docs/feeds-and-licensing.md`.
+  Also settles a real trap — a MISP `distribution` level is an instance-to-
+  instance sharing flag and grants **no** republication right.
 
 ## Not yet specified
 
-- **Feed selection + redistributability** of indicators derived from each feed
-  (may a hunt pack built from feed X be committed to the public repo?). Gates
-  both the sync config and the public-repo question; research in flight.
-- The `tools/misp_client.py` contract once the feed set is known: query shape,
-  batch size, and how matches map into hunt's existing finding schema.
+- The `tools/misp_client.py` contract (query shape, batch size, result mapping
+  into hunt's existing finding schema) — unblocked, ticket open.
+- Which additional MISP default feeds (DigitalSide, Infoblox, OpenPhish,
+  PhishTank, IPsum, …) are worth the licence read + the egress + the disk. Each
+  one is a decision with its own terms recorded in `docs/feeds-and-licensing.md`
+  first — no feed is enabled on reputation alone.
 - **Local caching:** does hunt query the MISP API every sweep, or do we
   materialize a local indicator store? Bears on sweep latency, MISP load, and
   whether hunt keeps working when MISP is down.
