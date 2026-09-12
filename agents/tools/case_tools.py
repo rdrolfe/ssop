@@ -203,6 +203,42 @@ def case_adjudication(case: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def case_recommended_playbook(case: dict[str, Any]) -> str:
+    """The playbook the platform RECOMMENDED for this case, or "".
+
+    A third field with more than one reader — the same drift class as the
+    decision itself. It lives in three places depending on who wrote it: the
+    decision-scoped `supervisory` block (case_verdict / decide), the mint
+    `source` (dispatch_infra records what it recommended at mint), and the
+    timeline (`dispatch` / `verdict` / `adjudication` event detail). Readers
+    used to pick one and lose the others: the advisory's Key Actions read only
+    the sup block, which never carries this field, so its "Execute playbook …"
+    line was dead code on EVERY case.
+
+    Precedence: decision-scoped block first (an explicit recommendation tied to
+    the decision), then the mint source, then the newest event that carries one.
+
+    DELIBERATELY NOT shared with the responder's approval gate: that path
+    resolves the playbook TOGETHER with the authorizing decision and fails
+    closed (responder.run's resolver) — a recommendation inherited from an
+    event that authorized nothing must never unlock execution. Keep the two
+    apart; this helper is for surfaces that REPORT what was recommended.
+    """
+    sup = case.get("supervisory") or {}
+    if isinstance(sup, dict) and sup.get("recommended_playbook"):
+        return str(sup["recommended_playbook"])
+    src = case.get("source") or {}
+    if isinstance(src, dict) and src.get("recommended_playbook"):
+        return str(src["recommended_playbook"])
+    for ev in reversed(case.get("timeline") or []):
+        if not isinstance(ev, dict):
+            continue
+        detail = ev.get("detail") or {}
+        if isinstance(detail, dict) and detail.get("recommended_playbook"):
+            return str(detail["recommended_playbook"])
+    return ""
+
+
 def case_decision(case: dict[str, Any]) -> tuple[str, str]:
     """Resolve a case's decision + rationale from EITHER spine shape.
 

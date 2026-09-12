@@ -19,15 +19,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import ssl
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 sys.path.insert(0, ".")
+
+# The IRIS lab endpoint serves the DFIR-IRIS image's own development
+# certificate: self-signed, CN=iris.app.dev, NO subjectAltName, expired
+# 2022-12-09 — verified TLS cannot succeed against it (nothing for the hostname
+# check to match, validity dates in the past). This bridge therefore runs the
+# sanctioned TEST PROFILE rather than hand-rolling an unverified context;
+# tools.tls logs the downgrade loudly. Set SSOP_TLS_VERIFY=1 to force
+# verification and fail closed. The real fix is reissuing IRIS's certificate —
+# delete this opt-out when that lands.
+os.environ.setdefault("SSOP_TLS_VERIFY", "0")
+
+from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 # IRIS service-account key + endpoint live in the runtime .env (host-only).
 # Per-role keys: IRIS_KEY_ANALYST / _SUPERVISOR / _RESPONDER / _HUNT
@@ -244,12 +256,38 @@ def _event_tag(ev: dict, payload: dict) -> str:
     return "ssop-" + hashlib.sha1(basis.encode()).hexdigest()[:12]
 
 
+def _rows(payload: dict, *keys: str) -> list[dict]:
+    """List the RECORD rows out of an IRIS collection response.
+
+    IRIS is not uniform across endpoints: `/case/ioc/list` returns `data` as an
+    OBJECT (`{"ioc": [...], "state": {...}}`) while the timeline/notes/case-list
+    endpoints return `data` as a bare LIST. Code that assumed a list and
+    iterated the object got its KEYS back (strings) and died with
+    `'str' object has no attribute 'get'` — which is what aborted the publish
+    of the first case carrying observables, after the case had already been
+    created. Handling both shapes here (and dropping non-record rows) keeps the
+    bridge resilient to the API's variance instead of crashing mid-publish.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows: list = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        for k in keys:
+            if isinstance(data.get(k), list):
+                rows = data[k]
+                break
+        if not rows:                      # unnamed wrapper: take the first list
+            rows = next((v for v in data.values() if isinstance(v, list)), [])
+    return [r for r in rows if isinstance(r, dict)]
+
+
 def _existing_event_tags(iris_case_id: int) -> set[str]:
     """Tags already on the IRIS timeline (for event dedupe)."""
     try:
         r = _req("GET", f"/case/timeline/events/list?cid={iris_case_id}")
         out = set()
-        for e in r.get("data", []) or []:
+        for e in _rows(r, "events", "timeline"):
             tags = e.get("event_tags") or ""
             out.update(t for t in str(tags).split(",") if t.startswith("ssop-"))
         return out
@@ -265,7 +303,7 @@ def find_existing_case(case_id: str) -> int | None:
     """
     try:
         r = _req("GET", "/manage/cases/list?limit=1000")
-        for c in r.get("data", []) or []:
+        for c in _rows(r, "cases"):
             if str(c.get("case_soc_id", "")) == str(case_id) \
                     and not c.get("case_close_date"):
                 return c.get("case_id")
@@ -339,7 +377,7 @@ def _add_note(iris_id: int, title: str, content: str) -> bool:
     dir_id = None
     try:
         dirs = _req("GET", f"/case/notes/groups/list?cid={iris_id}")
-        for d in dirs.get("data", []) or []:
+        for d in _rows(dirs, "groups", "directories"):
             if (d.get("group_title") or d.get("name")) == "SSOP":
                 dir_id = d.get("id")
                 break
@@ -356,7 +394,7 @@ def _add_note(iris_id: int, title: str, content: str) -> bool:
     # Idempotency: skip if an identically-titled note already exists.
     try:
         notes = _req("GET", f"/case/notes/list?cid={iris_id}")
-        for n in notes.get("data", []) or []:
+        for n in _rows(notes, "notes"):
             if n.get("note_title") == title[:155]:
                 print("  note already present:", title[:50])
                 return True
@@ -381,7 +419,7 @@ def _add_iocs(iris_id: int, case: dict) -> int:
     existing = set()
     try:
         iocs = _req("GET", f"/case/ioc/list?cid={iris_id}")
-        for i in iocs.get("data", []) or []:
+        for i in _rows(iocs, "ioc", "iocs"):
             existing.add((str(i.get("ioc_value", "")), i.get("ioc_type_id")))
     except (urllib.error.HTTPError, urllib.error.URLError):
         pass

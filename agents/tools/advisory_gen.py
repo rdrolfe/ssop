@@ -158,10 +158,16 @@ def _key_actions(case: dict[str, Any]) -> list[str]:
             f"{len(ok_steps)}/{len(steps)} steps ok: {detail}")
     if executed:
         return actions
-    sup = case.get("supervisory") or {}
-    pb = sup.get("recommended_playbook")
+    # The recommended playbook is the SPINE's field, read through the shared
+    # derivation: the sup block does not carry it (that read was dead on every
+    # case), the mint source and the dispatch/verdict events do. The decider is
+    # named too — a router-authorized INFRA case is not a supervisory decision.
+    from tools.case_tools import case_adjudication, case_recommended_playbook
+    pb = case_recommended_playbook(case)
     if pb:
-        actions.append(f"Execute playbook `{pb}` (per supervisory decision).")
+        who = ("router" if (case_adjudication(case) or {}).get("role") == "router"
+               else "supervisory")
+        actions.append(f"Execute playbook `{pb}` (per {who} decision).")
     decision, _rat = _decision(case)
     if decision == "approve":
         actions.append("Contain the affected entity and preserve evidence for "

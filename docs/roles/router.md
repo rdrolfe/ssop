@@ -84,9 +84,9 @@ In priority order:
 - `sense → decide → heal` fixable issues; escalate tier-1 anything outside
   the whitelist.
 - The spine case is minted AND adjudicated in the same pass: the disposition
-  rule lives in `infra_disposition` (`infra_disposition.py:109`), applied with
-  the recommendation for the alert in hand. `decide(..., role="router")` is
-  the write path, so the case carries who decided it.
+  rule lives in `infra_disposition` (`infra_disposition.py:102-160`), applied
+  with the recommendation for the alert in hand. `decide(..., role="router")`
+  is the write path, so the case carries who decided it.
   - tier0/tier1 recommended playbook → `approve` (operator policy 2026-09-09:
     the router approves INFRA tier0/1). `approve` is NOT a close — the
     responder still executes and closes.

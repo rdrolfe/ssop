@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision  # noqa: E402
 from tools.advisory_gen import _decision as advisory_decision  # noqa: E402
+from tools.advisory_gen import _key_actions as advisory_key_actions  # noqa: E402
 from tools import report_gen  # noqa: E402
 from tools.attach_case_report import outcome_header  # noqa: E402
 
@@ -391,6 +392,53 @@ if _iris is not None:
             check("6b. IRIS invents no decider for an undecided case", not got_who,
                   f"got {got_who!r}")
 
+# --- 1f. the recommended playbook is ONE field with THREE homes -------------
+# It lives in the decision block, the mint source, or an event detail depending
+# on who wrote it. The advisory's Key Actions read only the sup block — which
+# never carries it — so "Execute playbook …" was dead on every case.
+from tools.case_tools import case_recommended_playbook  # noqa: E402
+
+check("1f. playbook resolves from the decision block",
+      case_recommended_playbook(
+          {**(_router_block_shape()),
+           "supervisory": {"decision": "approve", "recommended_playbook": "from-block"}})
+      == "from-block")
+check("1f. playbook resolves from the mint source",
+      case_recommended_playbook(
+          {"source": {"recommended_playbook": "from-source"},
+           "timeline": [{"type": "dispatch",
+                         "detail": {"recommended_playbook": "from-event"}}]})
+      == "from-source")
+check("1f. playbook resolves from an event detail (the store-view shape)",
+      case_recommended_playbook(
+          {"source": {"category": "infra"},
+           "timeline": [{"type": "dispatch",
+                         "detail": {"recommended_playbook": "from-event"}}]})
+      == "from-event")
+check("1f. no playbook anywhere -> empty (never invented)",
+      case_recommended_playbook(_undecided_shape()) == "")
+
+# --- 8. the advisory's Key Actions actually renders the recommendation ------
+# (It never did: the read was dead, so a decided case awaiting execution
+# rendered no action at all.) The decider is named, so a router-authorized INFRA
+# case is not described as a supervisory decision.
+_router_actions = "\n".join(advisory_key_actions(_router_block_shape()))
+check("8. a decided case with a recommendation renders the execute action",
+      "Execute playbook `service-impact-check`" in _router_actions
+      and "(per router decision)" in _router_actions, _router_actions[:160])
+_human_actions = "\n".join(advisory_key_actions(
+    {**_block_shape(), "timeline": [{"ts": NOW, "role": "supervisory", "type": "adjudication",
+                                     "detail": {"decision": "deny",
+                                                "recommended_playbook": "verify-only"}}]}))
+check("8. a human decision still reads 'per supervisory decision'",
+      "(per supervisory decision)" in _human_actions, _human_actions[:160])
+check("8. an executed case reports the execution, not a pending recommendation",
+      "Execute playbook" not in "\n".join(advisory_key_actions(
+          {**_router_block_shape(),
+           "timeline": [{"ts": NOW, "role": "responder", "type": "execution",
+                         "detail": {"playbook": "service-impact-check", "tier": "tier1",
+                                    "results": [{"ok": True, "detail": "suricata is active"}]}}]})))
+
 # --- 6c. the console badge must DELEGATE, not re-derive ---------------------
 # `adjudicate_api._view` is the human console card. Its decision badge used to
 # be derived inline (a "last supervisory adjudication event" scan), which made a
@@ -407,6 +455,23 @@ check("6c. the console view delegates to case_adjudication (no inline re-derivat
 check("6c. the console view does not scan for a supervisory role to decide",
       not re.search(r'role"?\)?\s*==\s*"supervisory"', _api_text),
       "inline supervisory-role decision scan is back")
+
+# --- 6d. the IRIS collection-row reader handles BOTH response shapes -------
+# `/case/ioc/list` returns `data` as an OBJECT wrapping the rows while the
+# timeline/notes/cases endpoints return a bare LIST. Assuming a list made the
+# publish iterate the object's KEYS and die with `'str' object has no attribute
+# 'get'` — after the IRIS case had already been created, aborting the run
+# before the timeline was written.
+if _iris is not None and hasattr(_iris, "_rows"):
+    check("6d. _rows reads a bare-list response",
+          [r.get("v") for r in _iris._rows({"data": [{"v": 1}, {"v": 2}]})] == [1, 2])
+    check("6d. _rows reads an object-wrapped response (the ioc/list shape)",
+          [r.get("v") for r in _iris._rows({"data": {"ioc": [{"v": 3}], "state": {}}}, "ioc")]
+          == [3])
+    check("6d. _rows reads an unnamed object wrapper and drops non-records",
+          _iris._rows({"data": {"whatever": [{"v": 4}, "junk"]}}) == [{"v": 4}])
+    check("6d. _rows survives a missing/None data field",
+          _iris._rows({}) == [] and _iris._rows({"data": None}) == [])
 
 # --- 7. two surfaces, one number (digest Coverage vs /reports) --------------
 # The original defect read 281 decided cases in the digest and 118 in /reports

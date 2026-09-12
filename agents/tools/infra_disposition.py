@@ -82,22 +82,15 @@ def case_category(case: dict[str, Any]) -> str:
 
 
 def recommended_playbook(case: dict[str, Any]) -> str:
-    """The playbook the router recommended for this case, if any."""
+    """The playbook recommended for this case — the SPINE's own derivation.
 
-    def _from_detail(detail: Any) -> str:
-        return str((detail or {}).get("recommended_playbook") or "") \
-            if isinstance(detail, dict) else ""
-
-    pb = str((case.get("source") or {}).get("recommended_playbook") or "")
-    if pb:
-        return pb
-    for ev in case.get("timeline") or []:
-        if not isinstance(ev, dict):
-            continue
-        pb = _from_detail(ev.get("detail"))
-        if pb:
-            return pb
-    return ""
+    Delegates to `case_tools.case_recommended_playbook` so the disposition rule
+    and every reporting surface read the same field the same way (the advisory's
+    Key Actions previously read a shape that never carried it, making its
+    "Execute playbook …" line dead on every case).
+    """
+    from tools.case_tools import case_recommended_playbook  # lazy: no import cycle
+    return case_recommended_playbook(case)
 
 
 def playbook_tier(playbooks: Any, name: str) -> str:

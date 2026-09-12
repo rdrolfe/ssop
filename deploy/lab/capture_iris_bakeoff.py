@@ -18,11 +18,23 @@ This captures the IRIS representation for one spine case:
 Writes /tmp/iris_bakeoff_capture.json. Exit 0 on success.
 """
 import json
+import os
 import ssl
 import sys
 import urllib.request
 
 sys.path.insert(0, ".")
+
+# The IRIS lab endpoint serves the DFIR-IRIS image's own development
+# certificate: self-signed, CN=iris.app.dev, NO subjectAltName, expired
+# 2022-12-09. Verified TLS cannot succeed against it — the hostname check has
+# nothing to match an IP and the validity dates are past — so this bridge runs
+# the sanctioned TEST PROFILE rather than hand-rolling an unverified context
+# (tools.tls logs the downgrade loudly on every context creation). Set
+# SSOP_TLS_VERIFY=1 to force verification and fail closed. The real fix is
+# reissuing IRIS's certificate; when that lands, delete this opt-out and the
+# verified path resumes for the whole IRIS mirror.
+os.environ.setdefault("SSOP_TLS_VERIFY", "0")
 
 _IRIS_URL = ""
 _IRIS_KEY = ""
