@@ -109,6 +109,9 @@ _DEFAULT_CATEGORY = 10  # Discovery — generic fallback
 _ROLE_KEY_ENV = {"analyst": "IRIS_KEY_ANALYST", "supervisor": "IRIS_KEY_SUPERVISOR",
                  "supervisory": "IRIS_KEY_SUPERVISOR",  # spine timeline uses role='supervisory'
                  "responder": "IRIS_KEY_RESPONDER", "hunt": "IRIS_KEY_HUNT"}
+# No key for `router` on purpose: there is no router service account in IRIS, so
+# a router adjudication event posts under the automation key (see _role_key's
+# fallback). Inventing a router credential would misrepresent who acted.
 
 
 def _stage_category(stage: str) -> int:
@@ -132,7 +135,16 @@ def _event_payload(ev: dict, case_id: str) -> dict | None:
             "event_source": "analyst", "event_tags": "ssop",
             "event_category_id": cat,
         }
-    if typ in ("adjudication", "verdict") and role == "supervisory":
+    if typ in ("adjudication", "verdict") and role in ("supervisory", "router"):
+        # WHO decided is part of the event, not an assumption. The router is
+        # the approving authority for INFRA tier0/1 (operator policy
+        # 2026-09-09), and this branch used to match `role == "supervisory"`
+        # only — so a router-adjudicated case reached the IRIS timeline with NO
+        # decision event at all: the spine held the approve and the human
+        # front-end showed nothing (same defect class as the console badge
+        # reading "undecided", different surface). Guarded by
+        # verify/test_decision_readers.py check 6.
+        #
         # Format the decision rationale as scannable labeled lines instead of
         # one dense run-on block. The spine rationale is a single string that
         # mixes rule evidence, agent context, corpus provenance and history.
@@ -152,9 +164,13 @@ def _event_payload(ev: dict, case_id: str) -> dict | None:
         content = "\n".join([f"Rationale: {rationale}"] + picks) if rationale \
             else "Rationale: (none)"
         return {
-            "event_title": f"Supervisory decision: {decision}",
+            # The decider is named in the title: a reader of the IRIS timeline
+            # can tell a machine adjudication from a human one. For a
+            # supervisory event this is byte-identical to the previous wording.
+            "event_title": ("Router decision: " if role == "router"
+                            else "Supervisory decision: ") + decision,
             "event_content": content,
-            "event_source": "supervisory", "event_tags": "ssop",
+            "event_source": role, "event_tags": "ssop",
             "event_category_id": _DEFAULT_CATEGORY,
         }
     if typ == "verdict" and role == "analyst":

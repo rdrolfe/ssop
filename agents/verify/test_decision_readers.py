@@ -27,10 +27,18 @@ What is asserted (each can FAIL on purpose):
   3. the report's decision chain renders a router adjudication as a DECISION,
      not a truncated JSON blob;
   4. the /reports enumeration counts a timeline-decided case and skips an
-     undecided one — the 163-case leak, pinned against a fake store.
+     undecided one — the 163-case leak, pinned against a fake store;
+  5. spine fields are JSON-null-safe (the crash class behind two 500s);
+  6. **the IRIS publish surface** renders a decision event for every decided
+     case AND names the same DECIDER — the mirror is the human front-end, so a
+     decision the spine holds but IRIS never shows is the same lie as the
+     console badge reading "undecided";
+  7. the digest's Coverage count and the /reports enumeration agree on the SAME
+     store (two surfaces, one number — the original defect was 281 vs 118).
 
 Hermetic: no Qdrant, no network — the enumeration check patches a fake memory
-into CaseStore.
+into CaseStore, and the IRIS surface is exercised as a pure payload mapper
+(no IRIS, no credentials: `_event_payload` is called directly).
 """
 import re
 import sys
@@ -104,6 +112,51 @@ def _router_shape() -> dict:
     }
 
 
+def _router_block_shape() -> dict:
+    """decide(..., role="router") — the block AS WRITTEN since 543becd.
+
+    This is the shape the router creates at mint time (INFRA tier0/1). Before
+    543becd the block carried no `role`, and because readers hit the block
+    FIRST, every router approval projected as a HUMAN "supervisory" one.
+    """
+    return {
+        "case_id": "case-routerblock",
+        "title": "[ROUTER] INFRA alert lvl=5 on kb-vec",
+        "ts": NOW, "updated_ts": NOW, "state": "decided", "status": "open",
+        "supervisory": {"decision": "approve",
+                        "rationale": "router adjudication (infra): tier1 playbook "
+                                     "service-impact-check authorized under operator "
+                                     "policy 2026-09-09",
+                        "ts": NOW, "role": "router"},
+        "timeline": [
+            {"ts": NOW, "role": "router", "type": "dispatch",
+             "detail": {"verdict": "escalate", "category": "infra",
+                        "recommended_playbook": "service-impact-check"}},
+            {"ts": NOW, "role": "router", "type": "adjudication",
+             "detail": {"decision": "approve",
+                        "rationale": "router adjudication (infra): tier1 playbook "
+                                     "service-impact-check authorized under operator "
+                                     "policy 2026-09-09"}},
+        ],
+    }
+
+
+def _legacy_router_block_shape() -> dict:
+    """A router adjudication recorded BEFORE 543becd: role on the EVENT only.
+
+    The read-repair (`_decider_role_from_timeline`) must attribute this to the
+    router, not to a human — the attribution a human surface shows.
+    """
+    c = _router_block_shape()
+    c["case_id"] = "case-legacyrouter"
+    c["supervisory"] = {"decision": "approve",
+                        "rationale": "router adjudication (infra): tier1 playbook "
+                                     "service-impact-check authorized under operator "
+                                     "policy 2026-09-09",
+                        "ts": NOW}          # no `role` — the historical gap
+    return c
+
+
 def _undecided_shape() -> dict:
     """Negative probe: no decision anywhere — the reader must NOT invent one."""
     return {
@@ -116,12 +169,14 @@ def _undecided_shape() -> dict:
     }
 
 
-CASES = [_block_shape(), _supervisory_timeline_shape(), _router_shape(), _undecided_shape()]
+CASES = [_block_shape(), _supervisory_timeline_shape(), _router_shape(),
+         _router_block_shape(), _legacy_router_block_shape(), _undecided_shape()]
 EXPECTED = {"case-block00001": "deny", "case-super00001": "deny",
-            "case-router0001": "approve", "case-undec00001": ""}
+            "case-router0001": "approve", "case-routerblock": "approve",
+            "case-legacyrouter": "approve", "case-undec00001": ""}
 
 # --- 1. the shared reader resolves every shape ------------------------------
-for case, want in zip(CASES, ["deny", "deny", "approve", ""]):
+for case, want in zip(CASES, ["deny", "deny", "approve", "approve", "approve", ""]):
     got, rationale = case_decision(case)
     check(f"1. case_decision({case['case_id']}) == {want!r}", got == want, f"got {got!r}")
 check("1b. rationale survives the timeline shapes",
@@ -146,6 +201,18 @@ check("1d. case_decision IS a projection of case_adjudication (one derivation, t
       all(case_decision(c) == (case_adjudication(c).get("decision", ""),
                                case_adjudication(c).get("rationale", ""))
           for c in CASES))
+
+# --- 1e. WHO decided is part of the answer, on every shape ------------------
+# The attribution defect (543becd) lived here: a router-written block read as a
+# HUMAN decision because the block carried no role. Every decided shape must
+# name its decider, and the human one must not be misattributed to the router.
+DECIDERS = {"case-block00001": "supervisory", "case-super00001": "supervisory",
+            "case-router0001": "router", "case-routerblock": "router",
+            "case-legacyrouter": "router", "case-undec00001": ""}
+for case in CASES:
+    want = DECIDERS[case["case_id"]]
+    got = case_adjudication(case).get("role", "")
+    check(f"1e. decider for {case['case_id']} == {want!r}", got == want, f"got {got!r}")
 
 
 # --- 2. every surface agrees (table-driven parity) --------------------------
@@ -261,6 +328,86 @@ try:
 except Exception as e:  # noqa: BLE001 — the crash IS the finding
     check("5b. _md_core renders a null-heavy case (source/supervisory/observables/timeline = null)",
           False, f"{type(e).__name__}: {e}")
+
+# --- 6. the IRIS publish surface: the mirror must show the same decision -----
+# IRIS is the human front-end. `publish_case_iris._event_payload` maps spine
+# timeline events onto IRIS timeline events, and it only mapped SUPERVISORY
+# adjudications — so a router-adjudicated INFRA case (the class this repo just
+# made the router authoritative for) reached IRIS as a case with no decision
+# event at all: the spine held the approve, the human surface showed nothing.
+# Same defect class as the console badge reading "undecided"; different surface.
+import importlib.util  # noqa: E402
+
+_PP = Path(__file__).resolve().parent.parent      # repo: agents/ · runtime: root
+
+
+def _load_iris_publisher():
+    for cand in (_PP / "deploy" / "lab" / "publish_case_iris.py",
+                 _PP.parent / "deploy" / "lab" / "publish_case_iris.py"):
+        if cand.exists():
+            spec = importlib.util.spec_from_file_location("iris_pub_under_test", cand)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    return None
+
+
+_iris = _load_iris_publisher()
+check("6. publish_case_iris is importable for the parity check (no IRIS, no keys)",
+      _iris is not None, "module not found in this layout")
+
+# What the IRIS timeline would render: (decision, decider) from the mapped
+# payloads. The titles are the surface's own words — the parity property is
+# that a DECISION event exists for every decided case and that it names the
+# same decider the spine names.
+_DECISION_TITLE = re.compile(r"^(Supervisory|Router) decision:\s*(\w+)", re.I)
+
+
+def _iris_surface(case: dict) -> tuple[str, str]:
+    if _iris is None:
+        return "", ""
+    dec, who = "", ""
+    for ev in (case.get("timeline") or []):
+        payload = _iris._event_payload(ev, case["case_id"])
+        if not payload:
+            continue
+        m = _DECISION_TITLE.match(str(payload.get("event_title", "")))
+        if m:
+            who, dec = m.group(1).lower(), m.group(2).lower()
+    return _norm(dec), who
+
+
+if _iris is not None:
+    for case in CASES:
+        want = EXPECTED[case["case_id"]] or "none"
+        got_dec, got_who = _iris_surface(case)
+        check(f"6. IRIS renders the decision for {case['case_id']} ({want!r})",
+              got_dec == want, f"got {got_dec!r}")
+        want_who = DECIDERS[case["case_id"]]
+        if want_who:
+            check(f"6b. IRIS names the decider for {case['case_id']} ({want_who!r})",
+                  got_who == want_who, f"got {got_who!r}")
+        else:
+            check("6b. IRIS invents no decider for an undecided case", not got_who,
+                  f"got {got_who!r}")
+
+# --- 7. two surfaces, one number (digest Coverage vs /reports) --------------
+# The original defect read 281 decided cases in the digest and 118 in /reports
+# on the SAME store. A count is a claim: it has to come from one derivation.
+_oracle = [c for c in CASES if case_decision(c)[0]]
+_check_store = _FakeMemory(CASES)
+_orig2 = CaseStore._get_memory
+CaseStore._get_memory = lambda self: _check_store
+try:
+    enumerated = report_gen._all_spine_cases(days=3650)
+finally:
+    CaseStore._get_memory = _orig2
+check("7. /reports enumerates exactly the cases the reader calls decided "
+      f"({len(_oracle)})",
+      len(enumerated) == len(_oracle),
+      f"enumerated {len(enumerated)} of {len(_oracle)} decided")
+check("7b. the undecided case is counted by NEITHER surface",
+      "case-undec00001" not in [c.get("case_id") for c in enumerated])
 
 print()
 print(f"{'FAILURES: ' + str(FAILS) if FAILS else 'ALL CHECKS PASSED'}")
