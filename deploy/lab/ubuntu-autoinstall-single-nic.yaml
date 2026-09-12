@@ -1,0 +1,63 @@
+#cloud-config
+# Ubuntu 24.04 autoinstall seed for SSOP SINGLE-NIC service hosts.
+# Variant of ubuntu-autoinstall.yaml (which is dual-plane: mgmt + attack segment)
+# for hosts that need one NIC only — e.g. the MISP feed platform (707).
+#
+# Two lessons are baked in here (both learned the hard way on vm707, 2026-09-12):
+#   1. `storage.layout: lvm` does NOT give a service host the whole disk — the
+#      stock layout hands root ~half (49G of 100G on vm707), which for a box whose
+#      documented failure mode is the correlations table filling the disk is a
+#      silent time bomb. `sizing-policy: all` plus an idempotent lvextend guard.
+#   2. The stock install grants NO privileged path (sudoers.d is empty and the
+#      seed's password is a generated hash) — so hands-off operation is impossible
+#      and every fix needs a console. A NOPASSWD sudoers drop-in for the fleet
+#      user is applied here, validated with `visudo -c` so a malformed file can
+#      never lock the host out.
+# Nothing else is installed: role software (docker, MISP, the Wazuh agent) is
+# installed afterwards over SSH, where each step can be VERIFIED rather than
+# passing silently inside late-commands.
+#
+# YAML NOTE: every late-command is a folded block scalar (`>-`). A plain scalar
+# containing ": " (e.g. "NOPASSWD: ALL") parses as a MAPPING and Subiquity aborts
+# the whole autoinstall with "Malformed autoinstall in 'late-commands' section" —
+# verified 2026-09-12. Block scalars keep colons literal. Do not "simplify".
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: __HOSTNAME__
+    username: rdrolfe
+    password: __PASSWORD_HASH__
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - __SSH_PUBKEY__
+  storage:
+    layout:
+      name: lvm
+      sizing-policy: all
+  network:
+    version: 2
+    ethernets:
+      service:
+        match:
+          macaddress: "__MAC__"
+        addresses:
+          - __IP__/24
+        routes:
+          - to: default
+            via: __GATEWAY__
+        nameservers:
+          addresses: [__DNS__]
+  late-commands:
+    # Fleet-user privileged access: the drop-in is what makes hands-off operation
+    # possible. Revocation = delete the file (same model as /etc/sudoers.d/
+    # ssop-patching on .90/.94/.13). visudo -c validates before it is live.
+    - >-
+      curtin in-target -- bash -c 'printf "%s\n" "rdrolfe ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-ssop-fleet && chmod 0440 /etc/sudoers.d/90-ssop-fleet && visudo -c'
+    # Belt-and-braces: if the layout still left free extents, take them.
+    - >-
+      curtin in-target -- bash -c 'lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv >/dev/null 2>&1 || true; resize2fs /dev/mapper/ubuntu--vg-ubuntu--lv >/dev/null 2>&1 || true'

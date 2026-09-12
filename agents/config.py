@@ -264,6 +264,21 @@ class Settings:
     otx_api_key: str = _env("OTX_API_KEY", "")  # empty = provider disabled
     otx_url: str = _env("OTX_URL", "https://otx.alienvault.com/api/v1")
 
+    # --- MISP bulk feed matching (ADR-007; docs/feeds-and-licensing.md) ---
+    # Self-hosted MISP on the SSOP LAN. Bulk match FIRST, per-indicator
+    # external lookups only for the survivors — the whole point of pulling
+    # the feed corpus in-lab. LAN-only, so this is NOT external egress
+    # (verify/check_egress.py treats RFC1918 as local); MISP's OWN feed sync
+    # is infrastructure egress declared in transport.yaml, enforced on the
+    # MISP host (it runs there, not in this runtime).
+    misp_url: str = _env("MISP_URL", "")           # e.g. https://192.168.1.80
+    misp_api_key: str = _env("MISP_API_KEY", "")   # empty = bulk match disabled
+    misp_timeout_s: int = _env_int("MISP_TIMEOUT_S", 30)
+    # Values per restSearch request. Bounded on purpose: one query per batch,
+    # never one per indicator (the sweep-latency trap this client exists to
+    # avoid), and small enough that MISP's own request limits are respected.
+    misp_batch_size: int = _env_int("MISP_BATCH_SIZE", 200)
+
     # --- SOAR responder ---
     approval_expiry_min: int = _env_int("APPROVAL_EXPIRY_MIN", 15)
 

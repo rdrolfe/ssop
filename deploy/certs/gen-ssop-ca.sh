@@ -50,6 +50,7 @@ issue wazuh-api      "IP:192.168.1.29,DNS:infra-ops"
 issue proxmox        "IP:192.168.1.137,DNS:proxmox"
 issue iris           "IP:192.168.1.75,IP:127.0.0.1,DNS:iris,DNS:telemetry"
 issue qdrant         "IP:192.168.1.94,IP:127.0.0.1,DNS:kb-vec"
+issue misp           "IP:192.168.1.80,IP:127.0.0.1,DNS:misp"
 
 # --- trust bundle: everything a client host needs ---
 cat "$CA_DIR/ca.crt" > "$CA_DIR/ca-bundle.crt"
