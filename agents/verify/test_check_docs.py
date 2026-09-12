@@ -27,6 +27,9 @@ FILES = [
     "agents/tools/self_heal.py", "agents/tools/intel_tools.py",
     "agents/tools/case_tools.py", "agents/tools/observables.py",
     "agents/tools/ontology.py", "agents/tools/tuning_tools.py",
+    # cited by docs/roles/router.md (the INFRA disposition rule's home) — the
+    # synthetic repo must mirror every file the cited docs point at
+    "agents/tools/infra_disposition.py",
 ]
 
 

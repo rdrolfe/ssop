@@ -51,7 +51,9 @@ In priority order:
    (sudo), `541/542/543` (systemd service health) → infra/infra.
    `dispatch_infra` senses + heals via the self-heal path AND mints a
    spine case (assignee=responder, recommended playbook attached) so
-   fleet-sysadmin actions are auditable end-to-end.
+   fleet-sysadmin actions are auditable end-to-end. It also RECORDS THE
+   DISPOSITION as it mints (see `dispatch_infra` below) — a case is never
+   left `state=new` for a human to decide later.
 6. **Ontology fallback**: an unmatched rule/group is
    categorized via `tools.ontology.categorize_alert` (the single source of
    truth) — `threat`/`authentication`/`integrity` → security/analyst,
@@ -81,6 +83,28 @@ In priority order:
 **Infra → infra-manager** (`dispatch_infra`):
 - `sense → decide → heal` fixable issues; escalate tier-1 anything outside
   the whitelist.
+- The spine case is minted AND adjudicated in the same pass: the disposition
+  rule lives in `infra_disposition` (`infra_disposition.py:109`), applied with
+  the recommendation for the alert in hand. `decide(..., role="router")` is
+  the write path, so the case carries who decided it.
+  - tier0/tier1 recommended playbook → `approve` (operator policy 2026-09-09:
+    the router approves INFRA tier0/1). `approve` is NOT a close — the
+    responder still executes and closes.
+  - no recommendation, or a playbook whose tier is unknown/tier-less →
+    `operational` (routine fleet-health event, no response required).
+  - a tier2 playbook → `operational`, NEVER `approve`: a tier2 action is
+    supervisory-only by construction.
+  - a non-`infra` category → refused, case left undecided (a security case is
+    never the router's to adjudicate).
+  - an unreadable playbook library → DEFERRED (case left undecided): recording
+    "no response required" from a failed library read would be a decision made
+    from missing data.
+- Idempotent: a re-dispatch attaches to the case (never re-mints) and an
+  already-decided case is never re-decided — a changed recommendation on a
+  decided case is a human re-adjudication, not the cadence's call.
+- `deploy/lab/dispose_infra_cases.py` is the BACKLOG sweep/audit view for cases
+  minted before this landed; it calls the same `infra_disposition`, so a dry
+  run and a live dispatch cannot disagree.
 
 ## Outputs
 `{action: dispatched_to_<role>, case_id?, verdict?, escalated?, ...}` per
@@ -95,3 +119,8 @@ alert; a run report with processed/dispatched counts. Cursor persisted.
 `agents/verify/` — `inv_deduped_burst` exercises real `dispatch(alert,
 burst_count=2)`; `inv_no_dispatch`/`inv_tuned` assert the tuning gates;
 `inv_no_new_case` asserts `existing_chain` attach, not re-mint.
+`agents/verify/test_infra_disposition.py` drives real `dispatch_infra` and
+asserts the minted case is adjudicated by the router (tier1 → approve with
+`role=router`; tier2/unknown → operational, never an approval; non-infra →
+refused; unreadable library → deferred), that a re-dispatch never rewrites a
+decision, and that the store view derives the same verdict the cadence did.

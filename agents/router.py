@@ -347,6 +347,23 @@ def _recommend_playbook(category: str, level: int, rule_id: str = "") -> str | N
     except Exception:  # noqa: BLE001 — enrichment must never break dispatch
         return None
 
+
+def _load_playbooks_safe() -> dict | None:
+    """The playbook library for INFRA disposition — None when unreadable.
+
+    None means DEFER, never "no playbook": `infra_disposition` refuses to
+    record "no response required" for a playbook-backed event whose tier it
+    could not read. A library read failure therefore leaves the case undecided
+    (honest) instead of auto-disposing a fleet event on missing data.
+    """
+    try:
+        from tools.playbook_loader import load_playbooks
+        return load_playbooks()
+    except Exception:  # noqa: BLE001 — disposition defers, dispatch proceeds
+        logger.exception("playbook library unreadable — infra disposition deferred")
+        return None
+
+
 def _security_occurred_at(alert: dict[str, Any], ix: Any) -> str:
     """occurred_at via the alert contract for security-path case minting.
 
@@ -397,6 +414,7 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
             # (This was called but ignored, minting one case per sweep:
             # 37 duplicate 40704 cases in one day before the fix.)
             case_id = chain[0]["case_id"]
+            case = chain[0]  # the case as the store sees it — disposition reads it
             result["case_id"] = case_id
             result["attached"] = True
             cases.append_event(case_id, "router", "dispatch", {
@@ -415,6 +433,12 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
                 source={"alert_id": alert.get("_id", ""), "agent": agent,
                         "rule_desc": rule.get("description", ""), "rule_id": rid,
                         "category": category, "level": level,
+                        # What the platform recommended at mint, on the case's
+                        # OWN record: the disposition derivation reads it (the
+                        # case point carries state fields only — its timeline
+                        # events are separate points), so a backlog sweep and a
+                        # live dispatch classify the same case the same way.
+                        "recommended_playbook": recommended,
                         "backend": getattr(ix, "backend", ""), "index": "",
                         "doc_id": alert.get("_id", ""),
                         # occurred_at via the alert contract: ts-field aware
@@ -435,6 +459,35 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
                              f"{rule.get('description', '')[:80]}",
             })
             logger.info("infra case minted: %s (recommended %s)", case_id, recommended)
+
+        # DISPOSITION IN THE CADENCE — the actual class fix. Minting a case and
+        # walking away is what left this class undecided forever: the rule
+        # lived only in deploy/lab/dispose_infra_cases.py, so the backlog grew
+        # one event per sweep and every audit found the same list again (64
+        # applied Sep 11, 7 more pending hours later). The router is the
+        # approving authority for INFRA tier0/1 (operator policy 2026-09-09),
+        # so it records the disposition as it mints. `approve` is NOT a close:
+        # the responder still executes and closes. Idempotent by construction —
+        # an already-decided case is ineligible, so a re-dispatch never rewrites
+        # a decision (including a playbook change on a decided case, which is a
+        # human's call to re-adjudicate, not the cadence's).
+        from tools.infra_disposition import infra_disposition
+        disp = infra_disposition(case, _load_playbooks_safe(), recommended=recommended)
+        if disp["eligible"]:
+            try:
+                cases.decide(case_id, disp["decision"], disp["rationale"],
+                             role="router")
+                result["decision"] = disp["decision"]
+                logger.info("infra case %s adjudicated by router: %s (tier %s)",
+                            case_id, disp["decision"], disp["tier"] or "?")
+            except Exception:
+                # A refused transition must not break dispatch, and must not be
+                # hidden: the case stays undecided and the sweep still sees it.
+                logger.exception("infra disposition write failed for %s — case "
+                                 "left undecided", case_id)
+                result["disposition_error"] = "decide failed"
+        else:
+            result["disposition_skipped"] = disp["reason"]
     except Exception:
         logger.exception("infra case mint failed for %s", agent)
         result["error"] = result.get("error") or "case mint failed"

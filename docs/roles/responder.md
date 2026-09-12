@@ -102,10 +102,15 @@ alert (rule 541 systemd/operational, level 5, agent=.13, service=ssop-demo-svc)
    **`dispatch_infra` mints a spine case** (`assignee=responder`) with the
    recommended playbook attached — infra events are auditable like security
    cases.
-3. Router records the adjudication event (decision=approve) — for infra
-   events the ROUTER is the approving authority (operator policy: no
-   supervisory pass on fleet-sysadmin events). Tier2 NEVER gets router
-   authorization — only the supervisory run_id path.
+3. Router records the ADJUDICATION on the spine as it mints — `decide(...,
+   role="router")`, so the case is `state=decided` with the decision, the
+   rationale and the deciding role on it, not merely a dispatch event. For
+   infra events the ROUTER is the approving authority (operator policy: no
+   supervisory pass on fleet-sysadmin events): tier0/tier1 recommendation →
+   `approve`; no/tier-less/unknown playbook → `operational` (no response
+   required); a tier2 playbook is NEVER router-authorized — only the
+   supervisory run_id path may. `approve ≠ close`: the responder below still
+   executes and closes. (Rule: `agents/tools/infra_disposition.py`.)
 4. `responder.run(case_id=...)` reads the router approval from the spine
    (approval-gate extension 2b), executes restart + verify, appends the
    `responder_execution` event.

@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """Terminal disposition for router-minted INFRA cases that nobody decided.
 
-THE GAP THIS CLOSES: `dispatch_infra` mints a case per fleet-health event
-(assignee=responder) and recommends a playbook — then nothing ever decides it.
-Those cases sit `state=new` forever: no decision on the spine, so the advisory
-renders "under review" for an event the platform already handled, and the
-coverage number counts them as open work.
+WHAT THIS IS NOW: the disposition RULE lives in `tools/infra_disposition.py`
+and the router applies it at mint time (`dispatch_infra`), so this class should
+no longer accumulate. This script is the BACKLOG SWEEP and the audit view for
+cases minted before that landed — it delegates to the same derivation, so a dry
+run here and a live dispatch can never disagree about what a case's disposition
+should be.
 
-THE AUTHORITY IT USES (no new policy is invented here): by operator policy
-2026-09-09 the ROUTER is the approving authority for INFRA cases at tier0/1
-and is explicitly barred from tier2 — that rule is already encoded in the
-ontology (docs/ontology/ssop.ttl role comment), in `case_decision`'s router
-branch, and in the advisory's decision reader. This script applies exactly
-that rule to the backlog:
+THE ORIGINAL GAP (why the shared rule exists): `dispatch_infra` minted a case
+per fleet-health event (assignee=responder) and recommended a playbook — then
+nothing ever decided it. Those cases sat `state=new` forever: no decision on
+the spine, so the advisory rendered "under review" for an event the platform
+already handled, and the coverage number counted them as open work.
 
-  - case carries a tier0/tier1 recommended playbook -> decision `approve`
-    (the playbook is verify/known-safe; the router may authorize it)
-  - no playbook, or any tier2 playbook              -> decision `operational`
-    (routine fleet-health event; no response required — never an approval,
-    because a tier2 action is supervisory/human-only by construction)
-  - ANY case whose category is not `infra`          -> refused, untouched
-    (security cases are not this script's business at any tier)
+THE AUTHORITY (no new policy invented here): by operator policy 2026-09-09 the
+ROUTER is the approving authority for INFRA cases at tier0/1 and is explicitly
+barred from tier2 — encoded in the ontology (docs/ontology/ssop.ttl role
+comment), in `case_decision`'s router branch, and in the advisory's decision
+reader. See `tools/infra_disposition.py` for the rule.
 
 Safety rails: dry-run is the DEFAULT; `--apply` writes; `--close` additionally
 closes the decided cases (off by default — deciding and closing are separate
@@ -45,89 +43,65 @@ APPLY = "--apply" in sys.argv
 CLOSE = "--close" in sys.argv
 RECEIPT = Path.home() / ".ssop" / "state" / "infra-case-disposition.json"
 
-# Categories this script is allowed to touch. Anything else is refused — a
-# security/threat case is decided by the supervisory path, never here.
-INFRA_CATEGORIES = {"infra"}
+#: reason-code prefix -> label in the report (the shared derivation's reasons)
+_REASON_LABELS = {
+    "unreachable": "unreachable",
+    "category": "refused:category",
+    "playbook_library_unavailable": "deferred:playbook_library_unavailable",
+    "not_router_minted": "not_router_minted",
+    "already_decided": "already_decided",
+}
 
 
-def _case_category(case: dict) -> str:
-    """The case's category from source (mint) or the dispatch/verdict event."""
-    src = case.get("source") or {}
-    cat = str(src.get("category") or "").lower()
-    if cat:
-        return cat
-    for ev in case.get("timeline", []) or []:
-        if not isinstance(ev, dict):
-            continue
-        d = ev.get("detail") or {}
-        if isinstance(d, dict) and d.get("category"):
-            return str(d["category"]).lower()
-    return ""
-
-
-def _recommended_playbook(case: dict) -> str:
-    """The playbook the router recommended at dispatch, if any."""
-    src = case.get("source") or {}
-    if src.get("recommended_playbook"):
-        return str(src["recommended_playbook"])
-    for ev in case.get("timeline", []) or []:
-        if not isinstance(ev, dict):
-            continue
-        d = ev.get("detail") or {}
-        if isinstance(d, dict) and d.get("recommended_playbook"):
-            return str(d["recommended_playbook"])
-    return ""
+def _label(reason: str) -> str:
+    head, _, tail = reason.partition("=")
+    if ":" in head:
+        head, _, state = head.partition(":")
+        return f"{head}:{state}"
+    if head in _REASON_LABELS:
+        lbl = _REASON_LABELS[head]
+        return f"{lbl}={tail}" if tail else lbl
+    return reason
 
 
 def main() -> int:
-    from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision, can_decide
+    from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision
+    from tools.infra_disposition import (
+        REASON_ELIGIBLE, infra_disposition,
+    )
     from tools.playbook_loader import load_playbooks
 
     cs = CaseStore()
     mem = cs._get_memory()
     try:
         playbooks = load_playbooks()
-    except Exception:  # noqa: BLE001 — a library read failure must not decide cases
-        playbooks = {}
+    except Exception:  # noqa: BLE001 — an unreadable library DEFERS, never decides
+        print("playbook library unreadable — deferring every playbook-backed "
+              "case (nothing will be written)")
+        playbooks = None
 
     candidates: list[tuple[dict, str, str]] = []   # (case, decision, rationale)
     counts: Counter[str] = Counter()
 
-    for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000, scroll_limit=10000):
+    # ONE store scan (never a per-id get_case loop); the sweep reads the case
+    # point, whose state fields carry everything the derivation needs.
+    for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
+                               scroll_limit=10000):
         case = CaseStore._parse_content(r.get("content", ""))
         if not case or not isinstance(case, dict):
             continue
         if case_decision(case)[0]:          # already decided — not our business
             continue
-        title = str(case.get("title") or "")
-        if "[ROUTER]" not in title:
+        if "[ROUTER]" not in str(case.get("title") or ""):
+            continue                        # not router-minted — never ours
+        disp = infra_disposition(case, playbooks)
+        if not disp["eligible"]:
+            counts[_label(disp["reason"])] += 1
             continue
-        cat = _case_category(case)
-        if cat not in INFRA_CATEGORIES:
-            counts[f"refused:category={cat or 'unknown'}"] += 1
-            continue
-        state = str(case.get("state") or "new")
-        if not can_decide(state):
-            counts[f"unreachable:{state}"] += 1
-            continue
-        pb_name = _recommended_playbook(case)
-        pb = playbooks.get(pb_name) if pb_name else None
-        tier = str(getattr(pb, "approval", "") or "")
-        if pb is not None and tier in ("tier0", "tier1"):
-            decision = "approve"
-            rationale = (f"router adjudication (infra): tier{tier[-1]} playbook "
-                         f"{pb_name} authorized under operator policy 2026-09-09 "
-                         f"— router approves INFRA tier0/1 only")
-        else:
-            decision = "operational"
-            why = f"playbook {pb_name} is tier{tier[-1]}" if tier == "tier2" else \
-                  (f"playbook {pb_name} unknown/tier-less" if pb_name else "no playbook recommended")
-            rationale = (f"router disposition (infra): routine fleet-health event, "
-                         f"no response required ({why})")
-        candidates.append((case, decision, rationale))
+        candidates.append((case, disp["decision"], disp["rationale"]))
         # Mode-neutral label: the header already says DRY RUN or APPLY, and a
         # receipt reading "would_decide" after an apply is a lying artifact.
-        counts[f"decide:{decision}"] += 1
+        counts[f"decide:{disp['decision']}"] += 1
 
     print(f"router-minted undecided INFRA cases: {len(candidates)} "
           f"({'APPLY' if APPLY else 'DRY RUN'}{', +close' if CLOSE else ''})\n")

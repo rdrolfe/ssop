@@ -121,6 +121,31 @@ def _normalize_state(state: str) -> str:
     return state
 
 
+def _decider_role_from_timeline(case: dict[str, Any]) -> str:
+    """WHO decided, read off the case's own adjudication event.
+
+    Only the legacy gap needs this: `CaseStore.decide()` stamped `role` into
+    the top-level `supervisory` block only from Sep 11 on, so a router
+    adjudication recorded before that carries `role=router` on its timeline
+    event and nothing in the block. Returns "" when the timeline names no
+    adjudicator (callers fall back to "supervisory").
+
+    Deliberately narrow: ONLY adjudication events count. The router's `dispatch`
+    events also carry role=router but record no decision — reading one as the
+    decider would attribute an undecided case to the router.
+    """
+    for ev in reversed(case.get("timeline") or []):
+        if not isinstance(ev, dict) or ev.get("type") != "adjudication":
+            continue
+        detail = ev.get("detail") or {}
+        decided = (detail.get("decision") if isinstance(detail, dict)
+                   else ev.get("decision"))
+        role = str(ev.get("role") or "")
+        if decided and role:
+            return role
+    return ""
+
+
 def case_adjudication(case: dict[str, Any]) -> dict[str, Any]:
     """The case's decision as a DETAIL DICT — THE single derivation.
 
@@ -143,7 +168,14 @@ def case_adjudication(case: dict[str, Any]) -> dict[str, Any]:
         return {
             "decision": str(sup["decision"]),
             "rationale": str(sup.get("rationale") or "").strip(),
-            "role": str(sup.get("role") or "supervisory"),
+            # `role` was NOT stamped into the block before Sep 11 (only the
+            # event carried it), so every router adjudication recorded up to
+            # then reads as a human "supervisory" approval. Repair the
+            # attribution on READ rather than rewriting history: when the block
+            # is silent, the adjudication event that decided the case is the
+            # record of who decided it.
+            "role": str(sup.get("role") or _decider_role_from_timeline(case)
+                        or "supervisory"),
             "ts": str(sup.get("ts") or ""),
         }
     for ev in reversed(case.get("timeline", []) or []):
@@ -549,7 +581,12 @@ class CaseStore:
                     f"illegal case transition {cur} -> decided (case {case_id})")
             case["state"] = "decided"
             case["status"] = _derive_status("decided")
-            case["supervisory"] = {"decision": decision, "rationale": rationale, "ts": ts}
+            # `role` rides the sup block, not just the event: the router is the
+            # approving authority for INFRA tier0/1, and a projection that
+            # reads the block first (case_adjudication) would otherwise
+            # attribute every machine approval to a human "supervisory".
+            case["supervisory"] = {"decision": decision, "rationale": rationale,
+                                   "ts": ts, "role": role}
             case.setdefault("timeline", []).append({
                 "ts": ts,
                 "role": role,
