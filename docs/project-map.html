@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>SSOP — The Ontology Project Map</h1>
-<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-09-10.</b></div>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-09-12.</b></div>
 
 <div class="legend">
   <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
@@ -52,7 +52,7 @@
     <div class="item"><div class="t">Recognition + investigation layers</div><div class="d">Threat-pattern correlation, entity scoring, kill-chain hypothesis</div></div>
     <div class="item"><div class="t">Supervisor (evidence-aware)</div><div class="d">adjudicate_with_investigation — approve/deny grounded in scored evidence</div></div>
     <div class="item"><div class="t">Responder = fleet-sysadmin <span class="tag commit">5983456</span></div><div class="d">tier0/1 SRE moves live-proven (3 worked examples in docs/roles/responder.md); tier2 dormant; .13 sanctioned</div></div>
-    <div class="item"><div class="t">Router adjudication authority</div><div class="d">authorizes infra cases (never tier2); dispatch_infra mints spine cases; advisory renders executions as Key Actions</div></div>
+    <div class="item"><div class="t">Router adjudication authority <span class="tag commit">543becd</span></div><div class="d">authorizes infra cases (never tier2) — and now RECORDS the disposition as it mints (one shared rule: <code>tools/infra_disposition.py</code>). tier0/1 → approve, tier2/unknown → operational, non-infra refused, unreadable playbook library → deferred. approve ≠ close: the responder still executes. Sweep = backlog audit only; dry run and live dispatch cannot disagree</div></div>
     <div class="item"><div class="t">Pane of glass + human console</div><div class="d">Closed Loop console embedded in Wazuh dashboards; tickets/tuned-rules tabs</div></div>
   </div>
 
@@ -73,9 +73,10 @@
 
   <div class="col doing">
     <h2><span class="dot"></span> State machine hardening (this week)</h2>
+    <div class="item"><div class="t">INFRA disposition in the cadence <span class="tag commit">543becd</span></div><div class="d">Router-minted INFRA cases sat undecided forever (the rule lived only in a lab script, so 64 were applied by hand and 7 more piled up hours later). Now the router adjudicates as it mints; the sweep is an audit view. Found while auditing: <code>decide()</code> never stamped WHO decided, so every router approval projected as a HUMAN supervisory one — fixed forward, repaired on read for history</div></div>
     <div class="item"><div class="t">Drill churn fixed <span class="tag commit">b561768</span></div><div class="d">Escalate-tuned rules settle: router suppresses fingerprint matches; approve no longer re-writes the tuning ledger. Queue 0, verified over sweeps</div></div>
     <div class="item"><div class="t">Infra-case dedupe <span class="tag commit">70f824d · a75dd9a</span></div><div class="d">dispatch_infra ignored its own dedupe lookup — minted 37 dup 40704 cases/day. Now attaches to ANY open case (open_only, no time bound); 36 dups closed; first/closed/other-rule still mint</div></div>
-    <div class="item"><div class="t">Alert provenance <span class="tag commit">ad0dcef</span></div><div class="d">occurred_at gap root-caused: router read hit @timestamp for cursor but never stamped it down; infra read wrong key, security read dead v["ts"]. One intake stamp + contract-based mints. Hermetic-proven; live mint pending</div></div>
+    <div class="item"><div class="t">Alert provenance <span class="tag commit">ad0dcef</span></div><div class="d">occurred_at gap root-caused: router read hit @timestamp for cursor but never stamped it down; infra read wrong key, security read dead v["ts"]. One intake stamp + contract-based mints. Hermetic-proven and LIVE-verified (6 real router-minted cases carry real doc_id + ISO occurred_at + backend attribution)</div></div>
     <div class="item"><div class="t">Entity-scoped tuning <span class="tag commit">76ffa62</span></div><div class="d">Deny scopes to the ENTITY (pair:src&gt;dst for network, host for host-only) — same rule from a different entity re-triages instead of suppressing. Fixes rule-global tuning (991053: 77 mints before one global deny)</div></div>
     <div class="item"><div class="t">Deny path verified</div><div class="d">All 5 denied drill rules wrote auto_fp and zero re-minted — the drill loop's last unproven leg closes</div></div>
     <div class="item"><div class="t">40704 tuning — decision (b) <span class="tag verify">watching</span></div><div class="d">No tuning entry; dedupe absorbs it. Tune only if it keeps attaching noise for a few days</div></div>
