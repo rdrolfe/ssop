@@ -7,6 +7,17 @@ PRIVATE temp environment and reports per-file results. Missing hard
 dependencies => BLOCKED, never a silent pass. Live/integration checks
 (verify matrix on the runtime hosts) are explicitly OUT of scope here.
 
+Dependencies: `REQUIRED` is what the suite itself needs to be coherent.
+A single test that additionally needs a declared package (e.g. the HermiT
+gate needs rdflib + owlready2 + a JVM) lists it in `TEST_DEPS`: if it is
+absent the test reports BLOCKED with the missing module named, instead of
+FAILing on a ModuleNotFoundError that reads like a broken assertion. That
+distinction is the whole point — the check_ontology gate failed CI for a
+day as "[FAIL rc=1] ModuleNotFoundError: No module named 'rdflib'" while
+nothing was actually wrong with the gate. BLOCKED still turns the suite
+red (requirements.txt is supposed to provide everything), it just tells
+the truth about why.
+
 Usage:
     python3 agents/verify/run_offline_ci.py
 Exit codes: 0 = all pass, 1 = failures, 2 = BLOCKED (deps missing).
@@ -52,6 +63,13 @@ HERMETIC = [
     "agents/verify/test_ontology_export.py",
     "agents/verify/check_ontology.py",
 ]
+
+# Per-test extra deps: module -> packages it imports on top of REQUIRED.
+# Missing => BLOCKED for that test (never FAIL, never a silent pass).
+# check_ontology also needs a JVM on PATH (owlready2 boots embedded HermiT).
+TEST_DEPS: dict[str, list[str]] = {
+    "agents/verify/check_ontology.py": ["rdflib", "owlready2"],
+}
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -127,11 +145,21 @@ def main() -> int:
         print("Fix the environment (make venv, pip install -r requirements.txt).")
         return 2
 
-    # 4. Run each hermetic test in its own private temp dir (no shared /tmp).
-    print(f"\nRunning {len(HERMETIC)} hermetic tests (parallel, isolated temp dirs)...\n")
+    # 4. Per-test dependency gate: a test whose declared extra deps are absent
+    #    is BLOCKED (named, once) instead of FAILing inside the test with a
+    #    ModuleNotFoundError that looks like a broken assertion. Still red.
+    blocked_tests: dict[str, str] = {}
+    for t in HERMETIC:
+        gone = [m for m in TEST_DEPS.get(t, []) if importlib.util.find_spec(m) is None]
+        if gone:
+            blocked_tests[t] = ", ".join(gone)
+    runnable = [t for t in HERMETIC if t not in blocked_tests]
+
+    # 5. Run each hermetic test in its own private temp dir (no shared /tmp).
+    print(f"\nRunning {len(runnable)} hermetic tests (parallel, isolated temp dirs)...\n")
     with tempfile.TemporaryDirectory(prefix="ssop-ci-base-") as base:
         with ThreadPoolExecutor(max_workers=4) as ex:
-            results = list(ex.map(lambda t: run_one(t, base), HERMETIC))
+            results = list(ex.map(lambda t: run_one(t, base), runnable))
 
     failures = 0
     for test, code, detail in sorted(results):
@@ -142,9 +170,19 @@ def main() -> int:
             print(f"[FAIL rc={code}] {test}")
             if detail:
                 print(f"       {detail}")
+    for test, mods in sorted(blocked_tests.items()):
+        print(f"[BLOCKED] {test} — missing deps: {mods}")
 
-    print(f"\nOFFLINE SUITE: {'PASS' if failures == 0 else f'FAIL ({failures}/{len(HERMETIC)})'}")
-    return 0 if failures == 0 else 1
+    if failures or blocked_tests:
+        parts = []
+        if failures:
+            parts.append(f"{failures} fail")
+        if blocked_tests:
+            parts.append(f"{len(blocked_tests)} blocked")
+        print(f"\nOFFLINE SUITE: FAIL ({', '.join(parts)} /{len(HERMETIC)})")
+        return 1
+    print(f"\nOFFLINE SUITE: PASS")
+    return 0
 
 
 if __name__ == "__main__":

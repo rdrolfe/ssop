@@ -6,3 +6,8 @@ paramiko>=5.0.0
 proxmoxer>=2.3.0
 python-dotenv>=1.2.0
 pyyaml>=6.0
+# Ontology gate (agents/verify/check_ontology.py): rdflib round-trips the
+# exported TTL, owlready2 drives the embedded HermiT reasoner (needs a JVM on
+# PATH — CI installs Temurin via .github/workflows/offline-ci.yml).
+rdflib>=7.0
+owlready2>=0.45

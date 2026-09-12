@@ -42,6 +42,7 @@ into CaseStore, and the IRIS surface is exercised as a pure payload mapper
 """
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -62,7 +63,12 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         FAILS += 1
 
 
-NOW = "2026-09-11T12:00:00+00:00"
+# Fixture clock is COMPUTED, never a pinned literal. the /reports enumeration
+# check (4) drives the real `report_gen._all_spine_cases(days=N)`, which filters
+# on wall-clock — with a frozen NOW the fixtures aged out of the window exactly
+# 24h after the pinned date and the test went red on its own (self-expiring
+# test, not a regression: the same commit was green the day before).
+NOW = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _block_shape() -> dict:
