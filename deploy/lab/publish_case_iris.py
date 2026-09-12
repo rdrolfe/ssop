@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import ssl
 import sys
 import urllib.error
@@ -29,16 +28,17 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
-# The IRIS lab endpoint serves the DFIR-IRIS image's own development
-# certificate: self-signed, CN=iris.app.dev, NO subjectAltName, expired
-# 2022-12-09 — verified TLS cannot succeed against it (nothing for the hostname
-# check to match, validity dates in the past). This bridge therefore runs the
-# sanctioned TEST PROFILE rather than hand-rolling an unverified context;
-# tools.tls logs the downgrade loudly. Set SSOP_TLS_VERIFY=1 to force
-# verification and fail closed. The real fix is reissuing IRIS's certificate —
-# delete this opt-out when that lands.
-os.environ.setdefault("SSOP_TLS_VERIFY", "0")
-
+# TLS: VERIFIED (issue #29 default) — no test-profile opt-out.
+#
+# IRIS used to be the one endpoint this bridge could not verify: the box served
+# the DFIR-IRIS image's dev certificate (self-signed, CN=iris.app.dev, no SAN,
+# expired 2022-12-09), and the SSOP-CA-signed leaf that existed carried
+# `IP:192.168.1.50` — a host that does not exist — while IRIS runs on .75. Both
+# are fixed: the leaf is reissued with SAN IP:192.168.1.75 (plus 127.0.0.1 for
+# container-local checks) and installed at the path the stock nginx config
+# reads. Do NOT reinstate a CERT_NONE context or an SSOP_TLS_VERIFY=0 default
+# here — if verification ever fails again, the certificate is broken and that
+# is the thing to fix.
 from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 # IRIS service-account key + endpoint live in the runtime .env (host-only).

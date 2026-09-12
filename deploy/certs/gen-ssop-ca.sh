@@ -39,11 +39,16 @@ issue() {
 }
 
 # Services, with the SANs clients actually connect by:
+# NOTE: every SAN here must match the host clients CONNECT BY, or the
+# hostname check fails and the certificate is useless (verified TLS cannot
+# match an IP against a CN, and a bare CN has nothing to do with an IP).
+# `iris` shipped IP:192.168.1.50 — a host that does not exist — while IRIS
+# runs on .75, so the mirror could never verify. Keep these honest.
 issue adjudicate-api "IP:192.168.1.29,IP:127.0.0.1,DNS:infra-ops"
 issue indexer        "IP:192.168.1.29,DNS:infra-ops"
 issue wazuh-api      "IP:192.168.1.29,DNS:infra-ops"
 issue proxmox        "IP:192.168.1.137,DNS:proxmox"
-issue iris           "IP:192.168.1.50,DNS:iris"
+issue iris           "IP:192.168.1.75,IP:127.0.0.1,DNS:iris,DNS:telemetry"
 issue qdrant         "IP:192.168.1.94,IP:127.0.0.1,DNS:kb-vec"
 
 # --- trust bundle: everything a client host needs ---

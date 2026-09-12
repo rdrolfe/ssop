@@ -18,32 +18,29 @@ This captures the IRIS representation for one spine case:
 Writes /tmp/iris_bakeoff_capture.json. Exit 0 on success.
 """
 import json
-import os
 import ssl
 import sys
 import urllib.request
 
 sys.path.insert(0, ".")
 
-# The IRIS lab endpoint serves the DFIR-IRIS image's own development
-# certificate: self-signed, CN=iris.app.dev, NO subjectAltName, expired
-# 2022-12-09. Verified TLS cannot succeed against it — the hostname check has
-# nothing to match an IP and the validity dates are past — so this bridge runs
-# the sanctioned TEST PROFILE rather than hand-rolling an unverified context
-# (tools.tls logs the downgrade loudly on every context creation). Set
-# SSOP_TLS_VERIFY=1 to force verification and fail closed. The real fix is
-# reissuing IRIS's certificate; when that lands, delete this opt-out and the
-# verified path resumes for the whole IRIS mirror.
-os.environ.setdefault("SSOP_TLS_VERIFY", "0")
-
+# TLS: VERIFIED (issue #29 default) — no test-profile opt-out. See
+# publish_case_iris.py for why this bridge used to need one (the IRIS box
+# served its image's expired dev certificate, and the SSOP leaf carried the
+# wrong IP SAN). Both are fixed; if verification fails again, fix the
+# certificate, do not weaken this client.
 _IRIS_URL = ""
 _IRIS_KEY = ""
+_API_URL = ""
+_API_TOKEN = ""
 from pathlib import Path as _Path
 from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
 
 def _load_env() -> None:
-    global _IRIS_URL, _IRIS_KEY
+    global _IRIS_URL, _IRIS_KEY, _API_URL, _API_TOKEN
+    import os as _os
+    _API_URL = _os.getenv("SSOP_API_URL", "").strip() or "https://127.0.0.1:8787"
     for env in (_Path.home() / "agent-runtime" / ".env",
                 _Path.home() / "iris-web" / ".env"):
         if not env.exists():
@@ -55,6 +52,8 @@ def _load_env() -> None:
                 _IRIS_URL = line.split("=", 1)[1].strip()
             elif line.startswith("INTERFACE_HTTPS_PORT=") and not _IRIS_URL:
                 _IRIS_URL = f"https://192.168.1.75:{line.split('=', 1)[1].strip()}"
+            elif line.startswith("ADJUDICATE_API_TOKEN=") and not _API_TOKEN:
+                _API_TOKEN = line.split("=", 1)[1].strip()
 
 
 def _ctx():
@@ -110,13 +109,25 @@ def _iocs(cid: int) -> list:
 
 
 def _report(case_id: str) -> str:
+    """The spine /report deliverable, over VERIFIED TLS.
+
+    Fetched from the spine API itself — the authoritative producer of the
+    deliverable. It used to be fetched from `https://192.168.1.75:5602/report`,
+    which is the Wazuh-dashboard host's TLS surface (cert CN=demo.dashboard,
+    SAN demo.dashboard only, issued by the Wazuh CA): unverifiable from the
+    SSOP trust store both by issuer and by name, and it only ever worked
+    because this client ran with verification off. The dashboard route proves
+    the console path, not the report; the report is what axis 6 scores, so it
+    is read from the source that signs for it. Override with SSOP_API_URL.
+    """
     try:
         req = urllib.request.Request(
-            f"https://192.168.1.75:5602/report?case_id={case_id}",
-            headers={"Accept": "text/markdown"})
+            f"{_API_URL}/report?case_id={case_id}",
+            headers={"Accept": "text/markdown",
+                     "Authorization": f"Bearer {_API_TOKEN}"})
         with urllib.request.urlopen(req, timeout=25, context=_ctx()) as r:
             return r.read().decode()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — a broken fetch must be VISIBLE in the score
         return f"(error: {type(e).__name__}: {e})"
 
 
