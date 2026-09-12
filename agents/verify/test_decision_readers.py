@@ -391,6 +391,23 @@ if _iris is not None:
             check("6b. IRIS invents no decider for an undecided case", not got_who,
                   f"got {got_who!r}")
 
+# --- 6c. the console badge must DELEGATE, not re-derive ---------------------
+# `adjudicate_api._view` is the human console card. Its decision badge used to
+# be derived inline (a "last supervisory adjudication event" scan), which made a
+# router-approved case read "undecided" on the console while the advisory showed
+# the approval. The closure isn't importable (it is defined inside the handler),
+# so this pins the DELEGATION statically: the module must call the shared reader
+# and must not compare a spine role to "supervisory" to find a decision.
+_api_src = (_PP / "tools" / "adjudicate_api.py")
+if not _api_src.exists():                       # runtime layout: <root>/tools
+    _api_src = _PP.parent / "tools" / "adjudicate_api.py"
+_api_text = _api_src.read_text() if _api_src.exists() else ""
+check("6c. the console view delegates to case_adjudication (no inline re-derivation)",
+      "case_adjudication(" in _api_text, "no call to the shared reader")
+check("6c. the console view does not scan for a supervisory role to decide",
+      not re.search(r'role"?\)?\s*==\s*"supervisory"', _api_text),
+      "inline supervisory-role decision scan is back")
+
 # --- 7. two surfaces, one number (digest Coverage vs /reports) --------------
 # The original defect read 281 decided cases in the digest and 118 in /reports
 # on the SAME store. A count is a claim: it has to come from one derivation.
