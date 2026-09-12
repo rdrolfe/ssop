@@ -4,7 +4,16 @@ The hunter is proactive: it tests hypotheses against SIEM telemetry,
 looking for patterns (compromise, misconfig, blind spots) rather than
 reacting to individual alerts (that's the analyst's job).
 
-Loop: HYPOTHESIS -> QUERY -> ANALYZE -> CASE -> (ESCALATE | FILE)
+Loop: HYPOTHESIS -> QUERY -> ANALYZE -> BULK INTEL -> CASE -> (ESCALATE | FILE)
+
+BULK INTEL (`tools/bulk_intel.py`): after a hunt's events are analyzed, their
+typed observables are matched against the in-lab MISP corpus (thousands of
+community-feed indicators, pulled locally). Only the survivors — the values the
+corpus already recognises — are eligible for per-indicator EXTERNAL provider
+lookups, and that spend is opt-in (`intel_external=1`). A corpus match is
+EVIDENCE: a strong match (hash/domain/url) promotes the finding to suspicious,
+a weak one (bare ip) promotes clean->info, and an unreachable corpus is
+reported UNKNOWN — never as "clean". See docs/roles/hunt.md and ADR-007.
 """
 
 import os
@@ -17,6 +26,7 @@ from langgraph.graph import StateGraph, END
 load_dotenv()  # entry point — config is loaded here, passed down
 
 from logging_setup import get_logger
+from tools.bulk_intel import bulk_intel_for, promote_finding
 from tools.registry import get_hunt, get_cases, get_escalation
 from tools.supervisory_tools import SupervisoryClient
 
@@ -64,6 +74,45 @@ def _persist_hunt_technique(cases, case_id: str, result: dict) -> None:
         logger.warning("technique merge failed for %s", case_id)
 
 
+# --- bulk intel (MISP) -------------------------------------------------------
+# The matching itself lives in tools/bulk_intel.py — the live sweep and the
+# verification matrix call the SAME `bulk_intel_for`, so a drift between the
+# two cannot exist. Only the presentation helpers below are role-local.
+
+def _intel_evidence(intel: dict) -> dict:
+    """The intel block to persist on a case event ({} when nothing was checked).
+
+    Persisting an UNKNOWN result is deliberate: "we did not check" and "we
+    checked and found nothing" must stay distinguishable on the spine, the
+    same reason `misp_client` reports `degraded` instead of an empty match set.
+    Values are the MATCHED ones only — a case record is not a place to dump
+    every observable that happened to appear in telemetry.
+    """
+    if not intel.get("candidates"):
+        return {}
+    return {
+        "candidates": intel.get("candidates"),
+        "matched": intel.get("matched", 0),
+        "strong_matches": intel.get("strong_matches", 0),
+        "types": intel.get("types", {}),
+        "known_values": intel.get("known_values", []),
+        "degraded": bool(intel.get("degraded")),
+        "error": intel.get("error"),
+        "external_looked_up": intel.get("external_looked_up", 0),
+        "summary": intel.get("summary", ""),
+    }
+
+
+def _intel_suffix(intel: dict, why: str = "") -> str:
+    """One-line intel marker for the sweep report ('' when nothing checked)."""
+    if not intel.get("candidates"):
+        return ""
+    if intel.get("degraded"):
+        return " | intel: UNKNOWN (corpus unreachable)"
+    mark = f" [{why}]" if why in ("strong-intel-match", "weak-intel-match") else ""
+    return (f" | intel: {intel.get('matched', 0)}/{intel['candidates']} known{mark}")
+
+
 # --- Nodes ---
 
 def node_run_sweep(state: HuntState) -> HuntState:
@@ -88,11 +137,22 @@ def node_run_sweep(state: HuntState) -> HuntState:
     try:
         days = int((state.get("params") or {}).get("days", 1))
         cooldown_s = int((state.get("params") or {}).get("cooldown", 86400))
+        # External per-indicator lookups are OPT-IN (`intel_external=1`) and
+        # are only ever spent on corpus-matched survivors. Off by default: the
+        # sweep runs every 15m and provider quota is metered.
+        intel_external = str((state.get("params") or {}).get(
+            "intel_external", "0")).lower() in ("1", "true", "yes")
         live_hunts = [hid for hid in hunter.HUNTS if not hid.startswith("bots-")]
         lines = [f"Live hunt sweep (days={days}, {len(live_hunts)} hunts):"]
         for hid in sorted(live_hunts):
             result = hunter.run_hunt(hid, days=days)
             finding = result.get("finding", "clean")
+            # LOCAL CORPUS FIRST — match the events this hunt returned against
+            # the in-lab MISP corpus. A clean hunt whose events nonetheless
+            # carry known indicators becomes 'info' (or 'suspicious' on a
+            # strong match), so the intel is visible instead of silent.
+            intel = bulk_intel_for(result, external=intel_external)
+            finding, intel_why = promote_finding(finding, intel)
             esc = (finding == "suspicious"
                    and result["category"] in ESCALATE_CATEGORIES)
             # Tuning-respect: a human adjudication on this hunt (via the
@@ -105,7 +165,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
             except Exception:  # noqa: BLE001 — tuning lookup must never break the sweep
                 tuned = False
             if finding == "clean":
-                lines.append(f"  {hid:<38} clean  ({result['events_scanned']} evts)")
+                lines.append(f"  {hid:<38} clean  ({result['events_scanned']} evts)"
+                             f"{_intel_suffix(intel, intel_why)}")
                 continue
             if tuned:
                 # Suppressed: attach a recheck to an open case if one exists;
@@ -115,10 +176,13 @@ def node_run_sweep(state: HuntState) -> HuntState:
                     cid = existing[0]["case_id"]
                     cases.append_event(cid, "hunt", "recheck", {
                         "finding": finding, "confidence": result["confidence"],
-                        "summary": result.get("summary", ""), "hunt_id": hid})
-                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed, recheck -> {cid}")
+                        "summary": result.get("summary", ""), "hunt_id": hid,
+                        **_intel_evidence(intel)})
+                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed, "
+                                 f"recheck -> {cid}{_intel_suffix(intel, intel_why)}")
                 else:
-                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed (no open case)")
+                    lines.append(f"  {hid:<38} {finding:<10} tuned-suppressed "
+                                 f"(no open case){_intel_suffix(intel, intel_why)}")
                 continue
             # Hunt-level recidivism: attach to an existing OPEN case for this hunt.
             existing = cases.recent_hunt_cases(hid, window_s=30 * 86400)
@@ -126,7 +190,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
                 cid = existing[0]["case_id"]
                 cases.append_event(cid, "hunt", "recheck", {
                     "finding": finding, "confidence": result["confidence"],
-                    "summary": result.get("summary", ""), "hunt_id": hid})
+                    "summary": result.get("summary", ""), "hunt_id": hid,
+                    **_intel_evidence(intel)})
                 # Persist the hunt's technique on the case (idempotent merge)
                 # so a case that pre-dates the hunt technique_id still
                 # renders a real ATT&CK table after a recheck.
@@ -141,7 +206,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
                         title=f"[HUNT] {result['category'].upper()} finding in {result['name'][:50]}",
                         detail={"case_id": cid, "hunt_id": hid, "finding": finding,
                                 "summary": result.get("summary", ""),
-                                "notes": result.get("notes", []), "category": result["category"]})
+                                "notes": result.get("notes", []), "category": result["category"],
+                                "intel": _intel_evidence(intel)})
                     # Verdict event so a later human adjudication (or the
                     # supervisory recommendation) has the real level/category
                     # — without it, supervise falls back to 6/operational and
@@ -152,7 +218,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
                     cases.append_event(cid, "hunt", "escalated",
                                        {"hunt_id": hid, "finding": finding})
                     note += " + escalated"
-                lines.append(f"  {hid:<38} {finding:<10} {note}")
+                lines.append(f"  {hid:<38} {finding:<10} {note}"
+                             f"{_intel_suffix(intel, intel_why)}")
                 continue
             # Re-arm cooldown: a finding whose case was recently closed (denied)
             # must not instantly re-mint — a chronic FP would re-ticket every
@@ -171,14 +238,16 @@ def node_run_sweep(state: HuntState) -> HuntState:
             cid = case["case_id"]
             cases.append_event(cid, "hunt", "finding", {
                 "finding": finding, "confidence": result["confidence"],
-                "summary": result.get("summary", ""), "hunt_id": hid})
+                "summary": result.get("summary", ""), "hunt_id": hid,
+                **_intel_evidence(intel)})
             note = f"case {cid}"
             if esc:
                 escalator.escalate(tier=2, actor="hunt",
                     title=f"[HUNT] {result['category'].upper()} finding in {result['name'][:50]}",
                     detail={"case_id": cid, "hunt_id": hid, "finding": finding,
                             "summary": result.get("summary", ""),
-                            "notes": result.get("notes", []), "category": result["category"]})
+                            "notes": result.get("notes", []), "category": result["category"],
+                            "intel": _intel_evidence(intel)})
                 # Verdict event so adjudication/recommendation sees the real
                 # level/category (same as the existing-case path above).
                 cases.append_event(cid, "analyst", "verdict", {
@@ -187,7 +256,8 @@ def node_run_sweep(state: HuntState) -> HuntState:
                 cases.append_event(cid, "hunt", "escalated",
                                    {"hunt_id": hid, "finding": finding})
                 note += " + escalated"
-            lines.append(f"  {hid:<38} {finding:<10} {note}")
+            lines.append(f"  {hid:<38} {finding:<10} {note}"
+                         f"{_intel_suffix(intel, intel_why)}")
         state["result"] = "\n".join(lines)
     except Exception as e:
         state["error"] = f"Hunt sweep failed: {e}"
@@ -200,8 +270,16 @@ def node_run_hunt(state: HuntState) -> HuntState:
     try:
         hunt_id = state.get("target") or "auth-success-from-unusual-src"
         days = int((state.get("params") or {}).get("days", 7))
+        # External per-indicator lookups are OPT-IN (`intel_external=1`) and are
+        # only ever spent on corpus-matched survivors — see tools/bulk_intel.py.
+        intel_external = str((state.get("params") or {}).get(
+            "intel_external", "0")).lower() in ("1", "true", "yes")
         result = hunter.run_hunt(hunt_id, days=days)
         finding = result.get("finding", "clean")
+        # LOCAL CORPUS FIRST: match this hunt's observables against the in-lab
+        # MISP corpus, then (opt-in) look up only the survivors externally.
+        intel = bulk_intel_for(result, external=intel_external)
+        finding, intel_why = promote_finding(finding, intel)
 
         lines = [
             f"Hunt: {result['name']} ({result['hunt_id']})",
@@ -209,6 +287,7 @@ def node_run_hunt(state: HuntState) -> HuntState:
             f"Finding: {finding} | confidence {result['confidence']}",
             f"Summary: {result.get('summary', '')}",
             f"Events scanned: {result['events_scanned']}",
+            f"Bulk intel: {intel.get('summary', 'not checked')}",
         ]
         # Always file the hunt result on the case spine (memory of what was tested)
         case = cases.open_case(
@@ -219,6 +298,7 @@ def node_run_hunt(state: HuntState) -> HuntState:
         cases.append_event(case["case_id"], "hunt", "finding", {
             "finding": finding, "confidence": result["confidence"], "summary": result.get("summary", ""),
             "hunt_id": hunt_id,
+            **_intel_evidence(intel),
         })
 
         # Escalate suspicious findings in attack-relevant categories
@@ -235,6 +315,7 @@ def node_run_hunt(state: HuntState) -> HuntState:
                     "summary": result.get("summary", ""),
                     "notes": result.get("notes", []),
                     "category": result["category"],
+                    "intel": _intel_evidence(intel),
                 },
             )
             lines.append(f"Escalated -> case={case['case_id']} queued={esc['delivery'].get('delivered')}")
@@ -358,6 +439,7 @@ def cli():
         print("  python hunt.py hunt:list")
         print("  python hunt.py hunt:run auth-success-from-unusual-src days=7")
         print("  python hunt.py hunt:sweep days=1")
+        print("  python hunt.py hunt:sweep days=1 intel_external=1   # opt-in external lookups (survivors only)")
         print("  python hunt.py hunt:case case-abc123")
         sys.exit(0)
     cmd = sys.argv[1]

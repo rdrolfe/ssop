@@ -40,6 +40,8 @@ HERMETIC = [
     "agents/verify/test_infra_disposition.py",
     "agents/verify/test_alert_provenance.py",
     "agents/verify/test_intel_pipeline.py",
+    "agents/verify/test_misp_client.py",
+    "agents/verify/test_bulk_intel.py",
     "agents/verify/test_registry_reentrancy.py",
     "agents/verify/test_strong_tp_gate.py",
     "agents/verify/test_technique_mapping.py",

@@ -308,6 +308,39 @@ def inv_drill_gate_respected(fixture: Dict[str, Any], outcome: Dict[str, Any], s
     return Check("drill", CHECK_OK, "not drill-suppressed")
 
 
+def inv_hunt_intel_checked(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
+    """The hunt driver's bulk-intel step must be wired AND the corpus reachable.
+
+    This is the end-to-end gate for hunt -> MISP. A hunt whose observables were
+    never matched is not a clean hunt, it is an UNCHECKED one: the whole claim
+    "hunt scans the fleet against the feed corpus" is unproven if the step did
+    not run or the corpus was unreachable, so a degraded corpus goes RED here
+    (rather than reporting a clean fleet that was never actually checked).
+
+    Skips when the driver is not the hunt, or the hunt declined / produced no
+    candidate observables — those runs make no intel claim to verify.
+
+    Operator call (2026-09-12): a degraded corpus FAILS the matrix rather than
+    reporting BLOCKED. The gate's job is to refuse to certify a clean fleet it
+    did not actually check, and this matrix also runs against live stores where
+    BLOCKED is reserved for unreachable stores. Consequence accepted knowingly:
+    the matrix now depends on the MISP host's liveness.
+    """
+    if outcome.get("driver_role") != "hunt":
+        return Check("hunt_intel", CHECK_SKIP, "not the hunt driver")
+    intel = outcome.get("intel")
+    if not intel:
+        return Check("hunt_intel", CHECK_SKIP, "no intel step on this run")
+    if intel.get("degraded"):
+        return Check("hunt_intel", CHECK_FAIL,
+                     f"corpus UNKNOWN — the hunt's coverage is unverified "
+                     f"({intel.get('error')})")
+    if not intel.get("candidates"):
+        return Check("hunt_intel", CHECK_SKIP,
+                     f"no candidate observables ({intel.get('summary', '')})")
+    return Check("hunt_intel", CHECK_OK, intel.get("summary", ""))
+
+
 # registry
 INVARIANTS: List[tuple[str, Callable[[Dict, Dict, Stores], Check]]] = [
     ("verdict", inv_verdict_matches),
@@ -319,4 +352,5 @@ INVARIANTS: List[tuple[str, Callable[[Dict, Dict, Stores], Check]]] = [
     ("tuned", inv_tuned_when_expected),
     ("no_new_case", inv_no_new_case_when_expected),
     ("drill", inv_drill_gate_respected),
+    ("hunt_intel", inv_hunt_intel_checked),
 ]

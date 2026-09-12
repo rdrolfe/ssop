@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from tools.bulk_intel import bulk_intel_for
 from tools.registry import get_analyst, get_cases, get_escalation, get_hunt, get_indexer
 from verify.core import FixtureResult, CHECK_FAIL, CHECK_OK, VERDICT_BLOCKED, VERDICT_FAIL, VERDICT_PASS
 from verify.invariants import INVARIANTS, Stores
@@ -143,8 +144,14 @@ def drive_hunt(fixture: Dict[str, Any]) -> RoleOutcome:
     r = hunter.run_hunt(hunt_id, days=7)
     finding = r.get("finding", "clean")
     verdict = "escalate" if finding == "suspicious" else "note"
+    # BULK INTEL: run the SAME derivation the live sweep runs (tools/bulk_intel
+    # `bulk_intel_for`), so the matrix exercises the hunt -> MISP wiring instead
+    # of merely proving the modules import. The fixture's alert does NOT feed the
+    # hunt's query — a hunt is a live hypothesis — so this asserts the intel step
+    # ran and the corpus was reachable, not that a particular value matched.
+    intel = bulk_intel_for(r)
     return RoleOutcome(verdict, category="pattern", hunt_id=hunt_id, finding=finding,
-                       driver_role="hunt")
+                       intel=intel, driver_role="hunt")
 
 
 # --- the runner ------------------------------------------------------------

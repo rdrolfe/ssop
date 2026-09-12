@@ -61,7 +61,7 @@
 
 :Hunt a owl:Class ;
     rdfs:subClassOf :Role ;
-    rdfs:comment "Hypothesis-driven sweeps; findings escalate with playbook recommendations; will consume MISP-style bulk feed matching." .
+    rdfs:comment "Hypothesis-driven sweeps; findings escalate with playbook recommendations; consumes MISP bulk feed matching (local corpus first, external lookups on survivors only)." .
 
 :Intel a owl:Class ;
     rdfs:subClassOf :Role ;

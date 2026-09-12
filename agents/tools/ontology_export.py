@@ -71,7 +71,8 @@ ROLES = [
      "run_id (expires in 15 min). Router adjudication authorizes tier0/1 "
      "on infra cases; NEVER tier2."),
     ("Hunt", "Hypothesis-driven sweeps; findings escalate with playbook "
-     "recommendations; will consume MISP-style bulk feed matching."),
+     "recommendations; consumes MISP bulk feed matching (local corpus "
+     "first, external lookups on survivors only)."),
     ("Intel", "Matches KEV/NVD feeds into hunt packs; stages, never "
      "promotes."),
     ("InfraManager", "Self-heal: senses fleet health, fixes whitelisted "

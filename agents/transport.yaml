@@ -119,8 +119,32 @@ external_calls:
     class: lookup
     data_sent: indicator-value (IPv4/hash/domain/url)
     used_by: [tools/enrichment.py]
-# ROADMAP (operator 2026-09-09): MISP (self-hosted) or similar feed platform
-# is a PLANNED addition — bulk feed-matching wired into HUNT workflows
-# (hunt queries matched against pooled community feeds before/alongside
-# live lookups). Self-hosted fits the sovereignty doctrine: the data plane
-# comes to us instead of us going to it.
+
+# --- infrastructure egress (NOT runtime egress from this host) --------------
+# The envelope above is egress the SSOP RUNTIME makes. This section is egress we
+# OWN but that verify/check_egress.py cannot see: a self-hosted service syncing
+# from third-party feeds runs its own workers on its own host. Declaring it in
+# YAML alone would be documentation rather than control (ADR-007 call 2), so it
+# is ALSO enforced where the traffic actually leaves — a default-deny allow-list
+# on the MISP host itself (nft table `ssop_egress`, output AND forward hooks).
+infrastructure_egress:
+  misp:
+    host: 192.168.1.80            # VM 707 — outside the router DHCP pool
+    class: lookup                 # ADR-007's registry class for the feed platform
+    direction: inbound-sync       # the platform PULLS feeds; it is a data sink
+    data_sent: none               # no SSOP observable is ever contributed
+    # The absence of a `submit` entry is the point, not an omission: contributing
+    # our observables back is a DISCLOSURE event (sovereignty doctrine, ADR-007
+    # call 3). tools/misp_client.py is read-only and verify/test_misp_client.py +
+    # verify/test_bulk_intel.py fail the build if a write endpoint appears.
+    enforced_by: [deploy/lab/misp_egress_allowlist.sh]
+    allowlist: /etc/ssop-egress/allowed-hosts.txt   # on the MISP host
+    # Adding a feed = adding its host here, re-applying, verifying, then
+    # persisting the VERIFIED live table (`misp_egress_allowlist.sh --persist`).
+    # Anything absent is silently dropped — read `journalctl -k | grep
+    # ssop-egress-drop` to see what a change actually blocked.
+    #
+    # NOT here: the hunt -> MISP bulk match. That call is host-to-LAN
+    # (192.168.1.80, RFC1918), so check_egress.py already treats it as local and
+    # it needs no external_calls entry. See tools/bulk_intel.py.
+    used_by: [tools/misp_client.py, tools/bulk_intel.py]

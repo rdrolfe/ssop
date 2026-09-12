@@ -30,6 +30,8 @@ FILES = [
     # cited by docs/roles/router.md (the INFRA disposition rule's home) — the
     # synthetic repo must mirror every file the cited docs point at
     "agents/tools/infra_disposition.py",
+    # cited by docs/roles/hunt.md (the bulk-intel contract for hunt)
+    "agents/tools/bulk_intel.py",
 ]
 
 
