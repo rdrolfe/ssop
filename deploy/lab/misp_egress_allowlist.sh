@@ -179,6 +179,14 @@ table inet ssop_egress {
     ip daddr { 192.168.1.1, 1.1.1.1 } tcp dport 53 accept
     # RFC1918 == "local", the same definition check_egress.py uses
     ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+    # Link-local housekeeping that is NOT egress: IPv4 local-network control
+    # multicast (the docker bridge's IGMP membership reports go to 224.0.0.22)
+    # and IPv6 link-local/multicast. This box has NO IPv6 default route — only
+    # fe80::/64 per interface — so IPv6 cannot leave the link at all, and an
+    # IPv4-only ruleset that silently dropped it was a behaviour change outside
+    # the declared scope rather than enforcement.
+    ip daddr 224.0.0.0/24 accept
+    ip6 daddr { fe80::/10, ff02::/16 } accept
     ip daddr @ssop_egress_v4 accept
     limit rate 12/minute log prefix "ssop-egress-drop-out " level info
     counter drop
@@ -193,6 +201,8 @@ table inet ssop_egress {
     # publishes the web UI, because DNAT rewrites the destination in PREROUTING
     # before this hook sees the packet.
     ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+    ip daddr 224.0.0.0/24 accept
+    ip6 daddr { fe80::/10, ff02::/16 } accept
     ip daddr @ssop_egress_v4 accept
     limit rate 12/minute log prefix "ssop-egress-drop-fwd " level info
     counter drop
