@@ -121,6 +121,56 @@ def _normalize_state(state: str) -> str:
     return state
 
 
+def case_adjudication(case: dict[str, Any]) -> dict[str, Any]:
+    """The case's decision as a DETAIL DICT — THE single derivation.
+
+    Returns {} when the case genuinely carries no decision. Otherwise
+    {"decision", "rationale", "role", "ts"} where `role` is WHO decided
+    ("supervisory" for a human verdict, "router" for an INFRA tier0/1
+    adjudication under operator policy 2026-09-09).
+
+    Why this exists: `case_decision` serves renderers that want the bare
+    (decision, rationale) pair, while the console card and the API view want
+    the dict (they render a decision badge + rationale). Both must resolve the
+    SAME two-shape field (top-level `supervisory` block OR a timeline event) —
+    so `case_decision` is now a thin projection of this, and every other
+    surface delegates here too. A second copy of this rule is how a
+    router-adjudicated INFRA case ends up looking undecided on the human
+    surface while a renderer shows its approval.
+    """
+    sup = case.get("supervisory") or {}
+    if isinstance(sup, dict) and sup.get("decision"):
+        return {
+            "decision": str(sup["decision"]),
+            "rationale": str(sup.get("rationale") or "").strip(),
+            "role": str(sup.get("role") or "supervisory"),
+            "ts": str(sup.get("ts") or ""),
+        }
+    for ev in reversed(case.get("timeline", []) or []):
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("detail") or {}
+        if not isinstance(d, dict):
+            continue
+        # Router adjudication authorizes infra/fleet-sysadmin cases — the
+        # advisory must not call a router-approved case "under review".
+        if ev.get("role") == "router" and ev.get("type") == "adjudication":
+            dec = d.get("decision") or ""
+            if dec:
+                return {"decision": str(dec),
+                        "rationale": str(d.get("rationale") or "").strip(),
+                        "role": "router", "ts": str(ev.get("ts") or "")}
+        if ev.get("role") != "supervisory":
+            continue
+        if ev.get("type") in ("adjudication", "verdict"):
+            dec = d.get("decision") or d.get("verdict") or ""
+            if dec:
+                return {"decision": str(dec),
+                        "rationale": str(d.get("rationale") or "").strip(),
+                        "role": "supervisory", "ts": str(ev.get("ts") or "")}
+    return {}
+
+
 def case_decision(case: dict[str, Any]) -> tuple[str, str]:
     """Resolve a case's decision + rationale from EITHER spine shape.
 
@@ -133,36 +183,17 @@ def case_decision(case: dict[str, Any]) -> tuple[str, str]:
 
     Why one helper: when two renderers derive the decision independently they
     drift, and the drift is public — one surface reports a human-DENIED case
-    as "under review" while another reports the deny. `advisory_gen` and
-    `report_gen` both render this field, and the decision write-back path
-    uses it to test idempotency; all three call here.
+    as "under review" while another reports the deny. `advisory_gen`,
+    `report_gen` (summary, decision section AND the /reports enumeration
+    gate), `attach_case_report` and the API's console view all render this
+    field; all of them call here.
 
     Returns ("", "") when the case genuinely carries no decision. Callers
     choose their own wording for that state ("under review" in a deliverable,
     "undecided" in a queue check) — the helper never invents one.
     """
-    sup = case.get("supervisory") or {}
-    if isinstance(sup, dict) and sup.get("decision"):
-        return str(sup["decision"]), str(sup.get("rationale") or "").strip()
-    for ev in reversed(case.get("timeline", []) or []):
-        if not isinstance(ev, dict):
-            continue
-        d = ev.get("detail") or {}
-        if not isinstance(d, dict):
-            continue
-        # Router adjudication authorizes infra/fleet-sysadmin cases — the
-        # advisory must not call a router-approved case "under review".
-        if ev.get("role") == "router" and ev.get("type") == "adjudication":
-            dec = d.get("decision") or ""
-            if dec:
-                return str(dec), str(d.get("rationale") or "").strip()
-        if ev.get("role") != "supervisory":
-            continue
-        if ev.get("type") in ("adjudication", "verdict"):
-            dec = d.get("decision") or d.get("verdict") or ""
-            if dec:
-                return str(dec), str(d.get("rationale") or "").strip()
-    return "", ""
+    adj = case_adjudication(case)
+    return (adj.get("decision", ""), adj.get("rationale", ""))
 
 
 def can_decide(state: str) -> bool:

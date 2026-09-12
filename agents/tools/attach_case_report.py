@@ -106,6 +106,26 @@ def _create_id(case_id: str) -> str:
     return "ssop-" + hashlib.sha1(f"{case_id}-0".encode()).hexdigest()[:20]
 
 
+def outcome_header(case: dict[str, Any]) -> str:
+    """The one-line case-outcome header that opens the attached comment.
+
+    Delegates to the SHARED two-shape reader (`case_tools.case_decision`) —
+    this used to re-derive the decision locally and only scanned SUPERVISORY
+    timeline events, so a router-adjudicated INFRA case (router IS the
+    approving authority for tier0/1, operator policy 2026-09-09) was posted
+    to the SOC as "UNDER REVIEW" one minute after the router approved it.
+    Module-level (not inline) so the parity test can assert this surface
+    against the advisory/report readers WITHOUT touching a live SO.
+    """
+    from tools.case_tools import case_decision
+    decision, rationale = case_decision(case)
+    return (
+        f"## Case Outcome — **{(decision or 'UNDER REVIEW').upper()}**\n\n"
+        f"{rationale}\n\n"
+        "---\n\n"
+    )
+
+
 def publish_artifacts_to_so(case_id: str) -> bool:
     """Append report + advisory comment ops to the case in so-case and
     so-casehistory. Deterministic _ids => idempotent upsert. Returns True
@@ -131,28 +151,7 @@ def publish_artifacts_to_so(case_id: str) -> bool:
     # decision, then the full report + advisory follow).
     from tools.case_tools import CaseStore
     _case = CaseStore().get_case(case_id) or {}
-    _sup = _case.get("supervisory") or {}
-    _decision = (_sup.get("decision") or "").upper()
-    _rationale = (_sup.get("rationale") or "").strip()
-    if not _decision:
-        # verdict may ride the timeline (hunt/router cases): adjudication or
-        # verdict event on a supervisory role, newest first — same fallback
-        # the report reader uses.
-        for ev in reversed(_case.get("timeline") or []):
-            if ev.get("role") != "supervisory":
-                continue
-            _d = ev.get("detail") or {}
-            if ev.get("type") in ("adjudication", "verdict"):
-                _decision = (_d.get("decision") or _d.get("verdict") or "").upper()
-                if not _rationale:
-                    _rationale = (_d.get("rationale") or "").strip()
-                break
-    _decision = _decision or "UNDER REVIEW"
-    header = (
-        f"## Case Outcome — **{_decision}**\n\n"
-        f"{_rationale}\n\n"
-        "---\n\n"
-    )
+    header = outcome_header(_case)
     combined = header + report_md + "\n\n---\n\n" + advisory_md
     ops = [
         ("report", _comment_op(create_id, combined, ts, _REPORT_REL)),

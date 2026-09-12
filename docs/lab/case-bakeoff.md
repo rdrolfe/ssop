@@ -274,6 +274,16 @@ in both outcome directions, fail-closed.
    (SO native store) produce the same markdown/HTML deliverable; the console
    adds a "Reports" button for `/reports?days=N` (all decided cases in a
    window).
+
+   **Late correction (Sep 2026):** `/reports` enumerated "decided" with its own
+   `supervisory`-block check, so every case whose decision rides the timeline
+   (hunt findings, router-adjudicated INFRA tier0/1) was missing from the
+   compiled report — measured live: 118 of 281. The report summary, the
+   decision chain, the attached SO comment header, the console card and the
+   IRIS case column all repeated the same local derivation. All of them now
+   delegate to `tools/case_tools.case_decision()` (single derivation:
+   `case_adjudication`), and `verify/test_decision_readers.py` asserts the
+   surfaces agree — a new independent reader breaks that test on purpose.
 4. ✅ Capture how the SO SOC console *renders* the so-case ops (the true
    human experience) — done 2026-09-01: operator confirmed the case renders
    as one coherent case in the SO Cases page, and it matches our console's

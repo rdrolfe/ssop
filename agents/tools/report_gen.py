@@ -110,19 +110,12 @@ def _evidence_lines(inv: dict[str, Any] | None) -> list[str]:
 
 def _exec_summary(case: dict[str, Any]) -> str:
     """One-paragraph TL;DR for the top of the report."""
-    sup = case.get("supervisory") or {}
-    decision = sup.get("decision")
-    rationale = (sup.get("rationale") or "").strip()
-    if not decision:
-        for ev in reversed(case.get("timeline", [])):
-            if ev.get("role") != "supervisory":
-                continue
-            d = ev.get("detail") or {}
-            if ev.get("type") in ("adjudication", "verdict"):
-                decision = d.get("decision") or d.get("verdict") or ""
-                if not rationale:
-                    rationale = (d.get("rationale") or "").strip()
-                break
+    # THE SHARED READER (case_tools.case_decision), never a local copy of the
+    # two-shape rule: a second derivation here scanned only supervisory
+    # timeline events, so a router-adjudicated INFRA case lost its decision in
+    # the summary while the advisory showed the approval.
+    from tools.case_tools import case_decision
+    decision, rationale = case_decision(case)
     src = case.get("source") or {}
     status = case.get("status", "open")
 
@@ -137,7 +130,7 @@ def _exec_summary(case: dict[str, Any]) -> str:
         f"**{status.upper()}** case for {what.lower() if what else 'an incident'}. "
     )
     inv_count = None
-    for ev in case.get("timeline", []):
+    for ev in case.get("timeline") or []:
         if ev.get("type") == "investigation" and (ev.get("detail") or {}).get("evidence"):
             inv_count = len(ev["detail"]["evidence"])
             break
@@ -154,13 +147,22 @@ def _exec_summary(case: dict[str, Any]) -> str:
 
 
 def _md_core(case: dict[str, Any]) -> list[str]:
-    """Render the body sections (2–6) from a normalized spine-shaped case."""
+    """Render the body sections (2–6) from a normalized spine-shaped case.
+
+    Spine payloads round-trip through Qdrant as JSON, so an absent field comes
+    back PRESENT-AND-NULL (`{"source": null}`) — a dict-default read
+    (`case.get(field, {})`-style) only covers a MISSING key and then hands
+    back None.
+    Every spine read in this module is therefore `case.get(x) or default`;
+    the test suite enforces the shape (test_decision_readers.py check 5),
+    because the crash lands on the /reports endpoint, not in a unit.
+    """
     L: list[str] = []
     case_id = case.get("case_id", "?")
     title = case.get("title", "Untitled incident")
     status = case.get("status", "open")
     ts = _ts(case.get("ts"))
-    timeline = case.get("timeline", [])
+    timeline = case.get("timeline") or []
 
     L.append(f"# Incident Report — {title}")
     L.append("")
@@ -176,7 +178,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
     L.append("")
 
     # 2. Trigger
-    src = case.get("source", {})
+    src = case.get("source") or {}
     L.append("## 2. Trigger")
     L.append("")
     trigger_parts = []
@@ -193,7 +195,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
     L.extend(f"- {p}" for p in trigger_parts)
     L.append("")
 
-    obs = case.get("observables", [])
+    obs = case.get("observables") or []
     if obs:
         L.append("**Observables**: " + ", ".join(
             f"{o.get('type')} `{o.get('value')}`" for o in obs))
@@ -206,7 +208,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
         L.append("_No decision steps recorded._")
         L.append("")
     for ev in timeline:
-        d = ev.get("detail", {})
+        d = ev.get("detail") or {}
         label = _role_label(ev.get("role", "?"), ev.get("type", "?"))
         when = _ts(ev.get("ts"))
         line = f"**{when}** — {label}"
@@ -242,7 +244,10 @@ def _md_core(case: dict[str, Any]) -> list[str]:
                                     f"(confidence {d.get('confidence', '?')})")
             if d.get("summary"):
                 detail_lines.append(d["summary"])
-        elif ev.get("type") in ("adjudication", "verdict") and ev.get("role") == "supervisory":
+        elif ev.get("type") in ("adjudication", "verdict") and ev.get("role") in ("supervisory", "router"):
+            # Router adjudication IS the decision for INFRA tier0/1 cases
+            # (operator policy 2026-09-09) — without it here, the decision
+            # chain dumped the authorization as a raw JSON blob.
             if d.get("decision"):
                 detail_lines.append(f"decision **{d['decision']}**")
             if d.get("rationale"):
@@ -277,7 +282,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
         L.append("")
 
     # 5. Decision
-    sup = case.get("supervisory", {})
+    sup = case.get("supervisory") or {}
     L.append("## 5. Decision")
     L.append("")
     if sup.get("decision"):
@@ -310,7 +315,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
     notes = []
     for ev in timeline:
         if ev.get("role") == "supervisory" and ev.get("type") == "verdict":
-            d = ev.get("detail", {})
+            d = ev.get("detail") or {}
             if d.get("verdict") in ("false_positive", "tuning", "operational"):
                 notes.append(d.get("verdict"))
     if notes:
@@ -526,14 +531,22 @@ def _all_spine_cases(days: int) -> list[dict[str, Any]]:
     `recent_hunt_cases` uses (`search_memory("case-", limit=1000)`), not a
     get_case() round-trip per receipt line (which stalled /reports as the
     receipt file grew). Falls back to the JSONL receipts if Qdrant is down.
+
+    DECIDED is whatever the SHARED reader says (`case_tools.case_decision`) —
+    never a second copy of the two-shape rule. The local `supervisory`-block
+    check that used to live here silently dropped every case whose decision
+    rides the timeline (hunt findings, router-adjudicated INFRA cases):
+    measured on the live spine, 163 of 281 decided cases were invisible to
+    /reports while the digest's Coverage line (which already shared the
+    reader) counted them. Two surfaces, two numbers, same spine.
     """
-    from tools.case_tools import CASE_COLLECTION, CaseStore
+    from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision
     cs = CaseStore()
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
     seen: list[dict[str, Any]] = []
 
     def _ok(case: dict[str, Any]) -> bool:
-        return bool((case.get("supervisory") or {}).get("decision"))
+        return bool(case_decision(case)[0])
 
     try:
         mem = cs._get_memory()

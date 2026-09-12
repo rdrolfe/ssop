@@ -92,7 +92,7 @@ def _exec_summary(case: dict[str, Any]) -> str:
     status = case.get("status", "open")
     decision, rationale = _decision(case)
     chain = []
-    for ev in case.get("timeline", []):
+    for ev in case.get("timeline") or []:
         kc = (ev.get("detail") or {}).get("kill_chain")
         if kc:
             chain = kc
@@ -122,7 +122,7 @@ def _lessons_learned(case: dict[str, Any]) -> list[str]:
         lessons.append("The evidence chain (kill-chain breadth + severity) "
                        "justified an active response.")
     chain = []
-    for ev in case.get("timeline", []):
+    for ev in case.get("timeline") or []:
         kc = (ev.get("detail") or {}).get("kill_chain")
         if kc:
             chain = kc
@@ -143,7 +143,7 @@ def _key_actions(case: dict[str, Any]) -> list[str]:
     actions = []
     executed = [
         (ev.get("detail") or {})
-        for ev in case.get("timeline", [])
+        for ev in case.get("timeline") or []
         if ev.get("role") == "responder" and ev.get("type") == "execution"
     ]
     for ex in executed:
@@ -236,7 +236,7 @@ def render_advisory(case_id: str, backend: str = "spine",
     # --- Technical Details ---
     L.append("## Technical Details")
     L.append("")
-    obs = case.get("observables", [])
+    obs = case.get("observables") or []
     if obs:
         L.append("**Observables / indicators**")
         L.append("")
@@ -245,7 +245,7 @@ def render_advisory(case_id: str, backend: str = "spine",
         L.append("")
     chain = []
     inv = None
-    for ev in case.get("timeline", []):
+    for ev in case.get("timeline") or []:
         d = ev.get("detail") or {}
         if d.get("kill_chain"):
             chain = d["kill_chain"]
@@ -275,7 +275,7 @@ def render_advisory(case_id: str, backend: str = "spine",
     # kill-chain stage -> tactic mapping (the pre-technique behavior).
     techniques = case.get("techniques") or []
     if not techniques:
-        for ev in case.get("timeline", []):
+        for ev in case.get("timeline") or []:
             d = ev.get("detail") or {}
             for k in ("techniques", "mitre_techniques"):
                 if d.get(k):

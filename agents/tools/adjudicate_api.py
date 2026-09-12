@@ -330,10 +330,17 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         d = ev.get("detail", {})
                         if ev.get("type") == "investigation":
                             inv = d
-                        elif ev.get("role") == "supervisory" and ev.get("type") == "adjudication":
-                            adj = d
                         elif ev.get("role") == "responder":
                             resp = d
+                    # The decision badge is NOT re-derived here: the SHARED
+                    # reader owns the two-shape rule (supervisory block OR
+                    # timeline, incl. router adjudication). The old inline
+                    # "last supervisory adjudication event" scan made a
+                    # router-approved INFRA case look undecided on the console
+                    # — the human surface — while the advisory showed the
+                    # approval.
+                    from tools.case_tools import case_adjudication
+                    adj = case_adjudication(case) or None
                     return {
                         "case_id": cid,
                         "title": case.get("title", ""),

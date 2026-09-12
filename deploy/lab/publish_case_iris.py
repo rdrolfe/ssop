@@ -81,8 +81,11 @@ def _chain_summary(case: dict) -> str:
             lines.append(f"[analyst/investigation] severity={d.get('severity_label')} "
                          f"({d.get('severity')}), kill-chain: "
                          f"{' -> '.join(d.get('kill_chain', []))}")
-        elif typ in ("adjudication", "verdict") and role == "supervisory":
-            lines.append(f"[supervisory/adjudication] decision={d.get('decision')} "
+        elif typ in ("adjudication", "verdict") and role in ("supervisory", "router"):
+            # role=router is the approving authority for INFRA tier0/1 cases
+            # (operator policy 2026-09-09) — label it honestly rather than
+            # dropping the authorization from the chain pushed to IRIS.
+            lines.append(f"[{role}/adjudication] decision={d.get('decision')} "
                          f"rationale={str(d.get('rationale', ''))[:100]}")
         elif typ == "escalated":
             lines.append("[hunt/escalated] finding escalated")
@@ -410,13 +413,13 @@ def main() -> int:
     src = case.get("source", {}) or {}
     # Phase 2 (case-list columns): surface engine/decision/playbook/agent in
     # the IRIS case's custom_attributes so manage_cases.js can render them.
+    # The DECISION comes from the SHARED reader — the local scan here only
+    # looked at supervisory events, so a router-adjudicated INFRA case landed
+    # in IRIS with an empty decision column (the human-facing case list said
+    # "no decision" for a case the router had already approved).
     sup = case.get("supervisory") or {}
-    decision = sup.get("decision")
-    for e in reversed(case.get("timeline", []) or []):
-        if decision:
-            break
-        if e.get("role") == "supervisory" and e.get("type") in ("adjudication", "verdict"):
-            decision = (e.get("detail") or {}).get("decision")
+    from tools.case_tools import case_decision
+    decision = case_decision(case)[0]
     ssop_summary = {
         # Engine from EXPLICIT provenance (issue #25): the backend recorded
         # at case mint time. The old rule_id.isdigit() heuristic was wrong
