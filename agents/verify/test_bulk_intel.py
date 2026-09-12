@@ -37,7 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.bulk_intel import STRONG_TYPES, BulkIntel, promote_finding  # noqa: E402
+from tools.bulk_intel import (STRONG_TYPES, BulkIntel, probe_corpus,  # noqa: E402
+                              promote_finding)
 from tools.misp_client import MispClient  # noqa: E402
 
 FAILS = 0
@@ -242,6 +243,35 @@ d = BulkIntel(misp=client(), enrichment=RecEnrichment()).match(dupes)
 check("8. duplicate candidates collapse to unique values",
       d["candidates"] == 2 and len(REQUESTS[0]["body"]["value"]) == 2,
       f"candidates={d['candidates']} sent={REQUESTS[0]['body']['value']}")
+
+# --- 9. the corpus probe (the matrix gate's non-vacuity) --------------------
+# The per-fixture hunt_intel invariant SKIPS whenever a live hunt returns no
+# extractable observables — which is most runs — so the matrix needs a direct
+# probe or "hunt matches the feed corpus" is claimable from a run that never
+# consulted the corpus. These checks pin the probe's answers.
+MODE["fail"] = False
+pr = probe_corpus(MispClient(url=URL, api_key="fake-key"))
+check("9. a reachable corpus reports reachable, not degraded",
+      pr["enabled"] is True and pr["reachable"] is True and pr["degraded"] is False,
+      f"{pr}")
+check("9b. the negative control matches NOTHING (0 expected)",
+      "0 match(es)" in pr["summary"], f"summary={pr['summary']!r}")
+
+off_pr = probe_corpus(MispClient(url="", api_key=""))
+check("9c. an unconfigured corpus is NOT reported reachable",
+      off_pr["enabled"] is False and off_pr["reachable"] is False)
+check("9d. ...and says so in plain words rather than reporting a clean corpus",
+      "not configured" in off_pr["summary"], f"summary={off_pr['summary']!r}")
+
+MODE["fail"] = True
+try:
+    bad_pr = probe_corpus(MispClient(url=URL, api_key="fake-key"))
+finally:
+    MODE["fail"] = False
+check("9e. an unreachable corpus is NOT reported reachable",
+      bad_pr["reachable"] is False and bad_pr["degraded"] is True)
+check("9f. the probe never raises — it reports",
+      isinstance(bad_pr["error"], str) and bool(bad_pr["summary"]))
 
 srv.shutdown()
 print()

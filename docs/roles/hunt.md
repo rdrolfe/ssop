@@ -108,9 +108,13 @@ classification, escalation on attack categories, tuning suppress, recheck
 attach. SO-native hunts proven live (Grid Node SSH brute-force → escalate →
 approve → block-src-ip). `verify/test_bulk_intel.py` pins the bulk-intel
 contract hermetically (survivors-only, no-filter-no-spend, degraded≠clean,
-promotion rule), and the matrix invariant `hunt_intel`
-(`verify/invariants.py`) fails the run when the hunt's corpus match did not
-happen or the corpus was unreachable.
+promotion rule), and the matrix runs two checks on the hunt→MISP path: the
+`hunt_intel` invariant (`verify/invariants.py`) fails a hunt driver run whose
+corpus match did not happen or whose corpus was unreachable, and the
+`misp corpus` gate (`verify/matrix.py`) probes the corpus directly once per
+matrix. The gate exists because the invariant alone is **vacuous in practice** —
+live hunts usually return no extractable observables, so the invariant skips,
+and a skip is not evidence that the corpus was ever consulted.
 
 ---
 

@@ -53,6 +53,28 @@ def _check_docs_gate() -> list[dict]:
         return [{"kind": "error", "detail": str(e)}]
 
 
+def _misp_gate() -> bool:
+    """Feed-plane liveness: is the MISP corpus actually reachable from hunt?
+
+    The per-fixture `hunt_intel` invariant only fires when a live hunt happens
+    to return extractable observables, and in practice the live hunts usually
+    do not — so it SKIPS on nearly every run and verifies nothing. This asks the
+    question directly, once per matrix, through the same client the hunt uses:
+    configured? reachable? So "hunt matches the feed corpus" cannot be claimed
+    from a run where the corpus was never actually consulted.
+    """
+    try:
+        from tools.bulk_intel import probe_corpus
+
+        p = probe_corpus()
+        ok = bool(p.get("reachable"))
+        print("misp corpus: " + ("ok — " if ok else "FAIL — ") + (p.get("summary") or "?"))
+        return ok
+    except Exception as e:  # noqa: BLE001 — a gate must not crash the matrix
+        print(f"misp corpus: ERROR {e}")
+        return False
+
+
 def _registry_gate() -> bool:
     """Registry reentrancy gate: the lazy-singleton deadlock that wedged the
     router for 19h (Aug 30). Subprocess: it resets registry singletons —
@@ -244,6 +266,7 @@ def main() -> int:
     _docs_problems = _check_docs_gate()
     _reg_ok = _registry_gate()
     _tmr_ok = _timer_gate()
+    _misp_ok = _misp_gate()
     _bo_ok = _bakeoff_gate()
 
     if as_json:
@@ -262,7 +285,7 @@ def main() -> int:
     summary = report["summary"]
     failed = (summary["failed"] > 0 or summary["blocked"] > 0
               or (_docs_problems and not _docs_skip) or not _reg_ok
-              or not _tmr_ok or not _bo_ok)
+              or not _tmr_ok or not _misp_ok or not _bo_ok)
     return 1 if failed else 0
 
 

@@ -22,6 +22,27 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 
+# Layout tolerance. In the REPO the hermetic tests sit under `agents/` (three
+# levels up from verify/); in a DEPLOYED runtime the verify/ tree IS the agents
+# tree (two levels up) and there is no `agents/` segment. Hardcoding the repo
+# depth made this suite report BLOCKED on the runtime host — every path
+# resolved to a tree that does not exist (found on .29, 2026-09-12).
+_HERE = Path(__file__).resolve()
+if not (_HERE.parent.parent.parent / "agents" / "verify").is_dir():
+    REPO = _HERE.parent.parent
+
+
+def _p(rel: str) -> Path:
+    """Resolve a repo-relative path in EITHER layout (see above)."""
+    p = REPO / rel
+    if p.exists():
+        return p
+    if rel.startswith("agents/"):
+        stripped = REPO / rel[len("agents/"):]
+        if stripped.exists():
+            return stripped
+    return p
+
 # Hard deps the hermetic tests import (directly or transitively).
 REQUIRED = ["yaml", "dotenv", "langgraph", "langchain_core"]
 
@@ -79,12 +100,12 @@ def run_one(test: str, td_base: str) -> tuple[str, int, str]:
         "SSOP_TLS_VERIFY": "0",
         "SSOP_ALLOW_NO_QDRANT_KEY": "1",
         "LANG": "C.UTF-8",
-        "PYTHONPATH": str(REPO / "agents"),
+        "PYTHONPATH": str(_p("agents")),
     }
     Path(env["AUDIT_DIR"]).mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
-            [sys.executable, str(REPO / test)],
+            [sys.executable, str(_p(test))],
             cwd=str(td), env=env, timeout=180,
             capture_output=True, text=True)
         tail = (proc.stdout + proc.stderr).strip().splitlines()
@@ -117,7 +138,7 @@ def main() -> int:
         blocked.append(f"missing required deps: {', '.join(missing)}")
 
     # 3. Tests exist?
-    absent = [t for t in HERMETIC if not (REPO / t).exists()]
+    absent = [t for t in HERMETIC if not _p(t).exists()]
     check(f"hermetic tests present ({len(HERMETIC)})", not absent, ", ".join(absent))
     if absent:
         blocked.append(f"missing test files: {absent}")

@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>SSOP — The Ontology Project Map</h1>
-<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-09-12.</b></div>
+<div class="sub">The same ontology running on two SIEMs. What's done, what's being built, what's next. <b>Updated 2026-09-12 (session 7).</b></div>
 
 <div class="legend">
   <span><span class="dot" style="background:var(--ok)"></span> Done &amp; verified</span>
@@ -62,6 +62,7 @@
     <div class="item"><div class="t">VT + OTX enrichment <span class="tag commit">03f14e3 · 4172d96</span></div><div class="d">hash/domain/url providers, throttled, cache-first — keys NOT registered for lab (public-deployment options open)</div></div>
     <div class="item"><div class="t">GreyNoise — next enrichment</div><div class="d">Keyless IP lookup = first definitive enrichment; not yet wired</div></div>
     <div class="item"><div class="t">Capabilities in tools/, authority in roles</div><div class="d">The standing rule that keeps enrichment and response auditable</div></div>
+    <div class="item"><div class="t">MISP feed platform — in-lab <span class="tag commit">2b22752 · 1bb3d02 · 4fcce4e</span></div><div class="d">Self-hosted MISP (VM 707 / 192.168.1.80, pinned 2.5.46, SSOP-CA leaf, verified TLS) as the BULK intel plane — the data plane comes to us. Four abuse.ch-family feeds + CIRCL + botvrij, each licensed in <code>docs/feeds-and-licensing.md</code>; no <code>submit</code> entry ever (contributing our observables back is disclosure). Egress is DECLARED (<code>infrastructure_egress:</code> in transport.yaml) <b>and</b> ENFORCED: default-deny allow-list on the MISP host itself, on the <code>forward</code> hook as well as <code>output</code> — containers are routed, measured 0 vs 14 packets — pre-flighted with <code>policy accept</code> + counters before enforcing, and reboot-verified</div></div>
   </div>
 
   <div class="col done">
@@ -82,6 +83,7 @@
     <div class="item"><div class="t">Alert provenance <span class="tag commit">ad0dcef</span></div><div class="d">occurred_at gap root-caused: router read hit @timestamp for cursor but never stamped it down; infra read wrong key, security read dead v["ts"]. One intake stamp + contract-based mints. Hermetic-proven and LIVE-verified (6 real router-minted cases carry real doc_id + ISO occurred_at + backend attribution)</div></div>
     <div class="item"><div class="t">Entity-scoped tuning <span class="tag commit">76ffa62</span></div><div class="d">Deny scopes to the ENTITY (pair:src&gt;dst for network, host for host-only) — same rule from a different entity re-triages instead of suppressing. Fixes rule-global tuning (991053: 77 mints before one global deny)</div></div>
     <div class="item"><div class="t">Deny path verified</div><div class="d">All 5 denied drill rules wrote auto_fp and zero re-minted — the drill loop's last unproven leg closes</div></div>
+    <div class="item"><div class="t">Hunt → MISP bulk intel <span class="tag commit">4fcce4e</span></div><div class="d">The <code>misp_client.py</code> built in ADR-007 had no caller; now <code>tools/bulk_intel.py</code> matches a hunt's typed observables against the local corpus and spends metered external lookups ONLY on the survivors, and only when opted in. A match is EVIDENCE, not a verdict: hash/domain/url promotes a finding to suspicious, a bare IP only lifts clean→info. Two rules enforced rather than documented — degraded ≠ clean, and no local filter → no spend. The live sweep and the verify matrix call the same function, and the matrix carries a <code>misp corpus</code> gate that probes the corpus directly (it exists because the per-hunt invariant alone was VACUOUS — live hunts usually yield no observables, so it skipped, and a skip is not evidence). Deployed and re-scored on .29: <b>45/45, exit 0</b>, bake-off parity 12/12</div></div>
     <div class="item"><div class="t">40704 tuning — decision (b) <span class="tag verify">watching</span></div><div class="d">No tuning entry; dedupe absorbs it. Tune only if it keeps attaching noise for a few days</div></div>
   </div>
 
@@ -98,7 +100,6 @@
     <div class="item"><div class="t">Intel doctrine (user-corrected)</div><div class="d">The inventory match IS evidence (syscollector fact + KEV fact) → spine case. The hunt pack is the proposed detection → staged file. Two artifacts, two authorities</div></div>
     <div class="item"><div class="t">P1: SOAR responder actions</div><div class="d">Playbook schema + action registry designed (ADR-004); whitelisted actions + verify fixtures speced in wayfinder tickets</div></div>
     <div class="item"><div class="t">Ontology phase 2: reasoner gate <span class="tag commit">4e86397</span></div><div class="d">DONE — owlready2/HermiT proves the authority invariants (consistency + negative probe + positive control, mutation-tested, in the offline suite). It was the last thing gating MISP</div></div>
-    <div class="item"><div class="t">MISP integration — NEXT <span class="tag verify">unblocked</span></div><div class="d">Hunt becomes the consumer of BULK intel: match pooled community feeds locally, look up only the survivors. Enablers already in place (typed observables, egress registry + gate, shared enrichment client) — "a tools/ feed client + a hunt batch-match, no role-layer changes". Open calls before code: where MISP runs, feed selection + redistribution licensing, egress classification (read-only = lookup; contributing back = submit = off by default), scope boundary</div></div>
     <div class="item"><div class="t">Reporting end-goal</div><div class="d">CISA advisory from spine evidence, mirrored SO+Wazuh, human-actionable writeups; bake-off gate = engine-parity-in-IRIS 12/12</div></div>
     <div class="item"><div class="t">Onion AI (parked candidate)</div><div class="d">Local-model path — revisit after core work</div></div>
   </div>

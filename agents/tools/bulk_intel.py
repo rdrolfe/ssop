@@ -233,3 +233,49 @@ def bulk_intel_for(result: dict[str, Any], external: bool = False) -> dict[str, 
                 "strong_matches": 0, "candidates": 0, "batches": 0,
                 "matches": {}, "known_values": [], "external": [],
                 "external_looked_up": 0, "summary": f"bulk intel error: {e}"}
+
+
+# 40 hex zeros — a value no real corpus contains. The probe's negative control.
+_PROBE_VALUE = "0" * 40
+
+
+def probe_corpus(client: Any | None = None) -> dict[str, Any]:
+    """One deterministic read-only round trip to the corpus. Never raises.
+
+    WHY THIS EXISTS: the per-hunt bulk intel only fires when a hunt happens to
+    return extractable observables — in practice the live hunts usually do not,
+    so a "did the hunt check the corpus?" assertion SKIPS on nearly every
+    matrix run and proves nothing. A gate that cannot see the thing must not
+    report success (or skip silently); it must ask the question directly.
+
+    So: is the hunt path's corpus configured at all, and does it answer? The
+    value is 40 hex zeros, which must return zero matches — a non-empty result
+    would mean the probe is matching noise, not that an indicator was found.
+
+    `client` is injectable so this is testable without a live corpus.
+    """
+    out: dict[str, Any] = {"enabled": False, "reachable": False,
+                           "degraded": True, "error": None, "summary": ""}
+    try:
+        if client is None:
+            from tools.misp_client import MispClient
+            client = MispClient()
+        out["enabled"] = bool(client.available())
+        if not out["enabled"]:
+            out["summary"] = ("MISP not configured on this host "
+                              "(MISP_URL / MISP_API_KEY unset)")
+            return out
+        res = client.match_many([_PROBE_VALUE])
+        out["degraded"] = bool(res.get("degraded"))
+        out["error"] = res.get("error")
+        out["reachable"] = not out["degraded"]
+        if out["reachable"]:
+            out["summary"] = (f"reachable — answered in {res.get('batches')} "
+                              f"request(s), {res.get('matched')} match(es) for the "
+                              f"negative control (0 expected)")
+        else:
+            out["summary"] = f"UNREACHABLE — {out['error']}"
+    except Exception as e:  # noqa: BLE001 — the probe reports, never raises
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["summary"] = f"probe failed — {out['error']}"
+    return out

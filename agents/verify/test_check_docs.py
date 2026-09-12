@@ -16,8 +16,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from verify.check_docs import check_docs  # noqa: E402
 
 REPO = Path("/tmp/dcrepo")
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-ROLES = Path(__file__).resolve().parent.parent.parent / "docs" / "roles"
+_HERE = Path(__file__).resolve()
+# Resolve the tree the cited files actually live in.
+#
+# In the repo they sit under `agents/` (three levels up from verify/); on a
+# DEPLOYED runtime the verify/ tree IS inside the agents tree (two levels up)
+# and there is no `agents/` segment. Hardcoding one depth makes this test
+# silently VACUOUS on the other host: it builds an empty synthetic repo, the
+# negative controls catch nothing, and it still prints a verdict. That is
+# exactly what it did on .29 until this was found (2026-09-12).
+_AGENT_ROOT = _HERE.parent.parent
+if not (_AGENT_ROOT / "hunt.py").exists():
+    _AGENT_ROOT = _HERE.parent.parent.parent / "agents"
+_DOCS_ROOT = _AGENT_ROOT / "docs"
+if not _DOCS_ROOT.exists():
+    _DOCS_ROOT = _AGENT_ROOT.parent / "docs"
+ROLES = _DOCS_ROOT / "roles"
 
 FILES = [
     "agents/analyst.py", "agents/hunt.py", "agents/router.py", "agents/responder.py",
@@ -35,10 +49,17 @@ FILES = [
 ]
 
 
+def _src(rel: str) -> Path:
+    """Map a repo-relative citation path onto THIS host's tree."""
+    if rel.startswith("agents/"):
+        return _AGENT_ROOT / rel[len("agents/"):]
+    return _AGENT_ROOT / rel
+
+
 def build() -> None:
     shutil.rmtree(REPO, ignore_errors=True)
     for f in FILES:
-        src = _REPO_ROOT / f
+        src = _src(f)
         if src.exists():
             dst = REPO / f
             dst.parent.mkdir(parents=True, exist_ok=True)
