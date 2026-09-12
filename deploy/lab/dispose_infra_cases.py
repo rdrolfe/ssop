@@ -125,7 +125,9 @@ def main() -> int:
             rationale = (f"router disposition (infra): routine fleet-health event, "
                          f"no response required ({why})")
         candidates.append((case, decision, rationale))
-        counts[f"would_decide:{decision}"] += 1
+        # Mode-neutral label: the header already says DRY RUN or APPLY, and a
+        # receipt reading "would_decide" after an apply is a lying artifact.
+        counts[f"decide:{decision}"] += 1
 
     print(f"router-minted undecided INFRA cases: {len(candidates)} "
           f"({'APPLY' if APPLY else 'DRY RUN'}{', +close' if CLOSE else ''})\n")
