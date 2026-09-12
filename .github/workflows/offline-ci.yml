@@ -22,7 +22,7 @@ jobs:
 
       # owlready2 boots an embedded HermiT reasoner inside a JVM — the
       # ontology gate (agents/verify/check_ontology.py) needs java on PATH.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
