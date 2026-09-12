@@ -42,6 +42,7 @@ into CaseStore, and the IRIS surface is exercised as a pure payload mapper
 """
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -62,7 +63,14 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         FAILS += 1
 
 
-NOW = "2026-09-11T12:00:00+00:00"
+# RELATIVE, never a literal date. Check 4 drives `_all_spine_cases(days=1)`,
+# whose cutoff is wall-clock now minus 24h — a hardcoded fixture timestamp
+# silently EXPIRES a day after it is written and the gate then goes red for a
+# reason that has nothing to do with the code under test (exactly what happened
+# on 2026-09-12: the previous literal went stale at 12:00Z and check 4/4b
+# reported "got []"). Anchor the fixtures an hour in the past instead, so the
+# decision shapes are always inside the window being enumerated.
+NOW = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
 
 
 def _block_shape() -> dict:

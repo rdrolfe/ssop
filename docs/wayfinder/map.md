@@ -1,89 +1,79 @@
-# Wayfinder Map — P1: Intel Role + SOAR Responder
+# Wayfinder Map — P2: MISP Feed Platform (bulk intel for hunt)
 
 ## Destination
 
-P1 of the SSOP roadmap — Threat Intel Analyst (intel role → hunt packs) and
-the SOAR responder — decided and specified enough to hand off as build
-tickets. Reaching the end = every open question below resolved, each with a
-spec (or an ADR) a builder can implement without re-deciding.
+Self-hosted MISP running in-lab on its own dedicated VM and integrated as the
+hunt role's **bulk** indicator-match source — match thousands of pooled
+community indicators locally, look up only the survivors — with MISP's own
+egress declared in `agents/transport.yaml` and enforced at the network
+boundary, and the ingest feed set fixed with its licensing on record.
+
+Reaching the end = MISP deployed and reachable from the runtime, a `tools/`
+feed client + a hunt batch-match workflow merged with hermetic fixtures, the
+matrix green, and the docs mirror updated (`docs/roles/hunt.md`, the Hunt OWL
+comment in `agents/tools/ontology_export.py`, `docs/project-map.html`).
 
 ## Notes
 
-- Domain: agentic SOC platform; sovereign, rules-first, provable.
+- Domain: sovereign threat-intel ingestion. Rules-first, provable, nothing
+  leaves the network unless declared and decided.
 - Consult skills: `ssop-code-standards` (every change additive, verify-gated,
-  data-driven YAML), `wayfinder` (this method).
-- Standing preferences: hunt packs = YAML files in `agents/hunts/` (already
-  data-driven); playbooks = YAML in `agents/playbooks/`; approval model is
-  Tier-0 whitelist / Tier-1 single / Tier-2 dual-control; nothing leaves the
-  network (sovereignty); verify matrix must stay green.
-- Map is DECISIONS ONLY (no execution) — hand off specs, don't build.
+  data-driven YAML), `wayfinder` (this method), `ssop-platform-ops` (deploy
+  mechanics: one file per scp + md5, runtime path ≠ repo path, restart the
+  daemon that holds the module).
+- Standing preferences: capabilities in `tools/`, authority in roles; the
+  spine is never adapted — feeds hang off `transport.yaml`; code + docs change
+  together; dry-run before any bulk write and make dry-run parity a test; the
+  bake-off gate must be re-scored in the same session as any change to the
+  `engine-parity-in-IRIS` surface.
+- **Operator decisions on record (2026-09-12)** — made with live capacity data,
+  not checklist answers: dedicated VM; egress declared AND enforced; read-only
+  match for hunt only; no submit path, ever, by default.
 
 ## Decisions so far
 
-- [Intel sources for the intel role](tickets/intel-sources.md): CISA KEV
-  (1,671 exploited vulns, keyless JSON) + NVD API 2.0 (keyless date-range
-  sweep) — both sovereign public-domain; KEV vendor/product matches
-  inventory; NVD fills CVSS/detail; no vendor RSS at P1.
-- [Fleet inventory source for intel matching](tickets/fleet-inventory-source.md):
-  Wazuh syscollector → `wazuh-states-inventory-*` indices (8 types, 4
-  agents, rich host.os/package data). KEY GOTCHA: inventory is NOT in
-  `wazuh-alerts-*` — intel role queries states indices directly.
-- [Playbook schema + action registry](tickets/playbook-schema-actions.md):
-  P1 ships whitelisted actions (service_stop/restart, host_quarantine,
-  disk_clean + verify_*); firewall_block_ip + config_revert designed but
-  require whitelist extension. config_revert is FIM-grounded (Wazuh
-  syscheck, 63 alerts live). Schema = reusable step library, params in
-  YAML, env from config.py. Full schema: playbook-schema.md.
-- [Trigger matching + self-infliction guard](tickets/trigger-matching-guard.md):
-  category+level = candidate, recommendation = gate (tier1+ needs
-  recommended_playbook from a role). Protected set config-only (playbooks
-  can't override), layered resolution (literal→CIDR→hostname), fail-closed
-  whole-playbook block, blocked → spine + Tier-2 escalate (never silent).
-- [Responder approval flow mechanics](tickets/approval-flow-mechanics.md):
-  tier0/1 execute immediately; tier2 = ticket with run_id + full payload,
-  approval mutates ticket (approved|denied), 15-min expiry, responder polls
-  for approved+run_id match. Strict sequential steps, stop-on-first-failure,
-  playbook_run recorded on spine + ticket.
-- [Hunt-pack generation schema + quality gate](tickets/hunt-pack-schema.md):
-  generated packs = valid hunt YAML targeting inventory indices (honest
-  "do we have this product" hunts), meta block (cve_id/source/cvss). Gate:
-  environment match (mandatory) + dedupe (mandatory) + staging-review
-  (human/supervisory promotes). Intel flow: INGEST → MATCH → GENERATE →
-  STAGE → PROMOTE.
-- [SOAR verify fixtures prototype](tickets/soar-verify-fixtures.md):
-  20-fixture spec in `agents/verify/fixtures_soar.yaml` (separate file) —
-  trigger matching (5), guard (5), approval flow (6), execution (2),
-  adversarial probes (2). Validated; drives a responder driver when built.
-- [Stateful analyst decision logic — tuning ledger + evidence chain](tickets/stateful-decision-logic.md):
-  BUILT + LIVE (verified 2026-09-11, d87cd27/00a47f8; matrix 45/45). Tuning
-  ledger (Qdrant `tuning`, human-final) consulted before heuristics with
-  fingerprint-aware suppression; entity recidivism (pair + host) attaches
-  instead of minting; drill-replay gate in router+analyst; 5 W's + How
-  evidence chain on case mint.
-
-## Destination reached
-
-All P1 tickets closed. The way is clear — hand off to build tickets:
-
-- **Intel role (build-ready):** sources (KEV + NVD, keyless sovereign),
-  inventory (syscollector states indices), pack schema + quality gate
-  (env-match → dedupe → staging-review). Flow: INGEST → MATCH → GENERATE →
-  STAGE → PROMOTE.
-- **SOAR responder (build-ready):** playbook schema + action registry,
-  trigger matching + self-infliction guard, approval flow (tier0/1/2 with
-  15-min expiry), verification contract (20 fixtures).
+- [MISP deploy target](tickets/misp-deploy-target.md): a DEDICATED new Proxmox
+  VM on .169 — 4 vCPU / 8G RAM / 100G disk, VMID 707, static 192.168.1.80 —
+  sized against the 22G actually free on .169 (running VMs already allocate
+  ~176G of 125G, so 8G is the honest number, not 16G). NOT co-hosted on .75
+  with the Wazuh manager + IRIS case record, although .75 is idle: MISP syncs
+  from tens of third-party feeds and would otherwise share a trust/failure
+  domain with the SIEM and the case record, and .75 has only 46G free.
+- [MISP egress boundary](tickets/misp-egress-boundary.md): MISP's own feed-sync
+  workers run on the MISP host, **outside `check_egress`'s reach** — the gate
+  guards SSOP runtime code, not another host's crons. So the boundary is two
+  layers: a declared infrastructure-egress entry in `agents/transport.yaml`
+  (class `lookup`) AND an allow-list enforced at .13 pinning the sync
+  destinations. Declared beats enforced-only; we do not let MISP's own config
+  be the only thing scoping itself.
+- [Bulk-match scope](tickets/misp-match-scope.md): read-only bulk match feeding
+  HUNT only. No analyst case auto-enrichment in this build. No `submit` class
+  entry — contributing our observables back to MISP or any feed is disclosure,
+  OFF by default (sovereignty doctrine). Role-layer authority unchanged.
 
 ## Not yet specified
 
-- Intel role cadence: scheduled (like analyst) vs event-driven (feed arrival
-  → hunt pack) — a build-time decision, not blocking the spec.
-- How playbook runs surface in the pane of glass (new event type vs
-  existing) — a build-time decision.
-- Sudoers whitelist extension mechanics for firewall_block_ip +
-  config_revert (designed, not yet built — deferred to the build).
+- **Feed selection + redistributability** of indicators derived from each feed
+  (may a hunt pack built from feed X be committed to the public repo?). Gates
+  both the sync config and the public-repo question; research in flight.
+- The `tools/misp_client.py` contract once the feed set is known: query shape,
+  batch size, and how matches map into hunt's existing finding schema.
+- **Local caching:** does hunt query the MISP API every sweep, or do we
+  materialize a local indicator store? Bears on sweep latency, MISP load, and
+  whether hunt keeps working when MISP is down.
+- Sync cadence vs hunt cadence — pre-filter inside the existing hunt sweep, or
+  its own scheduled job. (Same shape as the intel cadence question.)
+- MISP version pinning + upgrade policy for a lab box, and whether the MISP UI
+  is reachable from the operator console at all or SSH-only.
+- Whether anything in this build touches a gated surface (it should not — the
+  design says tools/ + a hunt workflow only).
+- The Hunt OWL comment in `ontology_export.py` is a build-time edit, flagged
+  here so the docs↔code mirror test does not surprise the builder.
 
 ## Out of scope
 
-_(nothing ruled out — P1 destination reached; P2+ items (org-context memory,
-per-org policy, Cedar policy layer, ARENA) are separate efforts, per the
-product map.)_
+- Any MISP↔MISP peering or sharing with external organisations (disclosure).
+- Using MISP as a case/ticket system, or mirroring the spine into it — IRIS is
+  the human front-end (ADR-006).
+- Replacing the per-indicator enrichment client (GreyNoise / VT / OTX). MISP is
+  the bulk pre-filter that runs BEFORE it, not a substitute.
