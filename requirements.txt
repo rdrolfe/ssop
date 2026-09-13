@@ -1,7 +1,3 @@
-# SSOP runtime + verification dependencies.
-#
-# Python 3.11 is the repo standard (asserted by agents/verify/run_offline_ci.py).
-
 langgraph>=1.0.0
 langchain-core>=1.0.0
 qdrant-client>=1.18.0
@@ -10,17 +6,8 @@ paramiko>=5.0.0
 proxmoxer>=2.3.0
 python-dotenv>=1.2.0
 pyyaml>=6.0
-
-# --- ontology gate (agents/verify/check_ontology.py) -------------------------
-# These are NOT runtime deps: they exist so the OWL authority axioms can be
-# machine-proved. They were previously undeclared, which meant any environment
-# built from this file could not run the gate at all — it died on a bare
-# ModuleNotFoundError, and the offline suite reported that as a FAILURE of the
-# ontology rather than as a missing dependency.
-#
-# owlready2 boots an EMBEDDED JVM to run the HermiT reasoner, so a JDK must be
-# on PATH (`java -version`). check_ontology exits 2 = BLOCKED when either the
-# modules or the JVM are absent, so the suite says "could not check" and never
-# quietly passes.
+# Ontology gate (agents/verify/check_ontology.py): rdflib round-trips the
+# exported TTL, owlready2 drives the embedded HermiT reasoner (needs a JVM on
+# PATH — CI installs Temurin via .github/workflows/offline-ci.yml).
 rdflib>=7.0
-owlready2>=0.47
+owlready2>=0.45
