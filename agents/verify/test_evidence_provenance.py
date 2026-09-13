@@ -260,6 +260,47 @@ def main() -> int:
         finally:
             object.__setattr__(settings, "evidence_attestation_required", True)
 
+    def _case(case_id: str) -> dict:
+        return {"case_id": case_id, "title": "t", "status": "open",
+                "ts": "2026-01-01T00:00:00+00:00", "timeline": []}
+
+    # -------- 18. a point written by ANOTHER code path still attests cleanly
+    # Regression for a live-caught bug: `reattest_payload` measured the store
+    # payload for its report but signed the digest of the CANONICAL writer
+    # payload, so any point created by a different writer (the older generic
+    # `store_memory` path adds `agent` and omits observables/enrichments) read
+    # as drifted the instant it was attested. The digest must be the one
+    # measured from the store.
+    with tempfile.TemporaryDirectory() as td:
+        cs, mem = _store(Path(td))
+        cid = "case-FOREIGN"
+        case = _case(cid)
+        # Deliberately NOT case_point_payload: a different, older shape.
+        mem.points["p-foreign"] = {
+            "content": f"{cid} {json.dumps(case)}",
+            "timestamp": case["ts"], "type": "case", "case_id": cid,
+            "status": "open", "title": "t", "agent": "infra-agent",
+        }
+        from tools.audit_chain import AuditChainWriter
+        AuditChainWriter(cs.cases_file).write(
+            case_id=cid, role="case-spine", event="case_opened", status="open",
+            title="t", detail={}, payload_digest=None)
+        before = cs.provenance_for(cid)
+        res = cs.reattest_payload(cid, dry_run=False)
+        after = cs.provenance_for(cid)
+        step("18 a foreign-shape point attests cleanly (measured, not rebuilt)",
+             before == "unattested" and res["action"] == "attested"
+             and after == PROV_REATTEST,
+             f"{before} -> action={res['action']} -> {after}")
+
+        # ...and a genuine same-ID rewrite of that foreign point is STILL caught.
+        mem.points["p-foreign"]["content"] = f"{cid} {json.dumps({**case, 'title': 'HACKED'})}"
+        step("19 ...and a rewrite of it is still detected as drift",
+             cs.provenance_for(cid) == PROV_DRIFTED, cs.provenance_for(cid))
+        refused = cs.reattest_payload(cid, dry_run=False)
+        step("20 ...and the default still refuses to sign over it",
+             refused["action"] == "refused_drifted", refused["action"])
+
     print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")
     return 0 if fails == 0 else 1
 

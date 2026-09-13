@@ -57,10 +57,17 @@ def main() -> int:
     ap.add_argument("--allow-with-drift", action="store_true",
                     help="apply even though drifted/untrusted cases were found "
                          "(they are still NEVER attested over)")
+    ap.add_argument("--resolve-drifted", action="store_true",
+                    help="EXPLICITLY resolve drift by attesting the current "
+                         "stored content of drifted cases. Only for drift you "
+                         "have explained (e.g. a known writer-shape change) — "
+                         "never to silence an unexplained mismatch. Each "
+                         "resolution is logged.")
     a = ap.parse_args()
 
     cs = CaseStore()
-    dry = cs.reattest_backlog(scope=a.scope, dry_run=True)
+    dry = cs.reattest_backlog(scope=a.scope, dry_run=True,
+                              resolve_drifted=a.resolve_drifted)
     _show("DRY RUN", dry)
 
     if not a.apply:
@@ -68,16 +75,18 @@ def main() -> int:
               "attestations.")
         return 0
 
-    if (dry["refused_drifted"] or dry["refused_untrusted"]) and not a.allow_with_drift:
+    if not a.resolve_drifted and (dry["refused_drifted"] or dry["refused_untrusted"]):
         print(f"\nREFUSING TO APPLY: {len(dry['refused_drifted'])} drifted / "
               f"{len(dry['refused_untrusted'])} untrusted case(s) found.")
         print("An attestation over drifted content would launder a possible "
-              "tamper into 'attested'. Resolve the integrity finding first "
-              "(reconcile reports it), or pass --allow-with-drift to attest "
-              "the CLEAN cases only (the suspect ones are still never signed).")
+              "tamper into 'attested'. Investigate the mismatch first "
+              "(reconcile reports it), then either pass --allow-with-drift to "
+              "attest the CLEAN cases only, or --resolve-drifted once you have "
+              "explained it.")
         return 2
 
-    applied = cs.reattest_backlog(scope=a.scope, dry_run=False)
+    applied = cs.reattest_backlog(scope=a.scope, dry_run=False,
+                                  resolve_drifted=a.resolve_drifted)
     _show("APPLIED", applied)
 
     predicted, actual = sorted(dry["would_attest"]), sorted(applied["attested"])

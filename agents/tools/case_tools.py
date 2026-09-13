@@ -1055,7 +1055,8 @@ class CaseStore:
         self._write_memory(case)
 
     def _write_receipt(self, case: dict[str, Any], event: str, role: str = "case-spine",
-                       attestation: str = ATTEST_WRITE) -> None:
+                       attestation: str = ATTEST_WRITE,
+                       payload_digest: str | None = None) -> None:
         """Append a tamper-evident receipt (issue #26).
 
         v2 records: hash-chained (prev_hash -> hash) + HMAC'd with the audit
@@ -1070,6 +1071,12 @@ class CaseStore:
         assertion). Defaults to write: a caller recording a state it is
         writing NOW is attesting at write time. Pass ATTEST_REATTEST for
         anything reconstructed or re-signed after the fact.
+
+        `payload_digest` is normally derived from `case` (the canonical writer
+        payload). A caller that must attest the payload as it exists IN THE
+        STORE — re-attestation of a point some other writer created — passes
+        the digest it measured, because signing a canonicalised reconstruction
+        of someone else's payload guarantees a mismatch.
         """
         receipt = {
             "case_id": case["case_id"],
@@ -1081,7 +1088,7 @@ class CaseStore:
             "detail": case.get("timeline", [{}])[-1] if case.get("timeline") else {},
             # Attested content fingerprint of the point this record describes
             # (issue #28 criterion 4) — see reconcile().
-            "payload_digest": case_payload_digest_for(case),
+            "payload_digest": payload_digest or case_payload_digest_for(case),
             "attestation": attestation,
         }
         try:
@@ -1497,7 +1504,7 @@ class CaseStore:
         return self.provenance_map({case_id}).get(case_id, PROV_UNATTESTED)
 
     def reattest_payload(self, case_id: str, *, dry_run: bool = True,
-                         note: str = "") -> dict[str, Any]:
+                         note: str = "", resolve_drifted: bool = False) -> dict[str, Any]:
         """Sign the CURRENT content of a case point as a point-in-time attestation.
 
         Issue #28 criterion-4 coverage work. Cases written before the digest
@@ -1510,9 +1517,19 @@ class CaseStore:
         Nothing can — the receipts never carried the historical document body.
         Every surface that shows this must present it that way.
 
-        REFUSES a drifted case (an active tamper must be reported, never signed
-        over — attesting drift would launder it into "attested") and an
-        untrusted one (a forged receipt). Idempotent: an already-attested case
+        The digest signed is the one MEASURED FROM THE STORE, never a
+        canonicalised rebuild of it: some historical case points were written by
+        a different code path with a different field set (e.g. the older generic
+        memory writer adds `agent` and omits `observables`/`enrichments`), and
+        signing the canonical shape for them guarantees a mismatch — the case
+        would read as drifted the instant it was attested.
+
+        REFUSES a drifted case by default (an active tamper must be reported,
+        never signed over — attesting drift would launder it into "attested").
+        `resolve_drifted=True` is the explicit, LOGGED operator resolution for
+        drift that has been explained (e.g. a known writer-shape change): use it
+        deliberately, never to silence an unexplained mismatch. Also refuses an
+        untrusted case (a forged receipt). Idempotent: an already-attested case
         reports `already`, so a re-run reporting zero pending is the evidence
         that the first run was complete.
 
@@ -1523,7 +1540,7 @@ class CaseStore:
         prov = self.provenance_for(case_id)
         if prov in (PROV_WRITE, PROV_REATTEST):
             return {"case_id": case_id, "action": "already", "provenance": prov}
-        if prov == PROV_DRIFTED:
+        if prov == PROV_DRIFTED and not resolve_drifted:
             logger.error("reattest: REFUSING %s — payload does not match its "
                          "signed digest (drift is reported, never attested over)", case_id)
             return {"case_id": case_id, "action": "refused_drifted", "provenance": prov}
@@ -1543,8 +1560,13 @@ class CaseStore:
         if dry_run:
             return {"case_id": case_id, "action": "would_attest",
                     "provenance": prov, "digest": digest}
+        if prov == PROV_DRIFTED:
+            logger.error("reattest: resolving DRIFT for %s under an explicit "
+                         "operator override — attesting the CURRENT stored "
+                         "content (%s). The prior mismatch is not investigated "
+                         "by this call.", case_id, note or "no note given")
         self._write_receipt(case, event="payload_reattested", role="attest",
-                            attestation=ATTEST_REATTEST)
+                            attestation=ATTEST_REATTEST, payload_digest=digest)
         # Prove the write changed the verdict, rather than reporting success on
         # a record that did not land.
         after = self.provenance_for(case_id)
@@ -1552,7 +1574,8 @@ class CaseStore:
                 "provenance_after": after, "digest": digest, "note": note}
 
     def reattest_backlog(self, *, scope: str = "advisory", dry_run: bool = True,
-                         note: str = "", case_ids: Iterable[str] | None = None) -> dict[str, Any]:
+                         note: str = "", case_ids: Iterable[str] | None = None,
+                         resolve_drifted: bool = False) -> dict[str, Any]:
         """Plan or apply re-attestation across the pre-digest backlog.
 
         scope="advisory" (default) selects the cases a deliverable can render —
@@ -1585,6 +1608,7 @@ class CaseStore:
             "refused_drifted": [], "refused_untrusted": [], "missing": [],
         }
         for cid in candidates:
-            r = self.reattest_payload(cid, dry_run=dry_run, note=note)
+            r = self.reattest_payload(cid, dry_run=dry_run, note=note,
+                                      resolve_drifted=resolve_drifted)
             out[r["action"]].append(cid)
         return out
