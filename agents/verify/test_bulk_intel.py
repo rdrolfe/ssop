@@ -56,7 +56,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 # value -> MISP attribute type. Deliberately mixes a STRONG type (sha1) with a
 # weak one (ip-dst) so the promotion rule is exercised on real shapes.
 KNOWN: dict[str, str] = {
-    "45.155.205.233": "ip-dst",
+    "198.51.100.7": "ip-dst",
     "evil.example.com": "domain",
     "da39a3ee5e6b4b0d3255bfef95601890afd80709": "sha1",
 }
@@ -118,7 +118,7 @@ def client(**kw) -> MispClient:
 
 # --- 1. survivors only -------------------------------------------------------
 cand = [
-    {"type": "ip", "value": "45.155.205.233"},                  # known (weak)
+    {"type": "ip", "value": "198.51.100.7"},                  # known (weak)
     {"type": "ip", "value": "10.0.0.9"},                        # unknown
     {"type": "domain", "value": "evil.example.com"},            # known (strong)
     {"type": "domain", "value": "clean.example.org"},           # unknown
@@ -236,8 +236,8 @@ check("7b. ...and is reported honestly, not as a clean result",
 
 # --- 8. duplicate values collapse -------------------------------------------
 REQUESTS.clear()
-dupes = [{"type": "ip", "value": "45.155.205.233"},
-         {"type": "ip", "value": "45.155.205.233"},
+dupes = [{"type": "ip", "value": "198.51.100.7"},
+         {"type": "ip", "value": "198.51.100.7"},
          {"type": "domain", "value": "evil.example.com"}]
 d = BulkIntel(misp=client(), enrichment=RecEnrichment()).match(dupes)
 check("8. duplicate candidates collapse to unique values",

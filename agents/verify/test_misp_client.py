@@ -45,7 +45,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 # --- a fake MISP ------------------------------------------------------------
 
-KNOWN = {"45.155.205.233", "evil.example.com", "d41d8cd98f00b204e9800998ecf8427e"}
+KNOWN = {"198.51.100.7", "evil.example.com", "d41d8cd98f00b204e9800998ecf8427e"}
 REQUESTS: list[dict] = []
 MODE = {"fail": False}
 
@@ -100,33 +100,33 @@ check("1c. the API key rides the request as a header",
 
 # --- 2. matches are returned per value, with provenance kept ----------------
 REQUESTS.clear()
-mix = ["45.155.205.233", "clean.example.org", "evil.example.com"]
+mix = ["198.51.100.7", "clean.example.org", "evil.example.com"]
 res = c.match_many(mix)
 check("2. known values match, clean values do not",
-      set(res["matches"]) == {"45.155.205.233", "evil.example.com"},
+      set(res["matches"]) == {"198.51.100.7", "evil.example.com"},
       f"matches={sorted(res['matches'])}")
 check("2b. matched count is reported", res["matched"] == 2, f"matched={res['matched']}")
 check("2c. provenance survives (type/category/event_id)",
-      res["matches"]["45.155.205.233"][0].get("event_id") == "42"
-      and res["matches"]["45.155.205.233"][0].get("type") == "ip-dst")
-obs_pair = [{"type": "ip", "value": "45.155.205.233"},
+      res["matches"]["198.51.100.7"][0].get("event_id") == "42"
+      and res["matches"]["198.51.100.7"][0].get("type") == "ip-dst")
+obs_pair = [{"type": "ip", "value": "198.51.100.7"},
             {"type": "domain", "value": "clean.example.org"}]
 ann_pair = c.annotate_observables(obs_pair)
 check("2d. a match is marked known=True, a clean value known=False",
       obs_pair[0]["known"] is True and obs_pair[1]["known"] is False
-      and ann_pair["known_values"] == ["45.155.205.233"],
+      and ann_pair["known_values"] == ["198.51.100.7"],
       f"known={{obs_pair[0]['known']}}, {{obs_pair[1]['known']}}")
 
 # --- 3. DEGRADED is not CLEAN ----------------------------------------------
 MODE["fail"] = True
 try:
-    bad = c.match_many(["45.155.205.233"])
+    bad = c.match_many(["198.51.100.7"])
     check("3. an erroring MISP reports degraded=True", bad.get("degraded") is True)
     check("3b. a degraded result carries an error and no phantom matches",
           bool(bad.get("error")) and bad.get("matches") == {})
     # the annotate call must run WHILE the failure is still in effect, or the
     # check passes for the wrong reason (it did once — caught by re-reading it)
-    obs = [{"type": "ip", "value": "45.155.205.233"}]
+    obs = [{"type": "ip", "value": "198.51.100.7"}]
     ann = c.annotate_observables(obs)
 finally:
     MODE["fail"] = False
@@ -136,7 +136,7 @@ check("3c. a degraded batch never marks observables known",
 # --- 4. unconfigured is 'not checked', not 'clean' --------------------------
 c_off = MispClient(url="", api_key="")
 check("4. unconfigured client reports available()=False", c_off.available() is False)
-off = c_off.match_many(["45.155.205.233"])
+off = c_off.match_many(["198.51.100.7"])
 check("4b. unconfigured client degrades rather than returning empty-clean",
       off["degraded"] is True and off["searched"] == 0 and bool(off.get("error")))
 
