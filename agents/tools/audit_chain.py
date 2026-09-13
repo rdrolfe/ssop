@@ -35,6 +35,59 @@ AUDIT_KEY_DIR = Path(os.getenv("SSOP_AUDIT_KEY_DIR",
                                str(Path.home() / ".ssop" / "audit")))
 GENESIS = "sha256:GENESIS"
 
+# Authenticity verdicts for ONE record (see record_authenticity). Three-valued
+# on purpose: "we cannot judge" must never be reported as "forged", or a
+# verifier without the key turns every honest record into an alarm and the
+# control gets muted.
+AUTH_OK = "ok"
+AUTH_UNKNOWN_KEY = "unknown_key"
+AUTH_MISMATCH = "mismatch"
+
+
+def read_key_file(path: Path) -> bytes:
+    """Read an audit key file with the ONE correct read discipline.
+
+    Keys are raw urandom bytes — a byte can legitimately be whitespace
+    (0x20/newline), so NEVER strip: stripping mutates ~4.6% of random keys on
+    read-back and silently desynchronizes key_id vs signature (writer signs
+    with the full key, verifier's stripped key -> "key_id unknown"). Only a
+    trailing newline from an editor is the historically-expected whitespace;
+    strip exactly that. Single implementation: the writer, the chain verifier
+    and the reconciliation drift check must agree byte-for-byte.
+    """
+    data = path.read_bytes()
+    if data.endswith(b"\n") and not data.endswith(b"\n\n"):
+        data = data[:-1]
+    return data
+
+
+def load_key_cache(keys_dir: Path | None = None) -> dict[str, bytes]:
+    """{key_id: key} for every audit key on disk (unreadable keys logged)."""
+    cache: dict[str, bytes] = {}
+    for kf in sorted(Path(keys_dir or AUDIT_KEY_DIR).glob("audit*.key")):
+        try:
+            data = read_key_file(kf)
+        except OSError as e:
+            logger.warning("audit key unreadable: %s: %s", kf, e)
+            continue
+        cache[key_id_for(data)] = data
+    return cache
+
+
+def record_authenticity(record: dict[str, Any], key_cache: dict[str, bytes]) -> str:
+    """Classify ONE v2 record's HMAC: AUTH_OK / AUTH_UNKNOWN_KEY / AUTH_MISMATCH.
+
+    The single derivation of "is this record authentic" — the chain verifier
+    and any consumer that must TRUST a record's contents (rather than merely
+    read it) call this, so the two can never disagree about what a valid
+    signature is.
+    """
+    key = key_cache.get(record.get("key_id", ""))
+    if key is None:
+        return AUTH_UNKNOWN_KEY
+    expect = record_hash({k: v for k, v in record.items() if k != "hash"}, key)
+    return AUTH_OK if hmac.compare_digest(record.get("hash", ""), expect) else AUTH_MISMATCH
+
 
 def audit_key_path(key_id: str = "") -> Path:
     return AUDIT_KEY_DIR / f"audit{('-' + key_id) if key_id else ''}.key"
@@ -44,16 +97,7 @@ def load_or_create_key(key_id: str = "") -> bytes:
     """Load the audit HMAC key; generate on first use (600 perms)."""
     p = audit_key_path(key_id)
     if p.is_file():
-        data = p.read_bytes()
-        # Keys are raw urandom bytes — a byte can legitimately be whitespace
-        # (0x20/newline), so NEVER strip: stripping mutates ~4.6% of random
-        # keys on read-back and silently desynchronizes key_id vs signature
-        # (writer signs with the full key, verifier's key_cache strips ->
-        # "key_id unknown"). Only a trailing newline from an editor is the
-        # historically-expected whitespace; strip exactly that.
-        if data.endswith(b"\n") and not data.endswith(b"\n\n"):
-            data = data[:-1]
-        return data
+        return read_key_file(p)
     AUDIT_KEY_DIR.mkdir(parents=True, exist_ok=True)
     key = os.urandom(32)
     # Never store a key whose edge bytes are whitespace-adjacent AND never
@@ -147,8 +191,15 @@ class AuditChainWriter:
 
     def write(self, *, case_id: str, role: str, event: str,
               status: str | None, title: str, detail: dict[str, Any],
-              actor_id: str | None = None, actor_verified: bool = False) -> dict[str, Any]:
-        """Append one chained, signed record. Returns the written record."""
+              actor_id: str | None = None, actor_verified: bool = False,
+              payload_digest: str | None = None) -> dict[str, Any]:
+        """Append one chained, signed record. Returns the written record.
+
+        payload_digest (issue #28 criterion 4): content fingerprint of the case
+        point this record describes, when the writer upserts one. It rides
+        INSIDE the signed record, so an attacker with Qdrant write access but no
+        audit key cannot make the receipt agree with a rewritten payload.
+        """
         if self._seq is None:
             self._load_tail_state()
         unsigned = {
@@ -166,6 +217,7 @@ class AuditChainWriter:
             "actor_id": actor_id,
             "actor_verified": actor_verified,
             "key_id": self.key_id,
+            "payload_digest": payload_digest,
         }
         unsigned["hash"] = record_hash(unsigned, self.key)
         self._append_line(json.dumps(unsigned))
@@ -198,11 +250,7 @@ def verify_chain(path: Path, keys_dir: Path | None = None,
     key_cache: dict[str, bytes] = {}
     for kf in Path(keys_dir).glob("audit*.key"):
         try:
-            # Same read discipline as load_or_create_key: strip exactly one
-            # trailing newline, never full whitespace — keys are raw bytes.
-            data = kf.read_bytes()
-            if data.endswith(b"\n") and not data.endswith(b"\n\n"):
-                data = data[:-1]
+            data = read_key_file(kf)
             key_cache[key_id_for(data)] = data
         except OSError as e:
             problems.append(f"key unreadable: {kf}: {e}")
@@ -246,15 +294,12 @@ def verify_chain(path: Path, keys_dir: Path | None = None,
 
             # 4. HMAC authenticity (only when we hold the key)
             kid = rec.get("key_id", "")
-            key = key_cache.get(kid)
-            if key is None:
-                if problems and problems[-1].startswith("key unreadable"):
-                    pass
+            auth = record_authenticity(rec, key_cache)
+            if auth == AUTH_UNKNOWN_KEY:
                 problems.append(f"line {lineno}: key_id {kid!r} unknown — "
                                 f"cannot verify authenticity (forged or foreign key)")
                 continue
-            expect = record_hash({k: v for k, v in rec.items() if k != "hash"}, key)
-            if not hmac.compare_digest(rec.get("hash", ""), expect):
+            if auth == AUTH_MISMATCH:
                 problems.append(
                     f"line {lineno}: HASH MISMATCH — record mutated after write "
                     f"(or forged attribution)")

@@ -21,8 +21,10 @@ CASE LIFECYCLE (SO parity — real case management):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,10 @@ import yaml
 
 from config import settings
 from logging_setup import get_logger
+from tools.audit_chain import (
+    AUTH_MISMATCH, AUTH_OK, AuditChainWriter, load_key_cache,
+    record_authenticity,
+)
 
 logger = get_logger(__name__)
 
@@ -38,6 +44,45 @@ CASE_COLLECTION = settings.case_collection
 # Event-points design: timeline events live as independent points in their
 # own collection; the case point carries state fields only.
 CASE_EVENTS_COLLECTION = settings.case_collection + "_events"
+
+
+def case_point_payload(case: dict[str, Any]) -> dict[str, Any]:
+    """THE single construction of the Qdrant case-point payload.
+
+    Writer and verifier both go through here, so the digest computed at write
+    time and the digest recomputed during reconciliation cannot drift apart.
+    """
+    return {
+        "content": f"{case['case_id']} {json.dumps(case)}",
+        "timestamp": case.get("ts") or case.get("updated_ts", ""),
+        "type": "case",
+        "case_id": case["case_id"],
+        "status": case.get("status", "open"),
+        "title": case.get("title", ""),
+        "observables": case.get("observables", []),  # queryable IOC list
+        "enrichments": case.get("enrichments", []),  # queryable TI verdicts
+    }
+
+
+def case_payload_digest(payload: dict[str, Any]) -> str:
+    """Content fingerprint of a case point payload (sha256, canonical JSON).
+
+    Covers EVERY field the writer persists — not only the embedded document —
+    so rewriting a queryable projection (title/status/observables/enrichments)
+    is caught too, not just a rewrite of `content`.
+
+    Deliberately NOT keyed: this is a fingerprint, not a secret. What makes it
+    trustworthy is where it is stored — inside an HMAC-signed receipt record —
+    so an attacker with Qdrant write access cannot produce a receipt that
+    agrees with a payload they rewrote.
+    """
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(blob.encode()).hexdigest()
+
+
+def case_payload_digest_for(case: dict[str, Any]) -> str:
+    """The digest the writer will attest for `case`."""
+    return case_payload_digest(case_point_payload(case))
 
 
 def load_case_template(rule_id: Any) -> str | None:
@@ -802,19 +847,58 @@ class CaseStore:
         except (json.JSONDecodeError, IndexError):
             return None
 
-    def _receipts_for(self, case_id: str) -> list[dict[str, Any]]:
-        """ALL receipt records for a case, in file (chronological) order."""
-        out: list[dict[str, Any]] = []
+    def _iter_receipts(self) -> Iterator[dict[str, Any]]:
+        """Every parseable receipt record, in file (chronological) order."""
         if not self.cases_file.exists():
-            return out
+            return
         for line in self.cases_file.read_text().splitlines():
             try:
-                rec = json.loads(line)
-                if rec.get("case_id") == case_id:
-                    out.append(rec)
+                yield json.loads(line)
             except json.JSONDecodeError:
                 continue
-        return out
+
+    def _receipts_for(self, case_id: str) -> list[dict[str, Any]]:
+        """ALL receipt records for a case, in file (chronological) order."""
+        return [r for r in self._iter_receipts() if r.get("case_id") == case_id]
+
+    def _receipt_index(self, key_cache: dict[str, bytes]) -> tuple[
+            set[str], dict[str, str], list[str], int]:
+        """Read the receipt spine ONCE for the three things reconcile needs.
+
+        Returns (receipt_ids, attested_digests, untrusted_case_ids,
+        undecidable_records):
+
+          attested    case_id -> payload digest, from the LATEST record whose
+                      HMAC validates (last one wins = newest truth)
+          untrusted   case ids that have a digest-bearing record whose HMAC
+                      does NOT validate — the record itself was forged or
+                      edited after write
+          undecidable digest-bearing records we cannot judge because the audit
+                      key is absent (counted, never treated as forged)
+        """
+        ids: set[str] = set()
+        attested: dict[str, str] = {}
+        untrusted: list[str] = []
+        undecidable = 0
+        for rec in self._iter_receipts():
+            cid = rec.get("case_id")
+            if cid:
+                ids.add(str(cid))
+            digest = rec.get("payload_digest")
+            if not (cid and digest):
+                continue
+            if rec.get("v") != 2:
+                # Signed chain starts at v2; a v1 record's digest is unproven
+                # (the chain-write fallback can emit one). Never trust it.
+                continue
+            auth = record_authenticity(rec, key_cache)
+            if auth == AUTH_OK:
+                attested[str(cid)] = str(digest)
+            elif auth == AUTH_MISMATCH:
+                untrusted.append(str(cid))
+            else:
+                undecidable += 1
+        return ids, attested, untrusted, undecidable
 
     @staticmethod
     def _rebuild_from_receipts(case_id: str, recs: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -874,10 +958,11 @@ class CaseStore:
             "status": case.get("status"),
             "title": case.get("title", ""),
             "detail": case.get("timeline", [{}])[-1] if case.get("timeline") else {},
+            # Attested content fingerprint of the point this record describes
+            # (issue #28 criterion 4) — see reconcile().
+            "payload_digest": case_payload_digest_for(case),
         }
         try:
-            from tools.audit_chain import AuditChainWriter
-
             if not hasattr(self, "_chain_writer"):
                 self._chain_writer = AuditChainWriter(self.cases_file)
             actor_id, actor_ok = None, False
@@ -895,7 +980,8 @@ class CaseStore:
                 case_id=receipt["case_id"], role=role, event=event,
                 status=receipt["status"], title=receipt["title"],
                 detail=receipt["detail"], actor_id=actor_id,
-                actor_verified=actor_ok)
+                actor_verified=actor_ok,
+                payload_digest=receipt["payload_digest"])
             return
         except Exception as e:  # noqa: BLE001 — chain failure must not kill the case write
             logger.error("chained receipt write failed (falling back to v1): %s", e)
@@ -915,24 +1001,15 @@ class CaseStore:
             from qdrant_client.models import PointStruct
             from tools.qdrant_tools import _retry_call
 
-            content = f"{case['case_id']} {json.dumps(case)}"
             pid = str(_uuid.uuid5(_uuid.NAMESPACE_URL, case["case_id"]))
+            payload = case_point_payload(case)
             _retry_call(
                 self._get_memory().client.upsert,
                 collection_name=CASE_COLLECTION,
                 points=[PointStruct(
                     id=pid,
                     vector=[0.0] * 384,
-                    payload={
-                        "content": content,
-                        "timestamp": case.get("ts") or case.get("updated_ts", ""),
-                        "type": "case",
-                        "case_id": case["case_id"],
-                        "status": case.get("status", "open"),
-                        "title": case.get("title", ""),
-                        "observables": case.get("observables", []),  # queryable IOC list
-                        "enrichments": case.get("enrichments", []),  # queryable TI verdicts
-                    },
+                    payload=payload,
                 )],
             )
         except Exception as e:
@@ -1068,7 +1145,7 @@ class CaseStore:
         return out
 
     def reconcile(self, heal: bool = True) -> dict[str, Any]:
-        """Compare Qdrant vs JSONL for each case. Returns mismatches.
+        """Compare Qdrant vs JSONL for each case: PRESENCE and CONTENT.
 
         The supervisory agent consumes this as its audit-integrity check.
         With heal=True (default), receipt-only cases are automatically
@@ -1076,25 +1153,50 @@ class CaseStore:
         working-memory gap is repaired in place rather than left for a human.
         Qdrant-only points are only reported (never deleted automatically: a
         phantom point is safer than a silently dropped case).
+
+        CONTENT check (issue #28 criterion 4). An id-set comparison is blind
+        to a same-ID payload rewrite: rewrite a case's document in Qdrant,
+        keep its id, and both sets still match. So every receipt records the
+        digest of the payload its writer upserted (case_payload_digest_for),
+        and this method recomputes the digest of the point it finds and
+        compares the two. A digest is trusted only when the record carrying it
+        passes its HMAC (record_authenticity) — reading the receipt file is
+        not the same as believing it. Buckets:
+
+          drifted             signed digest != recomputed payload digest
+          untrusted_receipt   a digest-bearing record's HMAC does not validate
+          unverified          no signed digest to compare against (pre-#28
+                              records, or a verifier without the audit key)
+          verified_count      cases whose content matched their signed digest
+
+        `consistent` is true only when the id sets agree AND nothing is
+        drifting or forged. `unverified` deliberately does NOT make it false:
+        those are cases this control does not yet cover, and calling an
+        uncovered case tampered would light up the whole historical spine on
+        day one and get the control muted. The gap is returned as a count and
+        a list instead, so it is visible without being an alarm.
+
+        Drifted points are REPORTED, never auto-repaired: the tampered payload
+        is the evidence, and overwriting it from the receipt would destroy the
+        only copy of what the attacker actually wrote.
         """
-        qdrant_ids: set[str] = set()
+        key_cache = load_key_cache()
+
+        points: dict[str, dict[str, Any]] = {}
         try:
-            for r in self._get_memory().search_memory(CASE_COLLECTION, "case-", limit=10000,
-                                                      scroll_limit=10000):
-                cid = (r.get("metadata") or {}).get("case_id") or r.get("content", "").split(" ", 1)[0]
+            # scroll_all pages through the WHOLE collection — a single scroll
+            # silently stops at its limit once the spine outgrows it.
+            for rec in self._get_memory().scroll_all(CASE_COLLECTION):
+                payload = rec.payload or {}
+                cid = str(payload.get("case_id")
+                          or str(payload.get("content", "")).split(" ", 1)[0])
                 if cid.startswith("case-"):
-                    qdrant_ids.add(cid)
-        except Exception as e:  # noqa: BLE001
+                    points[cid] = payload
+        except Exception as e:  # noqa: BLE001 — report the scan failure, don't die
             logger.warning("reconcile: qdrant scan failed: %s", e)
-        receipt_ids: set[str] = set()
-        if self.cases_file.exists():
-            for line in self.cases_file.read_text().splitlines():
-                try:
-                    rec = json.loads(line)
-                    if rec.get("case_id"):
-                        receipt_ids.add(rec["case_id"])
-                except json.JSONDecodeError:
-                    continue
+        qdrant_ids: set[str] = set(points)
+
+        receipt_ids, _, _, _ = self._receipt_index(key_cache)
         receipt_only = sorted(receipt_ids - qdrant_ids)
         healed: list[str] = []
         heal_failed: list[str] = []
@@ -1109,18 +1211,87 @@ class CaseStore:
                         heal_failed.append(cid)
                         continue
                     self._write_memory(case)
+                    # The rebuild is a LOSSY reconstruction (folded timeline,
+                    # no source/counters), so its digest legitimately differs
+                    # from the original point's. Re-attest the repaired state
+                    # in the signed record — otherwise this very repair would
+                    # be reported as tampering on every later run.
+                    try:
+                        self._write_receipt(case, event="reconcile_healed",
+                                            role="reconcile")
+                    except Exception as e:  # noqa: BLE001 — repair must not die
+                        logger.warning("reconcile: re-attest failed for %s: %s", cid, e)
                     healed.append(cid)
                 except Exception as e:  # noqa: BLE001 — report, don't die
                     logger.warning("reconcile heal failed for %s: %s", cid, e)
                     heal_failed.append(cid)
             # Refresh the Qdrant id set after healing.
             qdrant_ids.update(healed)
+            for cid in healed:
+                # Read the repaired point back from the STORE and compare that
+                # (not the object we built locally) — the guard is about what
+                # is actually persisted.
+                try:
+                    payload = self._get_memory().get_by_payload(
+                        CASE_COLLECTION, "case_id", cid)
+                except Exception as e:  # noqa: BLE001 — fall back to our write
+                    logger.warning("reconcile: re-read of healed %s failed: %s", cid, e)
+                    payload = None
+                if payload:
+                    points[cid] = payload
+
+        # Content check, on a FRESH read of the spine so the re-attestations
+        # written above are the digests we compare against.
+        _, attested, untrusted, undecidable = self._receipt_index(key_cache)
+        untrusted_ids = sorted(set(untrusted))
+        for cid in untrusted_ids:
+            # A case with a forged receipt record must not read as verified on
+            # the strength of some earlier honest record.
+            attested.pop(cid, None)
+
+        drifted: list[str] = []
+        drift_detail: dict[str, dict[str, str]] = {}
+        unverified: list[str] = []
+        verified = 0
+        for cid in sorted(qdrant_ids & receipt_ids):
+            want = attested.get(cid)
+            if not want:
+                unverified.append(cid)
+                continue
+            payload = points.get(cid)
+            if payload is None:
+                # Point vanished between the scan and now: presence, not
+                # content, is the open question — nothing to compare here.
+                continue
+            observed = case_payload_digest(payload)
+            if observed == want:
+                verified += 1
+            else:
+                drifted.append(cid)
+                drift_detail[cid] = {"attested": want, "observed": observed}
+
+        tampered = bool(drifted or untrusted_ids)
+        if tampered:
+            logger.error("reconcile: INTEGRITY FAILURE — drifted=%s untrusted=%s",
+                         drifted, untrusted_ids)
+
         return {
             "qdrant_only": sorted(qdrant_ids - receipt_ids),
             "receipt_only": sorted(receipt_ids - qdrant_ids),
             "healed": healed,
             "heal_failed": heal_failed,
-            "consistent": qdrant_ids == receipt_ids,
+            # NOT id-sets-only any more: see the docstring. A same-ID payload
+            # rewrite keeps the id sets equal, which was this field's blind
+            # spot; `id_sets_match` keeps the old narrow reading available.
+            "consistent": qdrant_ids == receipt_ids and not tampered,
+            "id_sets_match": qdrant_ids == receipt_ids,
+            "tampered": tampered,
+            "drifted": drifted,
+            "drift_detail": drift_detail,
+            "untrusted_receipt": untrusted_ids,
+            "unverified": unverified,
+            "verified_count": verified,
+            "authenticity_undecidable": undecidable,
             "qdrant_count": len(qdrant_ids),
             "receipt_count": len(receipt_ids),
         }
