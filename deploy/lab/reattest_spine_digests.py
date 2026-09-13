@@ -28,10 +28,16 @@ Usage (from the runtime root, e.g. ~/agent-runtime):
   deploy/lab/reattest_spine_digests.py --apply          # APPLY, advisory scope
 """
 import argparse
+import logging
 import sys
 
 sys.path.insert(0, ".")
 from tools.case_tools import CaseStore  # noqa: E402
+
+# A direct script run turns on the root logger's httpx chatter — thousands of
+# lines of "HTTP Request: GET ..." that bury the operator output this tool
+# exists to show.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ACTIONS = ("would_attest", "attested", "already", "refused_drifted",
            "refused_untrusted", "missing")
@@ -63,11 +69,16 @@ def main() -> int:
                          "have explained (e.g. a known writer-shape change) — "
                          "never to silence an unexplained mismatch. Each "
                          "resolution is logged.")
+    ap.add_argument("--case-id", action="append", default=None,
+                    metavar="case-XXXXXXXX",
+                    help="attest ONLY this case (repeatable). Skips candidate "
+                         "selection entirely — for a targeted resolution.")
     a = ap.parse_args()
 
     cs = CaseStore()
     dry = cs.reattest_backlog(scope=a.scope, dry_run=True,
-                              resolve_drifted=a.resolve_drifted)
+                              resolve_drifted=a.resolve_drifted,
+                              case_ids=a.case_id)
     _show("DRY RUN", dry)
 
     if not a.apply:
@@ -86,7 +97,8 @@ def main() -> int:
         return 2
 
     applied = cs.reattest_backlog(scope=a.scope, dry_run=False,
-                                  resolve_drifted=a.resolve_drifted)
+                                  resolve_drifted=a.resolve_drifted,
+                                  case_ids=a.case_id)
     _show("APPLIED", applied)
 
     predicted, actual = sorted(dry["would_attest"]), sorted(applied["attested"])
