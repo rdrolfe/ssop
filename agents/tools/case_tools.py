@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,103 @@ def case_payload_digest(payload: dict[str, Any]) -> str:
 def case_payload_digest_for(case: dict[str, Any]) -> str:
     """The digest the writer will attest for `case`."""
     return case_payload_digest(case_point_payload(case))
+
+
+# How a payload digest was obtained. The distinction is load-bearing: a report
+# must never present a point-in-time re-attestation as "chained since creation".
+ATTEST_WRITE = "write"        # digest taken as the case was written
+ATTEST_REATTEST = "reattest"  # digest taken LATER, of whatever content was then
+                              # in the store — says nothing about the past
+
+# Provenance verdicts for a case's evidence (see CaseStore.provenance_map).
+PROV_WRITE = "write"            # signed digest matches the live payload, taken at write
+PROV_REATTEST = "reattest"      # signed digest matches, but taken later
+PROV_DRIFTED = "drifted"        # signed digest exists and the payload DIFFERS
+PROV_UNTRUSTED = "untrusted"    # a digest-bearing receipt record failed its HMAC
+PROV_UNATTESTED = "unattested"  # no usable signed digest (pre-digest case), or no
+                                # live payload to compare against
+
+# The shared human wording for each verdict. It lives with the derivation
+# because a report and an advisory that describe the SAME verdict differently
+# is the "two surfaces, two numbers" defect in prose form.
+_PROVENANCE_NOTES: dict[str, str] = {
+    PROV_WRITE: (
+        "**Chained at write** — the stored content matches a digest signed into "
+        "the audit chain as this case was written."),
+    PROV_REATTEST: (
+        "**Re-attested (point-in-time)** — the stored content matches a digest "
+        "signed into the audit chain LATER, as a point-in-time assertion. It "
+        "establishes that the content has not changed since that attestation; it "
+        "does NOT establish that it was unmodified before it."),
+    PROV_DRIFTED: (
+        "**DRIFTED — do not rely on this content.** A signed digest exists for "
+        "this case and the stored content does NOT match it: the payload was "
+        "changed after it was signed. The change is preserved as evidence and "
+        "has not been repaired."),
+    PROV_UNTRUSTED: (
+        "**UNTRUSTED — the receipt for this case does not validate.** A "
+        "digest-bearing audit record failed its HMAC check: it was forged or "
+        "edited after signing."),
+    PROV_UNATTESTED: (
+        "**Unattested** — no signed digest exists for this case's content "
+        "(written before content attestation existed), or there is no stored "
+        "point to compare. Its content cannot be distinguished from a rewrite."),
+}
+
+
+def provenance_note(provenance: str) -> str:
+    """The one sentence a surface prints about a provenance verdict."""
+    return _PROVENANCE_NOTES.get(
+        provenance, f"**Unknown provenance (`{provenance}`).**")
+
+
+# Short form for tables/badges (same source of truth as the long note).
+_PROVENANCE_LABELS: dict[str, str] = {
+    PROV_WRITE: "chained at write",
+    PROV_REATTEST: "re-attested (point-in-time)",
+    PROV_DRIFTED: "DRIFTED",
+    PROV_UNTRUSTED: "UNTRUSTED",
+    PROV_UNATTESTED: "unattested",
+}
+
+
+def provenance_label(provenance: str) -> str:
+    """The short label a table or badge prints for a provenance verdict."""
+    return _PROVENANCE_LABELS.get(provenance, str(provenance))
+
+
+def evidence_is_publishable(provenance: str) -> bool:
+    """May a deliverable PUBLISH evidence with this provenance?
+
+    Only the two attested verdicts. `unattested` cannot be distinguished from a
+    rewrite, and `drifted`/`untrusted` are known integrity failures. Callers may
+    still render with an explicit override, which must print provenance_note().
+    """
+    return provenance in (PROV_WRITE, PROV_REATTEST)
+
+
+def require_publishable(provenance: str, allow_unattested: bool | None = None) -> None:
+    """Raise unless this provenance may be published — THE publish gate.
+
+    Called by every publication surface (single-case report, CISA-style
+    advisory, IRIS/SO attach) so the rule cannot differ between them.
+
+    allow_unattested=None (the default) resolves from
+    settings.evidence_attestation_required, so the gate is ON unless the
+    deployment explicitly disables it; True is a per-call override that is
+    LOGGED and that must still print provenance_note() in the artifact.
+    """
+    if evidence_is_publishable(provenance):
+        return
+    allow = (not bool(getattr(settings, "evidence_attestation_required", True))
+             if allow_unattested is None else bool(allow_unattested))
+    if not allow:
+        raise UnattestedEvidenceError(
+            f"evidence provenance is '{provenance}' — refusing to publish it as "
+            f"verified evidence. Attest it first (CaseStore.reattest_payload), or "
+            f"pass allow_unattested=True to render it WITH the notice.")
+    logger.warning("publishing evidence with provenance '%s' under an explicit "
+                   "allow_unattested override", provenance)
 
 
 def load_case_template(rule_id: Any) -> str | None:
@@ -153,6 +250,20 @@ class CaseStateError(RuntimeError):
 class CaseConflictError(RuntimeError):
     """Raised when concurrent case writers keep colliding past the retry
     budget (optimistic-concurrency verification failed repeatedly)."""
+
+
+class UnattestedEvidenceError(RuntimeError):
+    """Raised when a deliverable would PUBLISH evidence whose integrity the
+    spine cannot vouch for.
+
+    Raised by the publication surfaces (single-case report, CISA-style
+    advisory, IRIS/SO attach) when a case's provenance is `unattested` (no
+    signed digest — pre-2026-09-13 cases) or `drifted` (a signed digest exists
+    and the stored payload does NOT match it). Callers may override explicitly
+    with allow_unattested=True, which always renders the notice; the override
+    is logged. Never silently publish unattested evidence as if it were
+    verified.
+    """
 
 
 def _derive_status(state: str) -> str:
@@ -862,22 +973,22 @@ class CaseStore:
         return [r for r in self._iter_receipts() if r.get("case_id") == case_id]
 
     def _receipt_index(self, key_cache: dict[str, bytes]) -> tuple[
-            set[str], dict[str, str], list[str], int]:
-        """Read the receipt spine ONCE for the three things reconcile needs.
+            set[str], dict[str, tuple[str, str]], list[str], int]:
+        """Read the receipt spine ONCE for the things reconcile needs.
 
-        Returns (receipt_ids, attested_digests, untrusted_case_ids,
-        undecidable_records):
+        Returns (receipt_ids, attested, untrusted_case_ids, undecidable_records)
+        where `attested` maps case_id -> (payload_digest, attestation_kind) from
+        the LATEST record whose HMAC validates (newest truth wins), and
+        attestation_kind is "write" (digest taken as the case was written) or
+        "reattest" (digest taken later, from whatever was then in the store).
 
-          attested    case_id -> payload digest, from the LATEST record whose
-                      HMAC validates (last one wins = newest truth)
-          untrusted   case ids that have a digest-bearing record whose HMAC
-                      does NOT validate — the record itself was forged or
-                      edited after write
-          undecidable digest-bearing records we cannot judge because the audit
-                      key is absent (counted, never treated as forged)
+          untrusted    case ids with a digest-bearing record whose HMAC does
+                       NOT validate — the record was forged or edited after write
+          undecidable  digest-bearing records we cannot judge because the audit
+                       key is absent (counted, never treated as forged)
         """
         ids: set[str] = set()
-        attested: dict[str, str] = {}
+        attested: dict[str, tuple[str, str]] = {}
         untrusted: list[str] = []
         undecidable = 0
         for rec in self._iter_receipts():
@@ -893,7 +1004,10 @@ class CaseStore:
                 continue
             auth = record_authenticity(rec, key_cache)
             if auth == AUTH_OK:
-                attested[str(cid)] = str(digest)
+                # Absent attestation == written before the field existed, i.e.
+                # the digest WAS taken at write time.
+                kind = str(rec.get("attestation") or ATTEST_WRITE)
+                attested[str(cid)] = (str(digest), kind)
             elif auth == AUTH_MISMATCH:
                 untrusted.append(str(cid))
             else:
@@ -940,7 +1054,8 @@ class CaseStore:
         self._write_receipt(case, event=event, role=role)
         self._write_memory(case)
 
-    def _write_receipt(self, case: dict[str, Any], event: str, role: str = "case-spine") -> None:
+    def _write_receipt(self, case: dict[str, Any], event: str, role: str = "case-spine",
+                       attestation: str = ATTEST_WRITE) -> None:
         """Append a tamper-evident receipt (issue #26).
 
         v2 records: hash-chained (prev_hash -> hash) + HMAC'd with the audit
@@ -949,6 +1064,12 @@ class CaseStore:
         when reachable; DEGRADED (actor_verified=false) is explicit, never
         silent. Legacy v1 records (pre-chain) remain readable; the verifier
         labels them unsigned and starts chain math from the first v2 record.
+
+        `attestation` says HOW the payload digest in this record was obtained
+        (ATTEST_WRITE at write time, ATTEST_REATTEST for a later point-in-time
+        assertion). Defaults to write: a caller recording a state it is
+        writing NOW is attesting at write time. Pass ATTEST_REATTEST for
+        anything reconstructed or re-signed after the fact.
         """
         receipt = {
             "case_id": case["case_id"],
@@ -961,6 +1082,7 @@ class CaseStore:
             # Attested content fingerprint of the point this record describes
             # (issue #28 criterion 4) — see reconcile().
             "payload_digest": case_payload_digest_for(case),
+            "attestation": attestation,
         }
         try:
             if not hasattr(self, "_chain_writer"):
@@ -981,7 +1103,8 @@ class CaseStore:
                 status=receipt["status"], title=receipt["title"],
                 detail=receipt["detail"], actor_id=actor_id,
                 actor_verified=actor_ok,
-                payload_digest=receipt["payload_digest"])
+                payload_digest=receipt["payload_digest"],
+                attestation=attestation)
             return
         except Exception as e:  # noqa: BLE001 — chain failure must not kill the case write
             logger.error("chained receipt write failed (falling back to v1): %s", e)
@@ -1182,18 +1305,7 @@ class CaseStore:
         """
         key_cache = load_key_cache()
 
-        points: dict[str, dict[str, Any]] = {}
-        try:
-            # scroll_all pages through the WHOLE collection — a single scroll
-            # silently stops at its limit once the spine outgrows it.
-            for rec in self._get_memory().scroll_all(CASE_COLLECTION):
-                payload = rec.payload or {}
-                cid = str(payload.get("case_id")
-                          or str(payload.get("content", "")).split(" ", 1)[0])
-                if cid.startswith("case-"):
-                    points[cid] = payload
-        except Exception as e:  # noqa: BLE001 — report the scan failure, don't die
-            logger.warning("reconcile: qdrant scan failed: %s", e)
+        points = self._scan_case_points()
         qdrant_ids: set[str] = set(points)
 
         receipt_ids, _, _, _ = self._receipt_index(key_cache)
@@ -1218,7 +1330,8 @@ class CaseStore:
                     # be reported as tampering on every later run.
                     try:
                         self._write_receipt(case, event="reconcile_healed",
-                                            role="reconcile")
+                                            role="reconcile",
+                                            attestation=ATTEST_REATTEST)
                     except Exception as e:  # noqa: BLE001 — repair must not die
                         logger.warning("reconcile: re-attest failed for %s: %s", cid, e)
                     healed.append(cid)
@@ -1252,12 +1365,16 @@ class CaseStore:
         drifted: list[str] = []
         drift_detail: dict[str, dict[str, str]] = {}
         unverified: list[str] = []
+        reattested: list[str] = []
         verified = 0
+        verified_write = 0
+        verified_reattested = 0
         for cid in sorted(qdrant_ids & receipt_ids):
-            want = attested.get(cid)
-            if not want:
+            entry = attested.get(cid)
+            if not entry:
                 unverified.append(cid)
                 continue
+            want, kind = entry
             payload = points.get(cid)
             if payload is None:
                 # Point vanished between the scan and now: presence, not
@@ -1266,6 +1383,14 @@ class CaseStore:
             observed = case_payload_digest(payload)
             if observed == want:
                 verified += 1
+                if kind == ATTEST_REATTEST:
+                    # Content matches, but only because it was attested LATER.
+                    # Kept in its own bucket so no surface can present a
+                    # point-in-time assertion as "chained since creation".
+                    verified_reattested += 1
+                    reattested.append(cid)
+                else:
+                    verified_write += 1
             else:
                 drifted.append(cid)
                 drift_detail[cid] = {"attested": want, "observed": observed}
@@ -1291,7 +1416,175 @@ class CaseStore:
             "untrusted_receipt": untrusted_ids,
             "unverified": unverified,
             "verified_count": verified,
+            # Split so no surface can claim a later attestation was a write-time
+            # one. `reattested` names the cases behind verified_reattested.
+            "verified_write": verified_write,
+            "verified_reattested": verified_reattested,
+            "reattested": reattested,
             "authenticity_undecidable": undecidable,
             "qdrant_count": len(qdrant_ids),
             "receipt_count": len(receipt_ids),
         }
+
+    def _scan_case_points(self) -> dict[str, dict[str, Any]]:
+        """{case_id: payload} for every case point, in ONE paged scan.
+
+        The single read of the case collection: reconcile and the provenance
+        map both go through here, so they cannot disagree about what is in the
+        store. scroll_all pages the WHOLE collection — a single scroll silently
+        stops at its limit once the spine outgrows it.
+        """
+        points: dict[str, dict[str, Any]] = {}
+        try:
+            for rec in self._get_memory().scroll_all(CASE_COLLECTION):
+                payload = rec.payload or {}
+                cid = str(payload.get("case_id")
+                          or str(payload.get("content", "")).split(" ", 1)[0])
+                if cid.startswith("case-"):
+                    points[cid] = payload
+        except Exception as e:  # noqa: BLE001 — callers report, this must not die
+            logger.warning("case-point scan failed: %s", e)
+        return points
+
+    def provenance_map(self, case_ids: set[str] | None = None) -> dict[str, str]:
+        """{case_id: provenance} — THE derivation of "can the spine vouch for
+        this case's content?"
+
+        Returned values (case_tools.PROV_*):
+          write       signed digest matches the stored payload, taken at write
+          reattest    signed digest matches, but it was taken LATER (a
+                      point-in-time assertion — says nothing about the past)
+          drifted     a signed digest exists and the stored payload DIFFERS
+          untrusted   a digest-bearing receipt record's HMAC does not validate
+          unattested  no signed digest at all (pre-digest case), or no stored
+                      point to compare against
+
+        This is the fact the publication surfaces gate on, so it lives here
+        with the other spine derivations rather than in each renderer.
+        """
+        key_cache = load_key_cache()
+        _, attested, untrusted, _ = self._receipt_index(key_cache)
+        untrusted_set = set(untrusted)
+        for cid in untrusted_set:
+            attested.pop(cid, None)
+
+        points = self._scan_case_points()
+        wanted = set(points) if case_ids is None else set(case_ids)
+        out: dict[str, str] = {}
+        for cid in sorted(wanted):
+            payload = points.get(cid)
+            if payload is None:
+                # Nothing in the store to attest (missing, or receipt-only).
+                out[cid] = PROV_UNATTESTED
+                continue
+            if cid in untrusted_set:
+                out[cid] = PROV_UNTRUSTED
+                continue
+            entry = attested.get(cid)
+            if not entry:
+                out[cid] = PROV_UNATTESTED
+                continue
+            want, kind = entry
+            if case_payload_digest(payload) != want:
+                out[cid] = PROV_DRIFTED
+                continue
+            out[cid] = PROV_REATTEST if kind == ATTEST_REATTEST else PROV_WRITE
+        return out
+
+    def provenance_for(self, case_id: str) -> str:
+        """One case's provenance verdict (see provenance_map)."""
+        # A missing case still gets a verdict so callers always have one.
+        return self.provenance_map({case_id}).get(case_id, PROV_UNATTESTED)
+
+    def reattest_payload(self, case_id: str, *, dry_run: bool = True,
+                         note: str = "") -> dict[str, Any]:
+        """Sign the CURRENT content of a case point as a point-in-time attestation.
+
+        Issue #28 criterion-4 coverage work. Cases written before the digest
+        existed carry no signed expectation, so a later tamper of them is
+        undetectable. This records the digest of what is in the store NOW, in
+        the signed chain, as an ATTEST_REATTEST record.
+
+        What it asserts, exactly: "as of <ts>, the case point's content was X".
+        What it does NOT assert: that the content was unmodified BEFORE <ts>.
+        Nothing can — the receipts never carried the historical document body.
+        Every surface that shows this must present it that way.
+
+        REFUSES a drifted case (an active tamper must be reported, never signed
+        over — attesting drift would launder it into "attested") and an
+        untrusted one (a forged receipt). Idempotent: an already-attested case
+        reports `already`, so a re-run reporting zero pending is the evidence
+        that the first run was complete.
+
+        Runs with dry_run=True by DEFAULT: the eligibility verdicts are computed
+        the same way in both modes, so a dry run's prediction is the apply's
+        outcome (assert that in any caller).
+        """
+        prov = self.provenance_for(case_id)
+        if prov in (PROV_WRITE, PROV_REATTEST):
+            return {"case_id": case_id, "action": "already", "provenance": prov}
+        if prov == PROV_DRIFTED:
+            logger.error("reattest: REFUSING %s — payload does not match its "
+                         "signed digest (drift is reported, never attested over)", case_id)
+            return {"case_id": case_id, "action": "refused_drifted", "provenance": prov}
+        if prov == PROV_UNTRUSTED:
+            logger.error("reattest: REFUSING %s — a receipt record for it does "
+                         "not validate", case_id)
+            return {"case_id": case_id, "action": "refused_untrusted", "provenance": prov}
+
+        payload = self._scan_case_points().get(case_id)
+        if not payload:
+            return {"case_id": case_id, "action": "missing", "provenance": prov}
+        case = self._parse_content(str(payload.get("content", "")))
+        if not case or case.get("case_id") != case_id:
+            return {"case_id": case_id, "action": "missing", "provenance": prov}
+
+        digest = case_payload_digest(payload)
+        if dry_run:
+            return {"case_id": case_id, "action": "would_attest",
+                    "provenance": prov, "digest": digest}
+        self._write_receipt(case, event="payload_reattested", role="attest",
+                            attestation=ATTEST_REATTEST)
+        # Prove the write changed the verdict, rather than reporting success on
+        # a record that did not land.
+        after = self.provenance_for(case_id)
+        return {"case_id": case_id, "action": "attested", "provenance": prov,
+                "provenance_after": after, "digest": digest, "note": note}
+
+    def reattest_backlog(self, *, scope: str = "advisory", dry_run: bool = True,
+                         note: str = "", case_ids: Iterable[str] | None = None) -> dict[str, Any]:
+        """Plan or apply re-attestation across the pre-digest backlog.
+
+        scope="advisory" (default) selects the cases a deliverable can render —
+        DECIDED cases, via the shared reader case_decision() — because that is
+        the evidence the endgame artifact cites. scope="all" selects every case
+        point. `case_ids` overrides selection entirely (used by tests and by an
+        operator who wants an explicit list).
+
+        Returns the breakdown, never a single headline number: the caller must
+        be able to see `would_attest` vs `already` vs the refusals. Refusals are
+        the interesting part — a drifted case in a backlog is an integrity
+        finding, not a work item.
+        """
+        if case_ids is not None:
+            candidates = sorted(set(case_ids))
+        else:
+            points = self._scan_case_points()
+            if scope == "all":
+                candidates = sorted(points)
+            else:
+                candidates = []
+                for cid in sorted(points):
+                    case = self._parse_content(str(points[cid].get("content", "")))
+                    if case and case_decision(case)[0]:
+                        candidates.append(cid)
+
+        out: dict[str, Any] = {
+            "dry_run": dry_run, "scope": scope, "candidates": len(candidates),
+            "attested": [], "would_attest": [], "already": [],
+            "refused_drifted": [], "refused_untrusted": [], "missing": [],
+        }
+        for cid in candidates:
+            r = self.reattest_payload(cid, dry_run=dry_run, note=note)
+            out[r["action"]].append(cid)
+        return out

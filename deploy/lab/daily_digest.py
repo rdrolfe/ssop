@@ -122,7 +122,14 @@ def main() -> int:
                         adj += 1
                 except Exception:
                     pass
-        lines.append(f"**Cases:** {adj} adjudicated (24h) | reconcile: {cs.reconcile().get('consistent')}")
+        _rec = cs.reconcile()
+        lines.append(
+            f"**Cases:** {adj} adjudicated (24h) | reconcile: {_rec.get('consistent')}"
+            f" | evidence: {_rec.get('verified_write', 0)} chained-at-write, "
+            f"{_rec.get('verified_reattested', 0)} re-attested, "
+            f"{len(_rec.get('unverified') or [])} unattested"
+            + (f", **{len(_rec.get('drifted') or [])} DRIFTED**"
+               if _rec.get('drifted') else ""))
     except Exception as e:  # noqa: BLE001
         lines.append(f"**Cases:** ERR {e}")
 
@@ -147,7 +154,13 @@ def main() -> int:
             if case_decision(c)[0]:
                 decided += 1
                 try:
-                    md = render_advisory(c.get("case_id", ""), case=c)
+                    # Internal coverage metric: the question here is "does the
+                    # advisory COMPILE", not "is the evidence attested" — with
+                    # the publish gate in force, a pre-digest case would
+                    # otherwise be counted as a render FAILURE and the coverage
+                    # number would lie. Provenance is reported on its own line.
+                    md = render_advisory(c.get("case_id", ""), case=c,
+                                         allow_unattested=True)
                 except Exception:  # noqa: BLE001 — a render failure is the finding
                     md = ""
                 if md and len(md) >= 300:

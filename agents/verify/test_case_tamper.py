@@ -198,8 +198,10 @@ def main() -> int:
         r = cs.reconcile()
         step("2 healthy case verifies against its signed digest",
              r["verified_count"] == 1 and r["tampered"] is False
-             and r["consistent"] is True and r["drifted"] == [],
-             f"verified={r['verified_count']} consistent={r['consistent']}")
+             and r["consistent"] is True and r["drifted"] == []
+             and r["verified_write"] == 1 and r["verified_reattested"] == 0,
+             f"verified={r['verified_count']} write={r['verified_write']} "
+             f"consistent={r['consistent']}")
 
         # Same-ID payload rewrite: the id sets still match.
         _tamper_content(mem, cid, "attacker rewrote this")
@@ -261,12 +263,17 @@ def main() -> int:
         step("8 missing point healed from the receipt",
              r["healed"] == [cid] and r["receipt_only"] == [],
              f"healed={r['healed']} receipt_only={r['receipt_only']}")
-        # The rebuild is lossy — it must be re-attested, not read as drift.
+        # The rebuild is lossy — it must be re-attested, not read as drift, and
+        # it must NOT be reported as a write-time attestation (that would be the
+        # laundering this whole change exists to prevent).
         r2 = cs.reconcile(heal=False)
         step("9 healed point verifies on the next run (repair re-attested)",
              r2["drifted"] == [] and r2["tampered"] is False
-             and r2["verified_count"] == 1,
-             f"drifted={r2['drifted']} verified={r2['verified_count']}")
+             and r2["verified_count"] == 1
+             and r2["verified_reattested"] == 1 and r2["reattested"] == [cid]
+             and r2["verified_write"] == 0,
+             f"drifted={r2['drifted']} verified={r2['verified_count']} "
+             f"reattested={r2['reattested']}")
         # ...and a tamper AFTER the heal is still caught.
         _tamper_content(mem, cid, "post-heal tamper")
         r3 = cs.reconcile(heal=False)

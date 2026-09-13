@@ -159,6 +159,16 @@ class Settings:
     qdrant_host: str = _env("QDRANT_HOST", "localhost")
     qdrant_port: str = _env("QDRANT_PORT", "6333")
 
+    # --- Evidence publish gate (issue #28 criterion 4, coverage follow-up) ---
+    # Deliverables (single-case report, CISA-style advisory, IRIS/SO attach)
+    # REFUSE to publish evidence the spine cannot attest: `unattested` (written
+    # before content attestation existed) or `drifted`/`untrusted` (a known
+    # integrity failure). Default ON. Set SSOP_EVIDENCE_ATTESTATION_REQUIRED=0
+    # to relax the default; a per-call allow_unattested=True still overrides and
+    # always prints the integrity notice.
+    evidence_attestation_required: bool = _env_bool(
+        "SSOP_EVIDENCE_ATTESTATION_REQUIRED", True)
+
     # --- analyst severity thresholds (Wazuh levels 0-15) ---
     high_level: int = _env_int("ANALYST_HIGH_LEVEL", 7)
     medium_level: int = _env_int("ANALYST_MEDIUM_LEVEL", 4)

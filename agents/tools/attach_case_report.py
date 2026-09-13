@@ -67,13 +67,23 @@ def _op_id(case_id: str, kind: str) -> str:
 
 
 def _render_artifacts(case_id: str) -> tuple[str, str] | None:
-    """Render the spine report + advisory markdown. None if case not decided."""
+    """Render the spine report + advisory markdown. None if case not decided.
+
+    This is a PUBLICATION path (the artifacts get attached to an SO case), so
+    the evidence publish gate applies: an unattested or drifted case is not
+    attached, and the reason is logged as an error rather than folded into a
+    generic render-failure warning — a refusal and a crash must not look alike.
+    """
+    from tools.case_tools import UnattestedEvidenceError
     try:
         from tools.report_gen import render_case_report
         from tools.advisory_gen import render_advisory
         report = render_case_report(case_id)
         advisory = render_advisory(case_id, backend="spine")
         return report, advisory
+    except UnattestedEvidenceError as e:
+        logger.error("attach_case_report: REFUSING to publish %s — %s", case_id, e)
+        return None
     except Exception as e:  # noqa: BLE001
         logger.warning("attach_case_report: render failed for %s: %s", case_id, e)
         return None

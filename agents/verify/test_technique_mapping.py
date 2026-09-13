@@ -44,10 +44,16 @@ def main() -> int:
     import sys as _sys
     from unittest.mock import patch
 
-    from tools.case_tools import CaseStore
+    from tools.case_tools import PROV_WRITE, CaseStore
 
+    # The advisory carries a PUBLISH GATE (evidence provenance), so the fake
+    # case has to stand in as an attested one — patching provenance is the
+    # honest way to say "this case's evidence is verifiable" without weakening
+    # the default gate for every other caller. This test is about technique
+    # mapping, not provenance.
     c = _case(techniques=["T1041", "T1078"])
     with patch.object(CaseStore, "get_case", return_value=c), \
+         patch.object(CaseStore, "provenance_for", return_value=PROV_WRITE), \
          patch.object(_sys, "argv", ["advisory"]):
         md = render_advisory("case-test-tech")
     ok1 = "| `T1041` | Exfiltration Over C2 Channel | Exfiltration |" in md
@@ -60,6 +66,7 @@ def main() -> int:
     # 2. Case WITHOUT IDs -> derived kill-chain mapping still renders.
     c2 = _case(kill_chain=["EXFILTRATION: HTTP upload/exfil traffic"])
     with patch.object(CaseStore, "get_case", return_value=c2), \
+         patch.object(CaseStore, "provenance_for", return_value=PROV_WRITE), \
          patch.object(_sys, "argv", ["advisory"]):
         md2 = render_advisory("case-test-tech")
     ok4 = "Kill-chain stage" in md2 and "Exfiltration" in md2
@@ -82,6 +89,7 @@ def main() -> int:
         "EXFILTRATION: HTTP upload/exfil traffic [T1041, T1048.003]",
     ])
     with patch.object(CaseStore, "get_case", return_value=c4), \
+         patch.object(CaseStore, "provenance_for", return_value=PROV_WRITE), \
          patch.object(_sys, "argv", ["advisory"]):
         md4 = render_advisory("case-test-tech")
     ok6 = ("| `T1071.004` | Application Layer Protocol: DNS | Command and Control |" in md4

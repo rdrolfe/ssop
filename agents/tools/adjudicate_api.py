@@ -30,6 +30,16 @@ from typing import Any
 _AGENT_RUNTIME = _Path(__file__).resolve().parent.parent
 
 
+def _query_flag(q: dict, name: str) -> bool:
+    """A boolean query parameter (`?name=1`). Absent/falsey -> False.
+
+    Used for the explicit evidence-publish override: an operator who asks for
+    an unattested deliverable says so in the URL, where it shows up in the
+    access log, rather than by editing code or .env.
+    """
+    return (q.get(name) or [""])[0].strip().lower() in ("1", "true", "yes", "on")
+
+
 def _load_env_into_os() -> None:
     """Read .env into os.environ explicitly, BEFORE any config/settings snapshot.
 
@@ -402,17 +412,22 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 rid = (q.get("case_id") or [""])[0].strip()
                 fmt = (q.get("format") or ["md"])[0].strip().lower()
                 backend = (q.get("backend") or ["spine"])[0].strip().lower()
+                # The publish gate's explicit override (logged, and the
+                # artifact still renders the integrity notice). Absent -> the
+                # config default applies, so this must be None, not False.
+                allow = True if _query_flag(q, "allow_unattested") else None
                 if not rid:
                     self._send(400, {"ok": False, "error": "case_id required"})
                     return
+                from tools import report_gen
+                from tools.case_tools import UnattestedEvidenceError
                 try:
-                    from tools import report_gen
                     if backend == "so":
                         md = report_gen.render_so_case_report(rid)
                         html = report_gen._md_to_html(md, f"Incident Report {rid} (SO)")
                     else:
-                        md = report_gen.render_case_report(rid)
-                        html = report_gen.render_case_report_html(rid)
+                        md = report_gen.render_case_report(rid, allow_unattested=allow)
+                        html = report_gen.render_case_report_html(rid, allow_unattested=allow)
                     if fmt == "html":
                         self._send_html(html)
                     else:
@@ -423,6 +438,14 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
                         self.wfile.write(data)
+                except UnattestedEvidenceError as e:
+                    # 409: the deliverable is refused until the evidence is
+                    # attested. The message names the way forward instead of
+                    # rendering it anyway.
+                    self._send(409, {"ok": False, "error": str(e),
+                                     "hint": "attest it (CaseStore.reattest_payload) "
+                                             "or retry with &allow_unattested=1 to "
+                                             "render it WITH the integrity notice"})
                 except KeyError:
                     self._send(404, {"ok": False, "error": f"case {rid} not found ({backend} backend)"})
             elif path == "/reports":
@@ -458,18 +481,27 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 if not rid:
                     self._send(400, {"ok": False, "error": "case_id required"})
                     return
+                allow = True if _query_flag(q, "allow_unattested") else None
+                from tools.advisory_gen import render_advisory, render_advisory_html
+                from tools.case_tools import UnattestedEvidenceError
                 try:
-                    from tools.advisory_gen import render_advisory, render_advisory_html
                     if fmt == "html":
-                        self._send_html(render_advisory_html(rid, backend))
+                        self._send_html(render_advisory_html(rid, backend,
+                                                             allow_unattested=allow))
                     else:
-                        data = render_advisory(rid, backend).encode()
+                        data = render_advisory(rid, backend,
+                                               allow_unattested=allow).encode()
                         self.send_response(200)
                         self._cors_headers()
                         self.send_header("Content-Type", "text/markdown; charset=utf-8")
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
                         self.wfile.write(data)
+                except UnattestedEvidenceError as e:
+                    self._send(409, {"ok": False, "error": str(e),
+                                     "hint": "attest it (CaseStore.reattest_payload) "
+                                             "or retry with &allow_unattested=1 to "
+                                             "render it WITH the integrity notice"})
                 except KeyError:
                     self._send(404, {"ok": False, "error": f"case {rid} not found ({backend} backend)"})
             elif path in ("/", "/console"):

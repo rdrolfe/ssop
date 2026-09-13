@@ -146,7 +146,7 @@ def _exec_summary(case: dict[str, Any]) -> str:
     return summary
 
 
-def _md_core(case: dict[str, Any]) -> list[str]:
+def _md_core(case: dict[str, Any], provenance: str | None = None) -> list[str]:
     """Render the body sections (2–6) from a normalized spine-shaped case.
 
     Spine payloads round-trip through Qdrant as JSON, so an absent field comes
@@ -170,6 +170,7 @@ def _md_core(case: dict[str, Any]) -> list[str]:
     L.append(f"- **Status**: {status}")
     L.append(f"- **Opened**: {ts}")
     L.append("")
+    L.extend(_integrity_section(provenance))
 
     # 0. Executive summary
     L.append("## Summary")
@@ -329,16 +330,33 @@ def _md_core(case: dict[str, Any]) -> list[str]:
     return L
 
 
-def render_case_report(case_id: str) -> str:
+def _integrity_section(provenance: str | None) -> list[str]:
+    """The evidence-integrity block every case deliverable carries."""
+    from tools.case_tools import PROV_UNATTESTED, provenance_note
+    if not provenance:
+        provenance = PROV_UNATTESTED
+    return ["## Evidence integrity", "", provenance_note(provenance), ""]
+
+
+def render_case_report(case_id: str, allow_unattested: bool | None = None) -> str:
     """Render a fully-decided spine case as a markdown report.
 
     Returns the markdown. Raises KeyError if the case isn't in the spine.
+
+    Raises UnattestedEvidenceError when the case's evidence provenance is
+    neither write-attested nor re-attested (see case_tools.require_publishable):
+    a deliverable must not present content the spine cannot vouch for as
+    verified evidence. Pass allow_unattested=True to render it anyway — the
+    integrity notice is printed either way, and the override is logged.
     """
-    from tools.case_tools import CaseStore
-    case = CaseStore().get_case(case_id)
+    from tools.case_tools import CaseStore, require_publishable
+    cs = CaseStore()
+    case = cs.get_case(case_id)
     if not case:
         raise KeyError(f"case {case_id} not found in spine")
-    return "\n".join(_md_core(case))
+    provenance = cs.provenance_for(case_id)
+    require_publishable(provenance, allow_unattested)
+    return "\n".join(_md_core(case, provenance))
 
 
 # ---------------------------------------------------------------------------
@@ -589,15 +607,46 @@ def _all_spine_cases(days: int) -> list[dict[str, Any]]:
 
 
 def render_reports(days: int = 7) -> str:
-    """Compile all decided spine cases in the last N days into one report."""
+    """Compile all decided spine cases in the last N days into one report.
+
+    An INTERNAL compilation, so it annotates provenance instead of refusing:
+    one render must not be blocked by one bad case, and refusing to render a
+    list is a self-inflicted outage. It therefore always names the counts —
+    unattested evidence is visible in the header, never silently dropped. The
+    PUBLICATION surfaces (single-case report, advisory, IRIS attach) are the
+    ones that refuse; see render_case_report.
+    """
+    from tools.case_tools import (
+        PROV_DRIFTED, PROV_REATTEST, PROV_UNATTESTED, PROV_UNTRUSTED, PROV_WRITE,
+        CaseStore,
+    )
     cases = _all_spine_cases(days)
+    provenance: dict[str, str] = {}
+    try:
+        provenance = CaseStore().provenance_map({c.get("case_id", "") for c in cases})
+    except Exception as e:  # noqa: BLE001 — a provenance read failure must not
+        # blank the whole report; the per-case notice then reads "unattested",
+        # which is the honest default (we could not verify it).
+        logger.warning("provenance read failed for /reports: %s", e)
+    counts = {k: 0 for k in (PROV_WRITE, PROV_REATTEST, PROV_UNATTESTED,
+                             PROV_DRIFTED, PROV_UNTRUSTED)}
+    for c in cases:
+        counts[provenance.get(c.get("case_id", ""), PROV_UNATTESTED)] += 1
+
     L: list[str] = []
     L.append(f"# SSOP Decision Report — last {days} day(s)")
     L.append("")
     L.append(f"**{len(cases)} decided case(s).**")
     L.append("")
+    L.append("**Evidence integrity:** "
+             f"{counts[PROV_WRITE]} chained at write · "
+             f"{counts[PROV_REATTEST]} re-attested · "
+             f"{counts[PROV_UNATTESTED]} unattested · "
+             f"{counts[PROV_DRIFTED]} drifted · "
+             f"{counts[PROV_UNTRUSTED]} untrusted")
+    L.append("")
     for case in cases:
-        L.extend(_md_core(case))
+        L.extend(_md_core(case, provenance.get(case.get("case_id", ""))))
         L.append("")
     if not cases:
         L.append("_No decided cases in the window._")
@@ -609,8 +658,8 @@ def render_reports_html(days: int = 7) -> str:
     return _md_to_html(md, "SSOP Decision Report")
 
 
-def render_case_report_html(case_id: str) -> str:
-    md = render_case_report(case_id)
+def render_case_report_html(case_id: str, allow_unattested: bool | None = None) -> str:
+    md = render_case_report(case_id, allow_unattested=allow_unattested)
     return _md_to_html(md, f"Incident Report {case_id}")
 
 

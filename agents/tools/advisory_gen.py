@@ -184,7 +184,9 @@ def json_dumps_lower(d: dict) -> str:
 
 
 def render_advisory(case_id: str, backend: str = "spine",
-                    case: dict[str, Any] | None = None) -> str:
+                    case: dict[str, Any] | None = None,
+                    allow_unattested: bool | None = None,
+                    provenance: str | None = None) -> str:
     """Render a decided spine case as a CISA-style advisory (markdown).
 
     backend param is honored for the footer (which SIEM surface the facts
@@ -194,16 +196,43 @@ def render_advisory(case_id: str, backend: str = "spine",
     `case` lets a caller that ALREADY holds the case dict (a store scan, a
     coverage sweep) render without a per-case fetch — a get_case() round-trip
     per case is what stalled /reports as the spine grew (one Qdrant scan is
-    the pattern, never per-id lookups).
+    the pattern, never per-id lookups). `provenance` lets a sweep that already
+    holds the provenance map skip re-deriving it.
+
+    PUBLISH GATE: for the spine backend this refuses (UnattestedEvidenceError)
+    unless the case's content is attested — see case_tools.require_publishable.
+    This is the CISA-facing artifact, so it is the surface where refusing
+    matters most: an advisory must never cite evidence that cannot be
+    distinguished from a rewrite. allow_unattested=True renders WITH the
+    notice. For backend="so" the facts were read from the SO surface, not the
+    spine, so the spine's content attestation does not apply — and the
+    advisory says exactly that instead of implying a verification.
     """
+    from tools.case_tools import (
+        PROV_UNATTESTED, CaseStore, provenance_label, provenance_note,
+        require_publishable,
+    )
+
     if case is None:
         if backend == "so":
             case = _case_from_so(case_id)
         else:
-            from tools.case_tools import CaseStore
             case = CaseStore().get_case(case_id)
     if not case:
         raise KeyError(f"case {case_id} not found ({backend} backend)")
+
+    if backend == "so":
+        integrity_label = "n/a (Security Onion surface)"
+        integrity_note = (
+            "**Not applicable** — this advisory's facts were read from the "
+            "Security Onion surface, not the spine, so the spine's content "
+            "attestation does not cover them.")
+    else:
+        if provenance is None:
+            provenance = CaseStore().provenance_for(case_id)
+        require_publishable(provenance, allow_unattested)
+        integrity_label = provenance_label(provenance)
+        integrity_note = provenance_note(provenance)
 
     L: list[str] = []
     src = case.get("source") or {}
@@ -223,6 +252,9 @@ def render_advisory(case_id: str, backend: str = "spine",
     L.append(f"| Opened | {ts} |")
     L.append(f"| Status | {case.get('status', 'open')} |")
     L.append(f"| Source backend | {backend} |")
+    L.append(f"| Evidence integrity | {integrity_label} |")
+    L.append("")
+    L.append(integrity_note)
     L.append("")
     L.append("**Executive Summary**")
     L.append("")
@@ -377,7 +409,9 @@ def _case_from_so(case_id: str) -> dict[str, Any]:
     return case
 
 
-def render_advisory_html(case_id: str, backend: str = "spine") -> str:
+def render_advisory_html(case_id: str, backend: str = "spine",
+                         allow_unattested: bool | None = None) -> str:
     from tools.report_gen import _md_to_html
-    return _md_to_html(render_advisory(case_id, backend),
+    return _md_to_html(render_advisory(case_id, backend,
+                                       allow_unattested=allow_unattested),
                        f"Cybersecurity Advisory {case_id}")

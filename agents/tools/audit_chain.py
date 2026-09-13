@@ -192,13 +192,22 @@ class AuditChainWriter:
     def write(self, *, case_id: str, role: str, event: str,
               status: str | None, title: str, detail: dict[str, Any],
               actor_id: str | None = None, actor_verified: bool = False,
-              payload_digest: str | None = None) -> dict[str, Any]:
+              payload_digest: str | None = None,
+              attestation: str | None = None) -> dict[str, Any]:
         """Append one chained, signed record. Returns the written record.
 
         payload_digest (issue #28 criterion 4): content fingerprint of the case
         point this record describes, when the writer upserts one. It rides
         INSIDE the signed record, so an attacker with Qdrant write access but no
         audit key cannot make the receipt agree with a rewritten payload.
+
+        attestation records HOW the digest was obtained, and the distinction is
+        load-bearing: "write" = the digest was taken as the case was written
+        (chained since creation); "reattest" = the digest was taken LATER, from
+        whatever content was then in the store (a point-in-time assertion that
+        cannot speak for the past). A report must never present the second as
+        the first. Records written before this field existed carry no
+        attestation and are read as "write" (that is what they were).
         """
         if self._seq is None:
             self._load_tail_state()
@@ -218,6 +227,7 @@ class AuditChainWriter:
             "actor_verified": actor_verified,
             "key_id": self.key_id,
             "payload_digest": payload_digest,
+            "attestation": attestation,
         }
         unsigned["hash"] = record_hash(unsigned, self.key)
         self._append_line(json.dumps(unsigned))
