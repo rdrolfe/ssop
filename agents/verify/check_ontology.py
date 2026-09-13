@@ -37,8 +37,18 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(REPO / "agents"))
+_HERE = Path(__file__).resolve()
+# LAYOUT TOLERANCE — resolve the agents tree in EITHER layout.
+#
+# In the repo the modules live at `<repo>/agents/`; on a deployed runtime this
+# file IS inside the agents tree. A hardcoded depth pointed at a nonexistent
+# `/home/rdrolfe/agents/tools/ontology_export.py` on the runtime host, which is
+# why the deployed copy had been hand-adapted to `parent.parent` — a second
+# source that then drifts. Resolve it, don't fork it.
+_AGENT_ROOT = _HERE.parent.parent
+if not (_AGENT_ROOT / "tools" / "ontology_export.py").exists():
+    _AGENT_ROOT = _HERE.parent.parent.parent / "agents"
+sys.path.insert(0, str(_AGENT_ROOT))
 
 FAILS = 0
 
@@ -75,12 +85,35 @@ def _scenario(ttl_text: str, tmpdir: Path, name: str) -> str:
 
 
 def main() -> int:
+    # ENVIRONMENT PREFLIGHT — a missing dep or JVM is BLOCKED, not FAILED.
+    #
+    # Without this the gate dies on a raw ModuleNotFoundError, and the suite
+    # reports it as a FAIL — which reads as "the ontology is broken" when the
+    # truth is "this environment cannot check the ontology". Those are
+    # different facts and must not be conflated (the same reason a degraded
+    # MISP corpus is not reported as a clean fleet). Exit 2 = BLOCKED, which
+    # run_offline_ci.py maps to [BLOCKED] and never to a pass.
+    import importlib.util
+    import shutil
+
+    blockers = []
+    for _mod in ("rdflib", "owlready2"):
+        if importlib.util.find_spec(_mod) is None:
+            blockers.append(f"missing python dep: {_mod}")
+    if shutil.which("java") is None:
+        blockers.append("no JVM on PATH — owlready2 boots an embedded HermiT reasoner")
+    if blockers:
+        print("ONTOLOGY GATE: BLOCKED — this environment cannot run the reasoner:")
+        for b in blockers:
+            print(f"  - {b}")
+        print("  fix: pip install -r requirements.txt (rdflib + owlready2 need a JDK)")
+        return 2
+
     # Load ontology_export by FILE PATH, not package import: agents/tools/
     # __init__ pulls proxmoxer/paramiko/qdrant-client (runtime-only deps).
     # The gate must run hermetic in the CI venv, which has none of those.
-    import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "ontology_export", REPO / "agents" / "tools" / "ontology_export.py")
+        "ontology_export", _AGENT_ROOT / "tools" / "ontology_export.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     base = mod.render()

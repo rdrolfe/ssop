@@ -109,7 +109,11 @@ def run_one(test: str, td_base: str) -> tuple[str, int, str]:
             cwd=str(td), env=env, timeout=180,
             capture_output=True, text=True)
         tail = (proc.stdout + proc.stderr).strip().splitlines()
-        detail = tail[-1][:160] if tail else ""
+        # Keep the LAST FEW LINES, not just the last one. A flaky failure that
+        # prints only its final line is undiagnosable after the fact, and the
+        # temp dir is gone by then — a flake you cannot read is a flake you
+        # will never fix. Bounded so a noisy test cannot flood the report.
+        detail = "\n".join(tail[-12:]) if tail else ""
         return test, proc.returncode, detail
     except subprocess.TimeoutExpired:
         return test, 124, "TIMEOUT (180s)"
@@ -157,17 +161,38 @@ def main() -> int:
             results = list(ex.map(lambda t: run_one(t, base), HERMETIC))
 
     failures = 0
+    blocked_tests: list[str] = []
+
+    def _dump(detail: str) -> None:
+        for ln in (detail or "").splitlines():
+            print(f"       {ln[:200]}")
+
     for test, code, detail in sorted(results):
         if code == 0:
             print(f"[PASS] {test}")
+        elif code == 2:
+            # rc 2 = the test's own preflight says THIS ENVIRONMENT cannot run
+            # it (missing dep/JVM). That is BLOCKED, not FAIL: "we could not
+            # check" and "the check failed" are different facts, and a suite
+            # that reports BLOCKED as PASS is worse than no suite.
+            blocked_tests.append(test)
+            print(f"[BLOCKED] {test}")
+            _dump(detail)
         else:
             failures += 1
             print(f"[FAIL rc={code}] {test}")
-            if detail:
-                print(f"       {detail}")
+            _dump(detail)
 
-    print(f"\nOFFLINE SUITE: {'PASS' if failures == 0 else f'FAIL ({failures}/{len(HERMETIC)})'}")
-    return 0 if failures == 0 else 1
+    if failures:
+        print(f"\nOFFLINE SUITE: FAIL ({failures}/{len(HERMETIC)})")
+        return 1
+    if blocked_tests:
+        print(f"\nOFFLINE SUITE: BLOCKED ({len(blocked_tests)}/{len(HERMETIC)} could not run)")
+        for t in blocked_tests:
+            print(f"  - {t}")
+        return 2
+    print(f"\nOFFLINE SUITE: PASS ({len(HERMETIC)}/{len(HERMETIC)})")
+    return 0
 
 
 if __name__ == "__main__":

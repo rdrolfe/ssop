@@ -107,6 +107,23 @@ Hunts and health checks are DATA, not code:
     BLOCKED (couldn't observe) distinct from FAIL (observed and wrong),
     probes that are designed to fail.
 
+13. **Build the env from the declared files, and know which interpreter
+    you are on.** The suite needs more than the runtime does: the ontology
+    gate (`verify/check_ontology.py`) requires `rdflib` + `owlready2`, and
+    owlready2 boots an embedded HermiT reasoner, so a **JDK must be on
+    PATH**. Never assume the ambient `python3` has them — a gate whose
+    dependencies were never declared fails in a way that reads like the
+    code under test is broken:
+
+        uv venv --python 3.11 .venv
+        uv pip install --python .venv/bin/python -r requirements.txt
+        .venv/bin/python agents/verify/run_offline_ci.py
+
+    A test whose own environment is incomplete exits **2 = BLOCKED** (see
+    the preflight in `check_ontology.py`), and the suite reports `BLOCKED`,
+    never `PASS`. **BLOCKED is not a green light.** If a gate needs a
+    dependency, it belongs in `requirements.txt`.
+
 ## Definition of done
 
 - [ ] Imports at top, no unused
@@ -116,4 +133,5 @@ Hunts and health checks are DATA, not code:
 - [ ] Specific exceptions with rationale comments where broad catches remain
 - [ ] Tunables in config.py, not inline
 - [ ] `python3 -m py_compile` clean on changed files
+- [ ] Offline suite PASS with the repo venv (BLOCKED is not a pass)
 - [ ] Live dry-run (or role invocation) passes
