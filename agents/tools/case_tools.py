@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -91,6 +92,13 @@ ATTEST_WRITE = "write"        # digest taken as the case was written
 ATTEST_REATTEST = "reattest"  # digest taken LATER, of whatever content was then
                               # in the store — says nothing about the past
 
+# The tombstone event that retires a case from the working store. Its presence
+# as a case's LAST record is what makes a removal durable: reconcile treats such
+# a case as archived (never as a "receipt-only" divergence), so heal cannot
+# re-hydrate it — the documented way a naive purge gets silently undone.
+ARCHIVE_EVENT = "case_archived"
+ARCHIVE_DUMP_NAME = "cases_archive.jsonl"
+
 # Provenance verdicts for a case's evidence (see CaseStore.provenance_map).
 PROV_WRITE = "write"            # signed digest matches the live payload, taken at write
 PROV_REATTEST = "reattest"      # signed digest matches, but taken later
@@ -98,6 +106,8 @@ PROV_DRIFTED = "drifted"        # signed digest exists and the payload DIFFERS
 PROV_UNTRUSTED = "untrusted"    # a digest-bearing receipt record failed its HMAC
 PROV_UNATTESTED = "unattested"  # no usable signed digest (pre-digest case), or no
                                 # live payload to compare against
+PROV_ARCHIVED = "archived"      # retired from the working store on purpose; the
+                                # signed record of the removal is the record
 
 # The shared human wording for each verdict. It lives with the derivation
 # because a report and an advisory that describe the SAME verdict differently
@@ -124,6 +134,11 @@ _PROVENANCE_NOTES: dict[str, str] = {
         "**Unattested** — no signed digest exists for this case's content "
         "(written before content attestation existed), or there is no stored "
         "point to compare. Its content cannot be distinguished from a rewrite."),
+    PROV_ARCHIVED: (
+        "**Archived — retired from the working store.** This case's point was "
+        "removed on purpose by an operator action, and the signed receipt spine "
+        "records the removal (who, when, why). The full stored document is not "
+        "available for verification; the removal and its reason are."),
 }
 
 
@@ -140,6 +155,7 @@ _PROVENANCE_LABELS: dict[str, str] = {
     PROV_DRIFTED: "DRIFTED",
     PROV_UNTRUSTED: "UNTRUSTED",
     PROV_UNATTESTED: "unattested",
+    PROV_ARCHIVED: "archived",
 }
 
 
@@ -156,6 +172,48 @@ def evidence_is_publishable(provenance: str) -> bool:
     still render with an explicit override, which must print provenance_note().
     """
     return provenance in (PROV_WRITE, PROV_REATTEST)
+
+
+# --- test-artifact rule (the ONE definition of what may be retired) ---
+#
+# Used by the pruner (deploy/lab/prune_case_artifacts.py) AND by the verify
+# matrix's own cleanup, so the two cannot disagree about what is junk.
+_ARTIFACT_TITLE_RE = re.compile(
+    r"^(VERIFY SEED|loop$|qdrant auth cutover check)", re.IGNORECASE)
+_SYNTHETIC_ALERT_PREFIXES = ("atomic-", "e2e-", "tech-")
+_ARTIFACT_AGENT_PREFIXES = ("ttx-",)
+
+
+def is_artifact_case(case: dict[str, Any]) -> bool:
+    """Is this case a TEST ARTIFACT rather than an incident record?
+
+    Deliberately narrow — only shapes that are reproducible from a run or
+    provably ad-hoc:
+
+      - a title minted by the verify matrix or an ad-hoc probe
+        ("VERIFY SEED repeated-host|entity", "loop", "qdrant auth cutover check")
+      - an `alert_id` carrying a synthetic prefix (atomic-/e2e-/tech-) — the
+        drill gate's own synthetic markers
+      - a source agent from a throwaway test host (ttx-*)
+
+    It does NOT match a real THREAT/INTEL/INFRA case, however old or however
+    undecided. **An unadjudicated alert is WORK, not junk**: deleting it
+    destroys the record that the alert happened, and the honest action is to
+    decide it (then it carries a rationale and may be retired as a class).
+    """
+    src = case.get("source") or {}
+    title = str(case.get("title") or "")
+    alert_id = str(src.get("alert_id") or "")
+    agent = str(src.get("agent") or "")
+    return bool(
+        # The verify matrix stamps its own seeds; that marker is the precise
+        # rule, and the heuristics below cover artifacts minted before it
+        # existed (and ad-hoc probes).
+        src.get("verify_seed")
+        or _ARTIFACT_TITLE_RE.match(title)
+        or alert_id.startswith(_SYNTHETIC_ALERT_PREFIXES)
+        or (agent and agent.startswith(_ARTIFACT_AGENT_PREFIXES))
+    )
 
 
 def require_publishable(provenance: str, allow_unattested: bool | None = None) -> None:
@@ -973,14 +1031,16 @@ class CaseStore:
         return [r for r in self._iter_receipts() if r.get("case_id") == case_id]
 
     def _receipt_index(self, key_cache: dict[str, bytes]) -> tuple[
-            set[str], dict[str, tuple[str, str]], list[str], int]:
+            set[str], dict[str, tuple[str, str]], list[str], int, dict[str, str]]:
         """Read the receipt spine ONCE for the things reconcile needs.
 
-        Returns (receipt_ids, attested, untrusted_case_ids, undecidable_records)
-        where `attested` maps case_id -> (payload_digest, attestation_kind) from
-        the LATEST record whose HMAC validates (newest truth wins), and
-        attestation_kind is "write" (digest taken as the case was written) or
-        "reattest" (digest taken later, from whatever was then in the store).
+        Returns (receipt_ids, attested, untrusted_case_ids, undecidable_records,
+        latest_event) where `attested` maps case_id -> (payload_digest,
+        attestation_kind) from the LATEST record whose HMAC validates (newest
+        truth wins), attestation_kind is "write" or "reattest", and
+        `latest_event` is the last event name recorded for each case (used to
+        spot an ARCHIVE tombstone, so a deliberately retired case is never
+        reported as a divergence — or resurrected by heal).
 
           untrusted    case ids with a digest-bearing record whose HMAC does
                        NOT validate — the record was forged or edited after write
@@ -991,12 +1051,18 @@ class CaseStore:
         attested: dict[str, tuple[str, str]] = {}
         untrusted: list[str] = []
         undecidable = 0
+        latest_event: dict[str, str] = {}
         for rec in self._iter_receipts():
             cid = rec.get("case_id")
-            if cid:
-                ids.add(str(cid))
+            if not cid:
+                continue
+            cid = str(cid)
+            ids.add(cid)
+            # Recorded for EVERY record, not only digest-bearing ones: the
+            # archive tombstone deliberately carries no digest.
+            latest_event[cid] = str(rec.get("event") or "")
             digest = rec.get("payload_digest")
-            if not (cid and digest):
+            if not digest:
                 continue
             if rec.get("v") != 2:
                 # Signed chain starts at v2; a v1 record's digest is unproven
@@ -1007,12 +1073,12 @@ class CaseStore:
                 # Absent attestation == written before the field existed, i.e.
                 # the digest WAS taken at write time.
                 kind = str(rec.get("attestation") or ATTEST_WRITE)
-                attested[str(cid)] = (str(digest), kind)
+                attested[cid] = (str(digest), kind)
             elif auth == AUTH_MISMATCH:
-                untrusted.append(str(cid))
+                untrusted.append(cid)
             else:
                 undecidable += 1
-        return ids, attested, untrusted, undecidable
+        return ids, attested, untrusted, undecidable, latest_event
 
     @staticmethod
     def _rebuild_from_receipts(case_id: str, recs: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1315,7 +1381,13 @@ class CaseStore:
         points = self._scan_case_points()
         qdrant_ids: set[str] = set(points)
 
-        receipt_ids, _, _, _ = self._receipt_index(key_cache)
+        receipt_ids, _, _, _, latest_event = self._receipt_index(key_cache)
+        # A case whose LAST record is an archive tombstone was retired on
+        # purpose: it is not a divergence, and heal must NOT re-hydrate it (that
+        # is the documented way a purge gets silently undone).
+        archived_ids = {cid for cid, ev in latest_event.items() if ev == ARCHIVE_EVENT}
+        for cid in archived_ids:
+            receipt_ids.discard(cid)
         receipt_only = sorted(receipt_ids - qdrant_ids)
         healed: list[str] = []
         heal_failed: list[str] = []
@@ -1362,7 +1434,7 @@ class CaseStore:
 
         # Content check, on a FRESH read of the spine so the re-attestations
         # written above are the digests we compare against.
-        _, attested, untrusted, undecidable = self._receipt_index(key_cache)
+        _, attested, untrusted, undecidable, _ = self._receipt_index(key_cache)
         untrusted_ids = sorted(set(untrusted))
         for cid in untrusted_ids:
             # A case with a forged receipt record must not read as verified on
@@ -1428,30 +1500,44 @@ class CaseStore:
             "verified_write": verified_write,
             "verified_reattested": verified_reattested,
             "reattested": reattested,
+            # Deliberate retirements: NOT divergences, NOT healed, and never
+            # silent — `archived_lingering` is an archive whose point delete did
+            # not land (re-runnable).
+            "archived": sorted(archived_ids),
+            "archived_lingering": sorted(archived_ids & qdrant_ids),
+            "archived_count": len(archived_ids),
             "authenticity_undecidable": undecidable,
             "qdrant_count": len(qdrant_ids),
             "receipt_count": len(receipt_ids),
         }
 
-    def _scan_case_points(self) -> dict[str, dict[str, Any]]:
-        """{case_id: payload} for every case point, in ONE paged scan.
+    def _scan_case_points_full(self) -> dict[str, tuple[str, dict[str, Any]]]:
+        """{case_id: (point_id, payload)} for every case point, in ONE scan.
 
-        The single read of the case collection: reconcile and the provenance
-        map both go through here, so they cannot disagree about what is in the
-        store. scroll_all pages the WHOLE collection — a single scroll silently
-        stops at its limit once the spine outgrows it.
+        The single read of the case collection: reconcile, the provenance map
+        and the archiver all go through here, so they cannot disagree about what
+        is in the store. scroll_all pages the WHOLE collection — a single scroll
+        silently stops at its limit once the spine outgrows it.
+
+        Returns the point ID AS STORED: deleting a point needs the id Qdrant
+        actually holds, and a manually created probe may carry a random uuid
+        rather than uuid5(case_id) — recomputing the id would miss it.
         """
-        points: dict[str, dict[str, Any]] = {}
+        points: dict[str, tuple[str, dict[str, Any]]] = {}
         try:
             for rec in self._get_memory().scroll_all(CASE_COLLECTION):
                 payload = rec.payload or {}
                 cid = str(payload.get("case_id")
                           or str(payload.get("content", "")).split(" ", 1)[0])
                 if cid.startswith("case-"):
-                    points[cid] = payload
+                    points[cid] = (str(rec.id), payload)
         except Exception as e:  # noqa: BLE001 — callers report, this must not die
             logger.warning("case-point scan failed: %s", e)
         return points
+
+    def _scan_case_points(self) -> dict[str, dict[str, Any]]:
+        """{case_id: payload} — the payload-only view of _scan_case_points_full."""
+        return {cid: payload for cid, (_, payload) in self._scan_case_points_full().items()}
 
     def provenance_map(self, case_ids: set[str] | None = None) -> dict[str, str]:
         """{case_id: provenance} — THE derivation of "can the spine vouch for
@@ -1470,7 +1556,8 @@ class CaseStore:
         with the other spine derivations rather than in each renderer.
         """
         key_cache = load_key_cache()
-        _, attested, untrusted, _ = self._receipt_index(key_cache)
+        _, attested, untrusted, _, latest_event = self._receipt_index(key_cache)
+        archived_ids = {cid for cid, ev in latest_event.items() if ev == ARCHIVE_EVENT}
         untrusted_set = set(untrusted)
         for cid in untrusted_set:
             attested.pop(cid, None)
@@ -1479,6 +1566,11 @@ class CaseStore:
         wanted = set(points) if case_ids is None else set(case_ids)
         out: dict[str, str] = {}
         for cid in sorted(wanted):
+            if cid in archived_ids:
+                # Retired on purpose — not "unattested" (which reads as a
+                # coverage gap or an alarm) and not verifiable content either.
+                out[cid] = PROV_ARCHIVED
+                continue
             payload = points.get(cid)
             if payload is None:
                 # Nothing in the store to attest (missing, or receipt-only).
@@ -1611,4 +1703,153 @@ class CaseStore:
             r = self.reattest_payload(cid, dry_run=dry_run, note=note,
                                       resolve_drifted=resolve_drifted)
             out[r["action"]].append(cid)
+        return out
+
+    # --- archiving (retiring test artifacts from the working store) ---
+
+    def _archive_dump_path(self) -> Path:
+        return Path(self.audit_dir) / ARCHIVE_DUMP_NAME
+
+    def _archive_one(self, case_id: str, point_id: str | None,
+                     payload: dict[str, Any] | None, tombstoned: bool, *,
+                     reason: str, actor: str, dry_run: bool,
+                     require_undecided: bool) -> dict[str, Any]:
+        """Retire ONE case. The per-case worker behind archive_case/backlog."""
+        if tombstoned and payload is None:
+            return {"case_id": case_id, "action": "already", "reason": reason}
+        if payload is None:
+            return {"case_id": case_id, "action": "missing"}
+        case = self._parse_content(str(payload.get("content", "")))
+        if not case or case.get("case_id") != case_id:
+            return {"case_id": case_id, "action": "missing"}
+        if require_undecided and case_decision(case)[0]:
+            # A decided case is a record with a rationale behind it. Retiring it
+            # is not a cleanup decision — it needs a human, and this refuses
+            # rather than quietly discarding the reasoning.
+            logger.warning("archive: REFUSING %s — it carries a decision", case_id)
+            return {"case_id": case_id, "action": "refused_decided"}
+
+        if dry_run:
+            return {"case_id": case_id, "action": "would_archive",
+                    "title": str(case.get("title") or "")[:60]}
+
+        if not tombstoned:
+            # 1. The signed record FIRST: once the chain says archived, heal can
+            #    never re-hydrate the case, so the removal is durable.
+            case["state"] = "archived"
+            case["status"] = _derive_status("archived")
+            case.setdefault("timeline", [])
+            case["timeline"].append({
+                "ts": datetime.now(timezone.utc).isoformat(), "role": actor,
+                "type": "archived", "detail": {"reason": reason}})
+            self._write_receipt(case, event=ARCHIVE_EVENT, role=actor)
+            # 2. The recovery dump: the point is about to be the only copy
+            #    destroyed, so keep the payload in an append-only archive file.
+            try:
+                self._archive_dump_path().parent.mkdir(parents=True, exist_ok=True)
+                with open(self._archive_dump_path(), "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "case_id": case_id, "point_id": point_id, "reason": reason,
+                        "actor": actor,
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "payload": payload}) + "\n")
+            except OSError as e:
+                logger.warning("archive: dump failed for %s (tombstone written): %s",
+                               case_id, e)
+
+        # 3. Remove the working-store copy. Re-runnable: a tombstoned case whose
+        #    point survived a failed delete is completed by the next run.
+        if point_id is not None:
+            try:
+                self._get_memory().delete_memory(CASE_COLLECTION, point_id)
+            except Exception as e:  # noqa: BLE001 — report; the tombstone stands
+                logger.error("archive: point delete failed for %s (%s): %s",
+                             case_id, point_id, e)
+                return {"case_id": case_id, "action": "delete_failed",
+                        "title": str(case.get("title") or "")[:60]}
+        return {"case_id": case_id,
+                "action": "completed" if tombstoned else "archived",
+                "title": str(case.get("title") or "")[:60]}
+
+    def archive_case(self, case_id: str, *, reason: str = "", actor: str = "operator",
+                     dry_run: bool = False,
+                     require_undecided: bool = True) -> dict[str, Any]:
+        """Retire ONE case from the working store, keeping the record of the act.
+
+        Why a tombstone and not a delete: the receipt spine is a hash-chained
+        append-only log, so removing records from it breaks chain verification,
+        and `reconcile(heal=True)` re-hydrates any case whose receipts still
+        exist — a naive purge is silently UNDONE within minutes (proven live
+        once: reset to 2 seeds, next supervisory run re-hydrated 1,213 points).
+
+        So this appends a signed `case_archived` record (who/when/why) and THEN
+        deletes the point. reconcile treats a case whose last record is that
+        tombstone as ARCHIVED — not a divergence, not healed — and reports it in
+        the `archived` bucket, so the retirement is visible and permanent.
+
+        Refuses a case that carries a DECISION by default: a decided case is a
+        record with reasoning behind it, and discarding that is a human call,
+        not a cleanup. Idempotent and re-runnable: an already-tombstoned case
+        whose point survived a failed delete is completed on the next call.
+        The payload is dumped to audit/`cases_archive.jsonl` first, because the
+        point is the only full copy.
+        """
+        scanned = self._scan_case_points_full()
+        _, _, _, _, latest_event = self._receipt_index(load_key_cache())
+        entry = scanned.get(case_id)
+        point_id, payload = (entry if entry else (None, None))
+        return self._archive_one(
+            case_id, point_id, payload,
+            latest_event.get(case_id) == ARCHIVE_EVENT,
+            reason=reason, actor=actor, dry_run=dry_run,
+            require_undecided=require_undecided)
+
+    def archive_backlog(self, *, dry_run: bool = True, reason: str = "",
+                        actor: str = "operator", case_ids: Iterable[str] | None = None,
+                        never: Iterable[str] = ()) -> dict[str, Any]:
+        """Plan or apply retirement of the TEST-ARTIFACT backlog.
+
+        Selection is `is_artifact_case()` — the ONE definition of what may be
+        retired, shared with the verify matrix's own cleanup — restricted to
+        UNDECIDED cases (see archive_case) and excluding `never`. It deliberately
+        does not touch a real THREAT/INTEL/INFRA case however old: an
+        unadjudicated alert is work, not junk.
+
+        Returns the breakdown, never a single headline number — the caller
+        reports what WOULD go and what was REFUSED, so a scope mistake is
+        visible before it is applied.
+        """
+        scanned = self._scan_case_points_full()
+        _, _, _, _, latest_event = self._receipt_index(load_key_cache())
+        keep = set(never)
+
+        if case_ids is not None:
+            candidates = [(cid, scanned.get(cid)) for cid in sorted(set(case_ids))]
+        else:
+            candidates = []
+            for cid, entry in sorted(scanned.items()):
+                if cid in keep:
+                    continue
+                case = self._parse_content(str(entry[1].get("content", "")))
+                if not case:
+                    continue
+                if is_artifact_case(case) and not case_decision(case)[0]:
+                    candidates.append((cid, entry))
+
+        out: dict[str, Any] = {
+            "dry_run": dry_run, "candidates": len(candidates),
+            "archived": [], "would_archive": [], "already": [],
+            "completed": [], "delete_failed": [], "refused_decided": [],
+            "missing": [], "titles": [],
+        }
+        for cid, entry in candidates:
+            point_id, payload = (entry if entry else (None, None))
+            r = self._archive_one(
+                cid, point_id, payload,
+                latest_event.get(cid) == ARCHIVE_EVENT,
+                reason=reason, actor=actor, dry_run=dry_run,
+                require_undecided=True)
+            out[r["action"]].append(cid)
+            if r.get("title") and len(out["titles"]) < 200:
+                out["titles"].append(f"{cid} | {r['title']}")
         return out

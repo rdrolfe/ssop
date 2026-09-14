@@ -282,6 +282,29 @@ def main() -> int:
                 if c.status in ("fail", "warn", "probe"):
                     print(f"      {c.status:<6} {c.name}: {c.detail}")
 
+    # Clean up after ourselves: the fixture run MINTS cases (dedupe seeds and
+    # role-minted fixture cases) and the cleanup invariant only CLOSES them, so
+    # without this the spine grows by ~40 cases per matrix run — the artifact
+    # backlog measured at 129 seeds before this was added. Archive (not delete):
+    # a signed tombstone + point removal, so `reconcile(heal=True)` cannot
+    # re-hydrate them and the retirement stays visible.
+    #
+    # AFTER the gates on purpose: nothing in this run can depend on a case that
+    # is retired at the end of it. `is_artifact_case()` is the shared rule — the
+    # same one the operator pruner uses, so the two cannot disagree.
+    try:
+        from tools.case_tools import CaseStore
+        _arch = CaseStore().archive_backlog(
+            dry_run=False, reason="verify matrix artifact", actor="verify-matrix")
+        _n = len(_arch.get("archived") or []) + len(_arch.get("completed") or [])
+        if _n:
+            logger.info("matrix cleanup: archived %d artifact case(s)", _n)
+        if _arch.get("delete_failed"):
+            logger.warning("matrix cleanup: point delete failed for %d case(s)",
+                           len(_arch["delete_failed"]))
+    except Exception as e:  # noqa: BLE001 — cleanup must never fail the gate
+        logger.warning("matrix cleanup: artifact archive skipped: %s", e)
+
     summary = report["summary"]
     failed = (summary["failed"] > 0 or summary["blocked"] > 0
               or (_docs_problems and not _docs_skip) or not _reg_ok
