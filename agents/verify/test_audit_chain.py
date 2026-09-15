@@ -16,6 +16,7 @@ And the honest-degradation paths:
 Hermetic: temp dirs, generated keys, no stores/network.
 """
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +37,32 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         FAILS += 1
 
 
+def mint_key(keys_dir: Path, name: str) -> bytes:
+    """Mint a key the way `load_or_create_key` does, and write it canonically.
+
+    THE FLAKE, ROOT-CAUSED: the on-disk key convention is "raw bytes, optionally
+    newline-terminated", and the reader strips exactly one trailing newline. Raw
+    `os.urandom(32)` bytes whose LAST byte happens to be 0x0A are ambiguous — the
+    reader strips KEY MATERIAL, the computed key_id stops matching the writer's,
+    and verification reports "key_id ... unknown — forged or foreign key". That
+    is a ~1/256-per-key coin flip: the intermittent offline-suite failure that
+    went unexplained for several sessions (and it is why the suite now dumps a
+    failing test's last lines — that dump is what finally named the check).
+
+    Production is immune BY CONSTRUCTION: `load_or_create_key` never writes a key
+    whose edge byte is whitespace-adjacent (it substitutes 0x00 for a trailing
+    0x0A). This helper reproduces that guarantee instead of hoping the coin lands
+    right. Note the failure direction is FAIL-CLOSED (a loud unknown-key
+    problem), never a silent pass — see the ambiguity check at the end.
+    """
+    key = os.urandom(32)
+    if key[-1:] == b"\n":
+        key = key[:-1] + b"\x00"
+    (keys_dir / name).write_bytes(key + b"\n")
+    (keys_dir / name).chmod(0o600)
+    return key
+
+
 def build_chain(path: Path, keys_dir: Path, n: int = 5) -> AuditChainWriter:
     w = AuditChainWriter(path, key=load_or_create_key() if False else None)
     # Force the writer's key dir into our temp keys_dir (default ctor reads
@@ -51,9 +78,7 @@ def main() -> int:
         recs = td / "cases.jsonl"
 
         # Build a healthy 5-record chain with a known key.
-        key = __import__("os").urandom(32)
-        (keys / "audit-aaa.key").write_bytes(key)
-        (keys / "audit-aaa.key").chmod(0o600)
+        key = mint_key(keys, "audit-aaa.key")
         w = AuditChainWriter(recs, key=key)
         for i in range(5):
             w.write(case_id=f"case-{i:04d}", role="analyst", event="note",
@@ -127,15 +152,11 @@ def main() -> int:
 
         # --- 5. KEY ROTATION: writer rekeys, verifier tracks --------------
         recs2 = td / "rekey.jsonl"
-        k1 = __import__("os").urandom(32)
-        (keys / "audit-aaa1.key").write_bytes(k1)
-        (keys / "audit-aaa1.key").chmod(0o600)
+        k1 = mint_key(keys, "audit-aaa1.key")
         w1 = AuditChainWriter(recs2, key=k1)
         w1.write(case_id="case-a", role="analyst", event="note", status="open",
                  title="a", detail={})
-        new_key = __import__("os").urandom(32)
-        (keys / "audit-bbb.key").write_bytes(new_key)
-        (keys / "audit-bbb.key").chmod(0o600)
+        new_key = mint_key(keys, "audit-bbb.key")
         w2 = AuditChainWriter(recs2, key=new_key)
         w2.write(case_id="case-b", role="analyst", event="note", status="open",
                  title="b", detail={})
@@ -160,9 +181,7 @@ def main() -> int:
         legacy.write_text(json.dumps({"case_id": "case-old", "ts": "2026-08-01",
                                       "role": "analyst", "event": "note",
                                       "status": "open", "title": "old"}) + "\n")
-        k3 = __import__("os").urandom(32)
-        (keys / "audit-ccc.key").write_bytes(k3)
-        (keys / "audit-ccc.key").chmod(0o600)
+        k3 = mint_key(keys, "audit-ccc.key")
         w_l = AuditChainWriter(legacy, key=k3)
         w_l.write(case_id="case-new", role="analyst", event="note", status="open",
                   title="new", detail={})
@@ -184,6 +203,28 @@ def main() -> int:
               rec_ok["actor_verified"] is True and rec_ok["actor_id"])
         check("degraded (SPIRE down) is explicit, not silent",
               rec_deg["actor_verified"] is False and rec_deg["actor_id"] is None)
+
+    # --- 10. THE AMBIGUOUS-KEY TRAP, pinned so nobody re-derives it ------
+        # A key FILE holding raw bytes that end in 0x0A is indistinguishable
+        # from the newline convention: the reader strips key material, key_id
+        # stops matching, and verification reports "unknown key". Asserted here
+        # for two reasons: (a) the direction must stay FAIL-CLOSED — a loud
+        # problem, never a silent pass; (b) this is the mechanism behind the
+        # intermittent suite failure that went unexplained for sessions, so it
+        # is documented where the next person will look, with mint_key() above
+        # as the production-faithful way to make a test key.
+        amb = td / "ambiguous.jsonl"
+        amb_keys = td / "keys-amb"
+        amb_keys.mkdir()
+        k_amb = os.urandom(31) + b"\x0a"
+        (amb_keys / "audit-amb.key").write_bytes(k_amb)
+        w_amb = AuditChainWriter(amb, key=k_amb)
+        w_amb.write(case_id="case-amb", role="analyst", event="note", status="open",
+                    title="amb", detail={})
+        r_amb = verify_chain(amb, keys_dir=amb_keys)
+        check("ambiguous key (material ends 0x0A) fails CLOSED, not silently",
+              not r_amb["ok"] and any("unknown" in p for p in r_amb["problems"]),
+              str(r_amb["problems"][:1]))
 
     print("\nNON-VACUOUS" if FAILS == 0 else f"\n{FAILS} NON-VACUITY FAILURES")
     return 0 if FAILS == 0 else 1
