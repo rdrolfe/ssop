@@ -1,0 +1,50 @@
+## ADR-008: Automation Tuning Authority
+
+**Status:** accepted — **the boundary is DECIDED and VISIBLE, but not yet BLOCKING** (see Consequences for what is declared vs enforced)
+
+**Date:** 2026-09-15
+
+**Context**
+
+The unattended triage flow (`hermes-triage`) adjudicated ticket `7ab216f9` overnight and wrote **durable tuning entries**: rule `52002` → `auto_fp` (snapd desktop noise, verified across lab hosts over a 7-day window) at `07:05Z`, and `hunt:apparmor-denials` → `auto_fp` at `07:16Z`.
+
+A tuning entry is not a note. It changes live detection: `router.classify` consults the ledger **before** its heuristics and returns `(operational, None)` for a tuned rule, so every future alert of that shape stops reaching a role — and `analyst.verdict` honours the same ledger, so it stops reaching a human too. The platform's existing doctrine already separates *recording* a decision from *executing* it (`approve != close`), requires attributable actors, and refuses to launder absence of evidence into approval. An unattended process writing durable suppressions sits outside all of that.
+
+**What made this a governance problem rather than just a data change:** the tuning was discovered only because a verify-matrix fixture happened to depend on rule `52002` reaching the dispatch path. That is luck, not a control. The matrix went red before anyone was told; had the fixture not existed, the suppression would have been silent and permanent, and the first anyone would know is an incident that never raised a case.
+
+**Decision**
+
+1. **Unattended automation may PROPOSE tuning; only a human commits it.** A proposed entry is visible and attributable (it names the actor, the rationale and the ticket), and it **does not suppress**.
+2. **The commit step is a human act on a human surface** — a supervisory adjudication, or a one-click confirm in the adjudication console — recorded with `source=human` and the confirming actor. Automation's `tuned_by` is preserved as the proposer, never overwritten by the confirmer.
+3. **Every tuning entry carries its provenance and its state.** `auto_fp` written by a process with no human in the loop is a different object from `auto_fp` a human signed off, even though both currently look identical in the ledger.
+4. **A tuning change must be VISIBLE where a human already looks.** The daily digest reports tuning entries written in the last 24h with their source and actor. A suppression that changes detection behaviour without appearing on any human surface is the failure this ADR exists to prevent.
+5. **Applies to hunts as well as rules** (`hunt:apparmor-denials` was tuned the same way).
+
+**Alternatives Considered**
+
+| Option | Pros | Cons | Why Rejected |
+|--------|------|------|--------------|
+| Leave it: unattended triage writes durable tuning | Fewer tickets for the operator; the rationale was sound | A process can silently remove detection coverage; the only detector was a fixture; no human surface reports it | Rejected: silence is the risk, not the accuracy of any single call |
+| Ban automated tuning entirely | Simplest boundary | Throws away genuinely useful triage work (the rationale here was well-evidenced: 7-day window, cross-host, `suspicious_signals=0`) | Rejected: the work is valuable, the *authority* is the problem |
+| Propose-only for durable tuning, with a human confirm | Keeps the triage work, keeps a human in the loop, attributes both actors | Costs the operator one confirmation per proposal | **Adopted** |
+| Require a human before the *ticket* closes, but let tuning write directly | Fewer confirms | The suppression is the durable act; closing the ticket is the paperwork | Rejected: it protects the wrong object |
+
+**Consequences**
+
+What becomes easier: detection coverage can no longer be removed by a process; every suppression has a proposer AND a confirmer; the digest makes tuning churn visible in the daily read.
+
+What becomes harder: unattended triage produces proposals that need a human click, so the backlog now includes them; a "self-healing" tuning loop is explicitly out of scope.
+
+**Declared vs enforced — stated plainly, because a boundary that exists only in prose stops anyone from checking:**
+
+- **ENFORCED (2026-09-15):** the daily digest reports tuning entries from the last 24h with source + actor. A suppression now has to appear on a human surface.
+- **DECLARED, NOT YET ENFORCED:** the propose/commit state machine. Today `hermes-triage` still writes entries that `router.classify` and `analyst.verdict` honour immediately. Enforcement lands in three places, and it must be all three or it is decorative: (1) `TuningLedger.write` gains a `state` (`proposed` | `committed`) derived from whether a human actor is present; (2) `tuned_rule_suppresses` — the shared decision helper both the router and the analyst call — considers only `committed` entries, so a proposal is inert by construction; (3) the console/API gains the confirm action that flips state and stamps the human actor.
+- **Until (1)–(3) land, an automated tuning entry still suppresses. Do not describe this boundary as active.**
+
+**Related**
+
+- [[SSOP/decisions/ADR-004 - SOAR Layer]] — the automation authority boundary this extends to detection tuning
+- [[SSOP/decisions/ADR-005 - Cedar Policy Layer]] — policy that is declared but unenforced gets caught here
+- `agents/tools/tuning_tools.py` (`TuningLedger`, `tuned_rule_suppresses` — the single decision helper)
+- `agents/router.py` (`classify`), `agents/tools/analyst_tools.py` (`verdict`) — the two consumers that must agree
+- Ticket `7ab216f9`, `hermes-triage` run 2026-09-14T07:05Z

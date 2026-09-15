@@ -1806,7 +1806,8 @@ class CaseStore:
 
     def archive_backlog(self, *, dry_run: bool = True, reason: str = "",
                         actor: str = "operator", case_ids: Iterable[str] | None = None,
-                        never: Iterable[str] = ()) -> dict[str, Any]:
+                        never: Iterable[str] = (),
+                        require_undecided: bool = True) -> dict[str, Any]:
         """Plan or apply retirement of the TEST-ARTIFACT backlog.
 
         Selection is `is_artifact_case()` — the ONE definition of what may be
@@ -1814,6 +1815,11 @@ class CaseStore:
         UNDECIDED cases (see archive_case) and excluding `never`. It deliberately
         does not touch a real THREAT/INTEL/INFRA case however old: an
         unadjudicated alert is work, not junk.
+
+        `case_ids` overrides selection entirely: with explicit ids the CALLER is
+        asserting they are artifacts (that is how a run that minted its own test
+        cases retires them by exact identity), so `require_undecided` may then be
+        relaxed by that caller — and only by it.
 
         Returns the breakdown, never a single headline number — the caller
         reports what WOULD go and what was REFUSED, so a scope mistake is
@@ -1848,7 +1854,7 @@ class CaseStore:
                 cid, point_id, payload,
                 latest_event.get(cid) == ARCHIVE_EVENT,
                 reason=reason, actor=actor, dry_run=dry_run,
-                require_undecided=True)
+                require_undecided=require_undecided)
             out[r["action"]].append(cid)
             if r.get("title") and len(out["titles"]) < 200:
                 out["titles"].append(f"{cid} | {r['title']}")

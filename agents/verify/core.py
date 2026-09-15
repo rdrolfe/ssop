@@ -77,6 +77,12 @@ class FixtureResult:
         self.checks: List[Check] = []
         self.verdict = VERDICT_SKIP
         self.error: Optional[str] = None
+        # The case(s) THIS drive minted. The runner records them so the matrix
+        # can retire its own artifacts by EXACT IDENTITY rather than by pattern:
+        # a fixture case carries a real verdict (so the artifact rule rightly
+        # skips it), and the only thing that can say "this case is a test
+        # artifact" is the run that created it.
+        self.case_ids: List[str] = []
 
     def add_check(self, name: str, status: str, detail: str = "") -> None:
         self.checks.append(Check(name, status, detail))
@@ -100,4 +106,5 @@ class FixtureResult:
             "verdict": self.verdict,
             "checks": [c.to_dict() for c in self.checks],
             "error": self.error,
+            "case_ids": list(self.case_ids),
         }

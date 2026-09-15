@@ -178,6 +178,12 @@ def verify_fixture(fixture: Dict[str, Any], role: str, stores: Stores,
     if case_baseline is not None:
         outcome._case_baseline = case_baseline
 
+    # Record what this drive MINTED, so the matrix can retire its own artifacts
+    # by exact identity at the end of the run (a fixture case carries a verdict,
+    # so no pattern rule can or should claim it).
+    if getattr(outcome, "case_id", None):
+        result.case_ids.append(str(outcome.case_id))
+
     # Run invariants (each returns a Check)
     for name, inv in INVARIANTS:
         try:

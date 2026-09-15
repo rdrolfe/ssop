@@ -306,7 +306,8 @@ def main() -> int:
     # same one the operator pruner uses, so the two cannot disagree.
     try:
         from tools.case_tools import CaseStore
-        _arch = CaseStore().archive_backlog(
+        cs = CaseStore()
+        _arch = cs.archive_backlog(
             dry_run=False, reason="verify matrix artifact", actor="verify-matrix")
         _n = len(_arch.get("archived") or []) + len(_arch.get("completed") or [])
         if _n:
@@ -314,6 +315,23 @@ def main() -> int:
         if _arch.get("delete_failed"):
             logger.warning("matrix cleanup: point delete failed for %d case(s)",
                            len(_arch["delete_failed"]))
+
+        # ...and the cases THIS RUN minted, by EXACT IDENTITY. They carry real
+        # verdicts, so the artifact rule above rightly skips them — the run that
+        # created them is the only thing that can call them test artifacts.
+        # `results` is where the runner recorded what each drive minted.
+        minted = sorted({cid for r in results
+                         for cid in getattr(r, "case_ids", [])})
+        if minted:
+            _arch2 = cs.archive_backlog(
+                dry_run=False, case_ids=minted, require_undecided=False,
+                reason="verify matrix fixture case", actor="verify-matrix")
+            _n2 = len(_arch2.get("archived") or []) + len(_arch2.get("completed") or [])
+            if _n2:
+                logger.info("matrix cleanup: retired %d fixture-minted case(s)", _n2)
+            if _arch2.get("delete_failed"):
+                logger.warning("matrix cleanup: fixture-case delete failed for %d",
+                               len(_arch2["delete_failed"]))
     except Exception as e:  # noqa: BLE001 — cleanup must never fail the gate
         logger.warning("matrix cleanup: artifact archive skipped: %s", e)
 

@@ -133,6 +133,36 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         lines.append(f"**Cases:** ERR {e}")
 
+    # Tuning changes in the last 24h — the ADR-008 visibility control. A tuning
+    # entry changes live detection: router.classify returns (operational, None)
+    # for a tuned rule, so every alert of that shape stops reaching a role. On
+    # 2026-09-14 an unattended triage run tuned rule 52002 + hunt:apparmor-denials
+    # overnight and the ONLY thing that noticed was a verify-matrix fixture —
+    # luck, not a control. This line is the control: a suppression now has to
+    # appear on a surface a human reads, with its source and actor.
+    try:
+        from tools.tuning_tools import TuningLedger
+        _cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+        recent: list[dict] = []
+        for e in TuningLedger().list_all(limit=500):
+            try:
+                ts = datetime.datetime.fromisoformat(
+                    str(e.get("ts", "")).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if ts >= _cut:
+                recent.append(e)
+        if recent:
+            detail = "; ".join(
+                f"{e.get('rule_id')}->{e.get('decision')} "
+                f"({e.get('source') or '?'}/{e.get('tuned_by') or '-'})"
+                for e in recent[:6])
+            lines.append(f"**Tuning (24h):** {len(recent)} change(s) — {detail}")
+        else:
+            lines.append("**Tuning (24h):** none")
+    except Exception as e:  # noqa: BLE001 — a tuning read must not kill the digest
+        lines.append(f"**Tuning (24h):** ERR {e}")
+
     # Decision coverage — the reporting end-goal's number. Of the cases on the
     # spine, how many carry a decision, and of those, how many compile into a
     # deliverable (advisory)? Rendered from the case dicts this scan already

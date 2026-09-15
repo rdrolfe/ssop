@@ -196,6 +196,23 @@ def main() -> int:
              cs.archive_case(SEEK, reason="again", actor="test")["action"] == "already",
              "second call reports already")
 
+        # 9b. The MARKED path: a run retires a case it minted BY EXACT IDENTITY,
+        # including a decided one — the caller's assertion is the authority, and
+        # only an explicit case_id list can relax the undecided guard.
+        decided = _mint(cs, "case-fix0001", "fixture verdict case",
+                        {"agent": "x"})
+        decided["supervisory"] = {"decision": "approve", "rationale": "fixture"}
+        mem.points["p-case-fix0001"] = case_point_payload(decided)
+        refused = cs.archive_backlog(dry_run=True, case_ids=["case-fix0001"])
+        marked = cs.archive_backlog(dry_run=False, case_ids=["case-fix0001"],
+                                    require_undecided=False, reason="run artifact",
+                                    actor="verify-matrix")
+        step("9b a marked id retires even a decided case; the default still refuses",
+             refused["refused_decided"] == ["case-fix0001"]
+             and marked["archived"] == ["case-fix0001"]
+             and "p-case-fix0001" not in mem.points,
+             f"default={refused['refused_decided']} marked={marked['archived']}")
+
     # ---------------------------------- 10. refuses a decided case ----------
     with tempfile.TemporaryDirectory() as td:
         cs, mem = _store(Path(td))
