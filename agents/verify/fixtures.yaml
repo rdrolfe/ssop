@@ -127,7 +127,14 @@ fixtures:
     description: "AppArmor denial repeat within burst window — must dedupe"
     probe: false
     alert:
-      rule: {id: 52002, level: 5, groups: [apparmor, ossec], description: "Apparmor DENIED"}
+      # Rule 52001, NOT 52002: 52002 was tuned auto_fp by hermes-triage on
+      # 2026-09-14 (ticket 7ab216f9, snapd desktop noise) so it no longer
+      # reaches the dispatch path at all — with 52002 this fixture stopped
+      # exercising burst dedupe entirely and failed on a data change, not a
+      # code change. Any UNTUNED rule with `apparmor` in its groups reaches
+      # (pattern, hunt) (router.classify), which is what this fixture needs.
+      # The tuning itself is pinned by `tuned-apparmor-no-dispatch` below.
+      rule: {id: 52001, level: 5, groups: [apparmor, ossec], description: "Apparmor DENIED"}
       agent: {id: "003", name: vault-secrets}
       timestamp: "2026-08-19T12:00:04.000Z"
     expect:
@@ -136,6 +143,30 @@ fixtures:
       dedupe_if_repeat: true
       # Router dedupes the repeat (burst repeat -> burst_deduped, no dispatch).
       # Hunt may legitimately flag a denial burst as suspicious — its job.
+      hunt_may_escalate: true
+
+  - id: tuned-apparmor-no-dispatch
+    description: "AppArmor 52002 is human/triage-tuned auto_fp — must NOT dispatch"
+    probe: false
+    alert:
+      rule: {id: 52002, level: 5, groups: [apparmor, ossec], description: "Apparmor DENIED"}
+      agent: {id: "003", name: vault-secrets}
+      timestamp: "2026-08-19T12:00:04.000Z"
+    expect:
+      # This fixture asserts a DECISION, not code: the tuning ledger entry for
+      # 52002 (source=human, tuned_by=hermes-triage, 2026-09-14, ticket
+      # 7ab216f9). Seeded in verify/matrix.py so a clean environment is
+      # deterministic. If that tuning is ever reversed, this fixture is the
+      # thing that says so out loud — update it WITH the reversal, and keep
+      # apparmor-burst-repeat on an untuned rule.
+      #
+      # `no_dispatch` is the tuning's real observable effect on the router: a
+      # tuned rule produces no ticket. `no_case` is deliberately NOT declared —
+      # hunt owns the pattern class and legitimately escalates a denial burst,
+      # which mints a case (hunt_may_escalate below).
+      verdict: note
+      category: operational
+      no_dispatch: true
       hunt_may_escalate: true
 
   - id: missing-fields-adversarial

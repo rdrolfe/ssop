@@ -109,8 +109,9 @@ def main() -> int:
     print(f"    archived={after['archived_count']} "
           f"lingering={len(after['archived_lingering'])} "
           f"tampered={after['tampered']} drifted={len(after['drifted'])}")
-    print("\nreceipt_count exceeding qdrant_count is EXPECTED here: the signed "
-          "record of each retirement stays in the chain.")
+    print("\nboth counts DROP by the number retired: an archived case is excluded "
+          "from the live set, while its signed record stays in the chain "
+          "(so the spine still holds the record of the removal).")
     return 0
 
 
