@@ -180,9 +180,13 @@ def verify_fixture(fixture: Dict[str, Any], role: str, stores: Stores,
 
     # Record what this drive MINTED, so the matrix can retire its own artifacts
     # by exact identity at the end of the run (a fixture case carries a verdict,
-    # so no pattern rule can or should claim it).
-    if getattr(outcome, "case_id", None):
-        result.case_ids.append(str(outcome.case_id))
+    # so no pattern rule can or should claim it). NOTE: RoleOutcome keeps its
+    # side effects in `.extra`, reachable via `.get()` — an attribute read here
+    # silently finds nothing, which is exactly how an earlier revision of this
+    # "retired 0 cases" and looked fine.
+    _minted = outcome.get("case_id") if hasattr(outcome, "get") else None
+    if _minted:
+        result.case_ids.append(str(_minted))
 
     # Run invariants (each returns a Check)
     for name, inv in INVARIANTS:
