@@ -19,17 +19,47 @@ This test proves the decision helper is non-vacuous:
 Uses TuningLedger directly but monkeypatches the client upsert/retrieve to
 an in-memory dict — no Qdrant, hermetic.
 """
+import base64
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (  # noqa: E402
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
+# A REAL keypair, before the tools import: config reads the key paths at import
+# time, and since ADR-008 stage 2 a committed entry only suppresses if its
+# commit signature verifies. Without this every `_committed` fixture below would
+# be an inert entry and the whole file would assert the opposite of its name.
+_KEYDIR = Path(tempfile.mkdtemp(prefix="ssop-tuning-keys-"))
+_PRIV = _KEYDIR / "tuning-commit.key"
+_PUB = _KEYDIR / "tuning-commit.key.pub"
+_privkey = Ed25519PrivateKey.generate()
+_PRIV.write_bytes(_privkey.private_bytes(
+    Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+_PUB.write_bytes(_privkey.public_key().public_bytes(
+    Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+os.environ["SSOP_TUNING_COMMIT_KEY"] = str(_PRIV)
+os.environ["SSOP_TUNING_COMMIT_PUB"] = str(_PUB)
+
 from tools.tuning_tools import (  # noqa: E402
     TuningError,
     TuningLedger,
+    canonical_entry_bytes,
     suppression_allowed,
     tuned_rule_suppresses,
     tuning_state,
+    verify_entry,
 )
 
 
@@ -70,17 +100,19 @@ def _mk(rule_id, level, desc, groups):
     return {"rule": {"id": rule_id, "level": level, "description": desc, "groups": groups}}
 
 
-def _committed(led, *a, **kw):
-    """Write a COMMITTED tuning entry.
+def _committed(led, rule_id, decision, rationale, *, tuned_by="test",
+               fingerprint=None, exclude_hosts=None, **kw):
+    """Write a COMMITTED, SIGNED entry — the only kind that can suppress.
 
-    ADR-008 makes `write()` default to PROPOSED (fail closed), and a proposal
-    never suppresses whatever its fingerprint says — so without this, every
-    "want True" assertion in this file would silently invert into a test of the
-    opposite thing. Calls the class method directly to keep the name distinct.
+    ADR-008: a proposal never suppresses, whatever its fingerprint says.
+    Stage 2: a committed entry suppresses only if its commit signature
+    verifies, so a fixture that models "a human tuned this" must produce a real
+    signature. Legacy `source=`/`state=` kwargs are accepted and ignored.
     """
-    kw.setdefault("state", "committed")
-    kw.setdefault("tuned_by", "test")
-    return TuningLedger.write(led, *a, **kw)
+    return TuningLedger.commit(led, rule_id, decision, rationale,
+                               committed_by=tuned_by or "test",
+                               fingerprint=fingerprint,
+                               exclude_hosts=exclude_hosts)
 
 
 def main() -> int:
@@ -167,12 +199,16 @@ def main() -> int:
     #    NEVER suppress an alert from an excluded host — even an IDENTICAL
     #    fingerprint — while other hosts still suppress.
     _committed(led, "2901", "auto_fp", "user option-C: dpkg noise, keep secrets host",
-              source="human", fingerprint=fingerprint_from_verdict(
+              fingerprint=fingerprint_from_verdict(
                   {"rule_id": "2901", "groups": ["dpkg", "syslog"], "level": 3,
-                   "category": "security", "description": "New dpkg (Debian Package) requested to install."}))
+                   "category": "security", "description": "New dpkg (Debian Package) requested to install."}),
+              exclude_hosts=["vault-secrets"])
     t2901 = led.lookup("2901")
     assert t2901 is not None
-    t2901["exclude_hosts"] = ["vault-secrets"]
+    # NOTE: exclude_hosts is PASSED THROUGH THE COMMIT, not poked into the
+    # looked-up dict afterwards. Mutating a committed entry on disk is exactly
+    # what the commit signature exists to catch — doing it here would make every
+    # later assertion in this block read an inert entry.
     on_secrets = _mk("2901", 3, "New dpkg (Debian Package) requested to install.", ["dpkg", "syslog"])
     on_secrets["agent"] = {"name": "vault-secrets"}
     s, reason = tuned_rule_suppresses(t2901, on_secrets, category="security")
@@ -393,6 +429,59 @@ def main() -> int:
     ok_e, why_e = suppression_allowed(led.lookup("61003"))
     print(f"committed escalate suppresses? {ok_e} (want True) — {why_e}")
     if not ok_e:
+        fails += 1
+
+    # --- ADR-008 STAGE 2: the signature is what makes it a boundary ---------
+    # An unattended writer can POST anything to Qdrant, including
+    # state="committed". What it cannot do is produce a signature, so a
+    # hand-set committed state must verify as nothing.
+    led.commit("61005", "auto_fp", "reviewed and committed", committed_by="rdrolfe",
+               fingerprint={"rule_id": "61005", "groups": ["syslog"], "level": 3,
+                            "category": "operational"})
+    good = led.lookup("61005")
+    assert good is not None
+    ok_sig, _ = suppression_allowed(good), None
+    print(f"signed commit verifies: {verify_entry(good)} (want True) | "
+          f"suppresses: {ok_sig} (want True)")
+    if not verify_entry(good) or not ok_sig:
+        fails += 1
+
+    # (a) forged: state says committed, no signature at all
+    led.write("61006", "auto_fp", "unattended writer faking a commit",
+              source="automation", tuned_by="ssop-supervisory", state="committed",
+              fingerprint={"rule_id": "61006", "groups": ["syslog"], "level": 3,
+                           "category": "operational"})
+    forged = led.lookup("61006")
+    assert forged is not None
+    allowed_forged, why_forged = suppression_allowed(forged)
+    print(f"hand-set committed state, no signature: suppresses={allowed_forged} "
+          f"(want False) — {why_forged[:52]}")
+    if allowed_forged:
+        fails += 1
+
+    # (b) tampered AFTER signing: flip a covered field on the stored payload.
+    # This is the case a plain `state` field could never catch.
+    pid = TuningLedger._point_id("61005")
+    fake.store[pid]["fingerprint"] = {"rule_id": "61005", "groups": ["syslog"],
+                                      "level": 9, "category": "threat"}
+    tampered = led.lookup("61005")
+    assert tampered is not None
+    allowed_t, why_t = suppression_allowed(tampered)
+    print(f"entry edited after signing: suppresses={allowed_t} (want False) — "
+          f"{why_t[:52]}")
+    if allowed_t or verify_entry(tampered):
+        fails += 1
+
+    # (c) a signature made with a DIFFERENT key is not trusted
+    other = Ed25519PrivateKey.generate()
+    fake.store[pid]["fingerprint"] = good["fingerprint"]  # restore the field
+    fake.store[pid]["commit_sig"] = base64.b64encode(
+        other.sign(canonical_entry_bytes(fake.store[pid]))).decode()
+    foreign = led.lookup("61005")
+    assert foreign is not None
+    print(f"signature from an untrusted key: verifies={verify_entry(foreign)} "
+          f"(want False)")
+    if verify_entry(foreign):
         fails += 1
 
     print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")

@@ -75,6 +75,18 @@ def _env_dict(name: str, default: str = "") -> dict[str, int]:
 
 RUNTIME_DIR = Path(_env("SSOP_RUNTIME_DIR", str(Path.home() / "agent-runtime")))
 
+# ---- tuning commit signing (ADR-008 stage 2) ------------------------------
+# The PRIVATE key authorises a tuning commit and lives on the human plane
+# (mode 0600, owned by the operator, OUTSIDE the group-shared runtime tree).
+# The PUBLIC key is world-readable so every verifier — including the unattended
+# router/analyst/hunt, which must honour committed entries — can check a
+# signature without being able to produce one. Asymmetric on purpose: see
+# tuning_tools.sign_entry for why HMAC would defeat the boundary.
+TUNING_COMMIT_KEY_PATH = _env("SSOP_TUNING_COMMIT_KEY",
+                              str(Path.home() / ".ssop-keys" / "tuning-commit.key"))
+TUNING_COMMIT_PUB_PATH = _env("SSOP_TUNING_COMMIT_PUB",
+                              TUNING_COMMIT_KEY_PATH + ".pub")
+
 
 @dataclass(frozen=True)
 class Settings:

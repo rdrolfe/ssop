@@ -24,21 +24,56 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# A real keypair BEFORE the tools import (config reads key paths at import
+# time). ADR-008 stage 2: a committed entry suppresses only if its commit
+# signature verifies — so the fixtures below must carry real signatures or this
+# file silently becomes a test of the opposite property.
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (  # noqa: E402
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
+_KEYDIR = Path(tempfile.mkdtemp(prefix="ssop-parity-keys-"))
+_PRIV = _KEYDIR / "tuning-commit.key"
+_PUB = _KEYDIR / "tuning-commit.key.pub"
+_privkey = Ed25519PrivateKey.generate()
+_PRIV.write_bytes(_privkey.private_bytes(Encoding.PEM, PrivateFormat.PKCS8,
+                                         NoEncryption()))
+_PUB.write_bytes(_privkey.public_key().public_bytes(
+    Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+os.environ["SSOP_TUNING_COMMIT_KEY"] = str(_PRIV)
+os.environ["SSOP_TUNING_COMMIT_PUB"] = str(_PUB)
+
 from tools.analyst_tools import AnalystClient  # noqa: E402
 from tools.ontology import categorize_alert  # noqa: E402
 import tools.tuning_tools as tt  # noqa: E402
+
+
+def _signed(payload: dict) -> dict:
+    """A fixture tuning entry with a valid commit signature."""
+    entry = dict(payload)
+    entry["commit_sig"] = tt.sign_entry(entry)
+    return entry
 
 # Tuned-FP rules: 2902 (dpkg), 550 (integrity checksum), 86601 (generic suricata)
 # Every entry carries `state: committed` (ADR-008): suppression requires a
 # COMMITTED entry, so a fixture that models "a human tuned this" must say so or
 # it silently becomes a fixture for the opposite property.
 _TUNED: dict[str, dict] = {
-    "2902": {"decision": "auto_fp", "rationale": "human: routine package mgmt", "source": "human",
-             "state": "committed"},
-    "550": {"decision": "auto_fp", "rationale": "human: integrity drift, host clean", "source": "human",
-            "state": "committed"},
-    "86601": {"decision": "auto_fp", "rationale": "human: generic suricata noise", "source": "human",
-              "state": "committed"},
+    "2902": _signed({"decision": "auto_fp", "rationale": "human: routine package mgmt",
+                     "source": "human", "state": "committed"}),
+    "550": _signed({"decision": "auto_fp", "rationale": "human: integrity drift, host clean",
+                    "source": "human", "state": "committed"}),
+    "86601": _signed({"decision": "auto_fp", "rationale": "human: generic suricata noise",
+                      "source": "human", "state": "committed"}),
     # An UNATTENDED proposal (what the hourly adjudicator writes). It must not
     # suppress on EITHER path — the router and the analyst used to consult
     # different decision tuples, so a gate could apply on one and not the other.

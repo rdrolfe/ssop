@@ -18,6 +18,33 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Real keypair before the tools import — a committed entry now suppresses only
+# if its commit signature verifies (ADR-008 stage 2), and this file replicates
+# the console commit path.
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (  # noqa: E402
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
+_KEYDIR = Path(tempfile.mkdtemp(prefix="ssop-adjfp-keys-"))
+_PRIV = _KEYDIR / "tuning-commit.key"
+_PUB = _KEYDIR / "tuning-commit.key.pub"
+_privkey = Ed25519PrivateKey.generate()
+_PRIV.write_bytes(_privkey.private_bytes(Encoding.PEM, PrivateFormat.PKCS8,
+                                         NoEncryption()))
+_PUB.write_bytes(_privkey.public_key().public_bytes(
+    Encoding.PEM, PublicFormat.SubjectPublicKeyInfo))
+os.environ["SSOP_TUNING_COMMIT_KEY"] = str(_PRIV)
+os.environ["SSOP_TUNING_COMMIT_PUB"] = str(_PUB)
+
 from tools.tuning_tools import TuningLedger  # noqa: E402
 
 
@@ -82,15 +109,13 @@ def _adjudicate_fingerprint_write(ticket) -> dict | None:
 
     led = TuningLedger.__new__(TuningLedger)
     led._memory = _FakeMemory()  # type: ignore[assignment]
-    # state="committed": this replicates the CONSOLE path
+    # commit(), not write(): this replicates the CONSOLE path
     # (adjudicate_api -> adjudicate(authority="interactive")), which is a human
-    # click. Since ADR-008 an uncommitted write defaults to `proposed` and never
-    # suppresses, so omitting it would make this test assert the opposite of the
-    # property it names.
-    led.write(rule_id=rule_id, decision="auto_fp",
-              rationale=f"supervisory deny: {ticket.get('rationale', '')}",
-              source="human", tuned_by="console", state="committed",
-              fingerprint=fingerprint_from_verdict(vd))
+    # click, and a commit is SIGNED. write() would produce an unsignable entry
+    # that verifies as nothing — i.e. the opposite of what this test asserts.
+    led.commit(rule_id, "auto_fp",
+               f"supervisory deny: {ticket.get('rationale', '')}",
+               committed_by="console", fingerprint=fingerprint_from_verdict(vd))
     return led.lookup(rule_id)
 
 

@@ -10,10 +10,14 @@ Hygiene: config-driven, imports at top, logging, structured errors.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from qdrant_client.models import PointStruct
@@ -144,6 +148,116 @@ COMMITTED = "committed"
 SUPPRESSING_DECISIONS = ("auto_fp", "operational", "escalate")
 
 
+# --- commit signatures (ADR-008 stage 2: making the boundary real) ----------
+#
+# The state machine alone is a CONVENTION. `state="committed"` is one field, and
+# any local process can POST it to Qdrant over HTTP — so a service user by
+# itself buys nothing. What makes the boundary real is that only the holder of a
+# PRIVATE key can produce a commit the gate will honour, and the unattended
+# plane runs as a user that cannot read that key.
+#
+# ASYMMETRIC, NOT HMAC, and that is the whole point: verification has to be
+# possible on the unattended side, because the router and analyst must honour
+# committed entries. HMAC would hand the verifier the same secret the signer
+# uses — the automation could mint commits. Ed25519 splits the capability: the
+# private key stays on the human plane, the public key is world-readable.
+#
+# These fields are the AUTHORIZING CORE — what a commit actually asserts. The
+# rationale and source are deliberately NOT covered: they are documentation, and
+# leaving them out lets an annotate-only edit (appending a note) keep a valid
+# signature, while any change to what the entry DOES invalidates it.
+SIG_FIELDS = ("rule_id", "decision", "state", "tuned_by", "ts", "fingerprint",
+              "exclude_hosts")
+
+
+def _commit_key_paths() -> tuple[Path, Path]:
+    """(private, public) key paths — config-driven, with env override."""
+    try:
+        from config import (
+            TUNING_COMMIT_KEY_PATH,
+            TUNING_COMMIT_PUB_PATH,
+        )
+        key = Path(TUNING_COMMIT_KEY_PATH)
+        pub = Path(TUNING_COMMIT_PUB_PATH)
+    except Exception:  # noqa: BLE001 — a config import must not break the gate
+        key = Path.home() / ".ssop-keys" / "tuning-commit.key"
+        pub = Path(str(key) + ".pub")
+    key = Path(os.path.expanduser(str(key)))
+    return key, Path(os.path.expanduser(str(pub)))
+
+
+def signing_available() -> bool:
+    """True when the PRIVATE key is readable — i.e. we are the human plane."""
+    key, _ = _commit_key_paths()
+    try:
+        return key.is_file() and os.access(key, os.R_OK)
+    except OSError:
+        return False
+
+
+def canonical_entry_bytes(entry: dict) -> bytes:
+    """The exact byte string a commit signature covers (deterministic)."""
+    core = {f: (entry or {}).get(f) for f in SIG_FIELDS}
+    return json.dumps(core, sort_keys=True, separators=(",", ":"),
+                      default=str).encode()
+
+
+def sign_entry(entry: dict, private_pem: bytes | None = None) -> str:
+    """Ed25519-sign an entry's authorizing core -> base64. Raises without a key.
+
+    The error message is deliberately explicit: an unattended writer that lands
+    here is not broken, it is being told to propose instead.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if private_pem is None:
+        key_path, _ = _commit_key_paths()
+        try:
+            private_pem = key_path.read_bytes()
+        except OSError as e:
+            raise TuningError(
+                f"tuning commit key not readable at {key_path} — this writer "
+                f"cannot COMMIT a tuning entry (that is the boundary, ADR-008); "
+                f"use propose() and let a human commit it") from e
+    private = serialization.load_pem_private_key(private_pem, password=None)
+    if not isinstance(private, Ed25519PrivateKey):
+        raise TuningError("tuning commit key is not an Ed25519 private key")
+    return base64.b64encode(private.sign(canonical_entry_bytes(entry))).decode()
+
+
+def verify_entry(entry: dict, public_pem: bytes | None = None) -> bool:
+    """True when the entry carries a signature matching its authorizing core.
+
+    Every failure mode returns False (missing signature, unreadable public key,
+    wrong key, edited-on-disk entry). False means "not verified", and the gate
+    treats that as inert — so an integrity failure yields MORE alerting, never
+    less.
+    """
+    sig = str((entry or {}).get("commit_sig") or "")
+    if not sig:
+        return False
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    if public_pem is None:
+        _, pub_path = _commit_key_paths()
+        try:
+            public_pem = pub_path.read_bytes()
+        except OSError:
+            logger.warning("tuning commit PUBLIC key unreadable at %s — every "
+                           "committed entry reads as unverified", pub_path)
+            return False
+    try:
+        public = serialization.load_pem_public_key(public_pem)
+        if not isinstance(public, Ed25519PublicKey):
+            return False
+        public.verify(base64.b64decode(sig), canonical_entry_bytes(entry))
+        return True
+    except Exception:  # noqa: BLE001 — bad signature/base64/key: not verified
+        return False
+
+
 def tuning_state(tuning: dict | None) -> str:
     """The entry's state, failing CLOSED.
 
@@ -175,7 +289,16 @@ def suppression_allowed(tuning: dict | None) -> tuple[bool, str]:
             f"({decision}, proposed_by={tuning.get('tuned_by') or 'unknown'}) — "
             f"a proposal never suppresses; it needs a human commit (console "
             f"confirm, or a case adjudication)")
-    return True, f"committed {decision}"
+    # A committed state is a CLAIM. The signature is the proof, and it is what
+    # makes this a boundary rather than a naming convention: only the holder of
+    # the human-plane private key can produce one, so an unattended writer that
+    # sets state="committed" by hand produces an entry that verifies as nothing.
+    if not verify_entry(tuning):
+        return False, (
+            f"rule {tuning.get('rule_id')} is committed but its commit signature "
+            f"does not verify (missing, or the entry changed after signing) — "
+            f"treating it as INERT and dispatching")
+    return True, f"committed {decision} (signed)"
 
 
 def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
@@ -325,6 +448,7 @@ class TuningLedger:
         fingerprint: dict | None = None,
         exclude_hosts: list | None = None,
         state: str = PROPOSED,
+        commit_sig: str = "",
     ) -> bool:
         """Upsert a tuning entry. Human writes are final; analyst seeds mark source.
 
@@ -362,6 +486,10 @@ class TuningLedger:
             if exclude_hosts:
                 # Host-scoped policy (option-C): excluded hosts never suppress.
                 payload["exclude_hosts"] = [str(h) for h in exclude_hosts]
+            if commit_sig:
+                # Proof that a human-plane key authorised this commit. Without
+                # it a committed entry is inert (see suppression_allowed).
+                payload["commit_sig"] = commit_sig
             self._memory.client.upsert(
                 collection_name=TUNING_COLLECTION,
                 points=[PointStruct(
@@ -394,19 +522,39 @@ class TuningLedger:
                           tuned_by=proposed_by, state=PROPOSED, **kw)
 
     def commit(self, rule_id: str, decision: str, rationale: str, *,
-               committed_by: str, **kw: Any) -> bool:
+               committed_by: str, ts: str | None = None,
+               fingerprint: dict | None = None,
+               exclude_hosts: list | None = None) -> bool:
         """Commit a tuning entry for an INTERACTIVE, user-directed session.
 
         The actor is REQUIRED: a commit with no actor is a proposal wearing a
-        different name, and the whole point of this boundary is that the
-        distinction is recorded rather than inferred.
+        different name. The commit is SIGNED with the human-plane private key,
+        over the authorizing core exactly as it will be stored — so `ts` is
+        generated HERE and passed through, because a stored `ts` the signature
+        did not cover would verify as nothing.
         """
         if not str(committed_by or "").strip():
             raise TuningError(
                 "commit() requires committed_by — an unattributed commit is a "
                 "proposal wearing a different name")
-        return self.write(rule_id, decision, rationale, source="human",
-                          tuned_by=committed_by, state=COMMITTED, **kw)
+        _ts = ts or datetime.now(timezone.utc).isoformat()
+        _excl = [str(h) for h in exclude_hosts] if exclude_hosts else None
+        core = {"rule_id": rule_id, "decision": decision, "state": COMMITTED,
+                "tuned_by": committed_by, "ts": _ts, "fingerprint": fingerprint,
+                "exclude_hosts": _excl}
+        sig = sign_entry(core)
+        ok = self.write(rule_id, decision, rationale, source="human", ts=_ts,
+                        tuned_by=committed_by, state=COMMITTED,
+                        fingerprint=fingerprint, exclude_hosts=_excl,
+                        commit_sig=sig)
+        # Read it back: a commit that did not persist its signature is an inert
+        # entry that LOOKS committed, which is worse than a loud failure.
+        stored = self.lookup(rule_id) or {}
+        if not ok or not verify_entry(stored):
+            raise TuningError(
+                f"commit of {rule_id} did not verify after write — the entry is "
+                f"INERT until this is fixed")
+        return ok
 
     def list_all(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent tuning entries (for dashboards/supervisory review)."""
