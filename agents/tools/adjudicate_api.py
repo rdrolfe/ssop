@@ -552,7 +552,8 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 if not ticket:
                     self._send(404, {"ok": False, "error": f"ticket {ticket_id} not found"})
                     return
-                _sup.adjudicate(ticket, decision, rationale)
+                _sup.adjudicate(ticket, decision, rationale,
+                                authority="interactive", actor="console")
                 logger.info("adjudicated %s -> %s via API", ticket_id, decision)
                 self._send(200, {"ok": True, "ticket_id": ticket_id,
                                  "decision": decision, "status": "adjudicated"})
@@ -586,7 +587,8 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                         # console-normalized shape nests under detail. Check both.
                         if (det.get("case_id") == case_id or det.get("case") == case_id
                                 or t.get("case_id") == case_id):
-                            _sup.adjudicate(t, decision, rationale or "via console")
+                            _sup.adjudicate(t, decision, rationale or "via console",
+                                            authority="interactive", actor="console")
                             logger.info("case-decision closed ticket %s for %s",
                                         t.get("ticket_id"), case_id)
                             break

@@ -122,6 +122,62 @@ def _alert_apparmor_profile(alert: dict) -> str:
     return ""
 
 
+# --- propose / commit authority (ADR-008) ----------------------------------
+#
+# A tuning entry is a durable suppression: `router.classify` returns no role for
+# a tuned rule BEFORE its heuristics run, and the analyst honours the same
+# ledger. ADR-008 draws the boundary — an interactive, user-directed session may
+# COMMIT; an unattended scheduled process may only PROPOSE; blank attribution
+# fails closed.
+#
+# WHAT THIS IS NOT: not a cryptographic boundary. The unattended writer
+# (`ssop-supervisory.service`, hourly) runs as the same OS user as everything
+# else on that host, so any key it was asked to respect it could also read.
+# Making the boundary real means a dedicated service user, or a signing key held
+# off-host. Until then, describe this as a code-level boundary with a fail-closed
+# default — auditable in the diff, not unforgeable.
+PROPOSED = "proposed"
+COMMITTED = "committed"
+# Decisions that SUPPRESS alerting, as ONE constant on purpose: the router used
+# to accept `escalate` while the analyst did not, so the same entry meant
+# different things on the two paths (measured 2026-09-15).
+SUPPRESSING_DECISIONS = ("auto_fp", "operational", "escalate")
+
+
+def tuning_state(tuning: dict | None) -> str:
+    """The entry's state, failing CLOSED.
+
+    Missing or unrecognized state reads as PROPOSED. After the 2026-09-15
+    migration every legitimate entry carries a state, so an absent one is either
+    a fresh unattended write or an un-migrated oddity — neither should suppress.
+    """
+    state = str((tuning or {}).get("state") or "").strip().lower()
+    return state if state in (PROPOSED, COMMITTED) else PROPOSED
+
+
+def suppression_allowed(tuning: dict | None) -> tuple[bool, str]:
+    """May this entry suppress? (suppressing decision AND committed.)
+
+    Returns (allowed, reason). Called by the shared decision helper AND by the
+    hunt sweep: the hunt used to do its own existence check, so a gate added
+    only to `tuned_rule_suppresses` would have left every hunt silenceable by an
+    uncommitted entry — a hole in the boundary on day one.
+    """
+    if not isinstance(tuning, dict) or not tuning:
+        return False, "no tuning entry"
+    decision = str(tuning.get("decision") or "")
+    if decision not in SUPPRESSING_DECISIONS:
+        return False, f"decision {decision!r} does not suppress"
+    state = tuning_state(tuning)
+    if state != COMMITTED:
+        return False, (
+            f"rule {tuning.get('rule_id')} carries a {state} tuning entry "
+            f"({decision}, proposed_by={tuning.get('tuned_by') or 'unknown'}) — "
+            f"a proposal never suppresses; it needs a human commit (console "
+            f"confirm, or a case adjudication)")
+    return True, f"committed {decision}"
+
+
 def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
     """Decide whether a tuned rule should suppress THIS alert (verdict note /
     no dispatch), or lift the tuning (override -> re-adjudication).
@@ -147,6 +203,12 @@ def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None
     """
     # Host-scoped exception: excluded hosts are never suppressed by the
     # tuning — the human wants those surfaces reviewed regardless.
+    # AUTHORITY FIRST (ADR-008): an entry that was never committed cannot
+    # suppress, whatever its fingerprint or scope says. Placed before every
+    # other check so no later branch can accidentally honour a proposal.
+    _allowed, _why_not = suppression_allowed(tuning)
+    if not _allowed:
+        return False, _why_not
     host = _alert_host(alert)
     excluded = tuning.get("exclude_hosts") if isinstance(tuning, dict) else None
     if excluded and host and host in {str(h) for h in excluded}:
@@ -262,6 +324,7 @@ class TuningLedger:
         tuned_by: str = "",
         fingerprint: dict | None = None,
         exclude_hosts: list | None = None,
+        state: str = PROPOSED,
     ) -> bool:
         """Upsert a tuning entry. Human writes are final; analyst seeds mark source.
 
@@ -281,12 +344,16 @@ class TuningLedger:
             raise TuningError(f"invalid decision {decision!r}; expected one of {sorted(FINAL_DECISIONS)}")
         try:
             pid = self._point_id(rule_id)
+            # FAIL CLOSED on state: an unrecognized value becomes PROPOSED, so a
+            # typo or a future state name cannot silently grant suppression.
+            _state = state if state in (PROPOSED, COMMITTED) else PROPOSED
             payload: dict[str, Any] = {
                 "rule_id": rule_id,
                 "decision": decision,
                 "rationale": rationale,
                 "source": source,  # human | analyst_seed
                 "tuned_by": tuned_by,  # actor name ("" = system/seed)
+                "state": _state,  # proposed | committed (ADR-008)
                 "ts": ts or datetime.now(timezone.utc).isoformat(),
                 "type": "tuning",
             }
@@ -308,6 +375,38 @@ class TuningLedger:
         except Exception as e:
             logger.exception("tuning write failed for %s", rule_id)
             raise TuningError(f"tuning write failed for {rule_id}: {e}") from e
+
+    def propose(self, rule_id: str, decision: str, rationale: str, *,
+                proposed_by: str = "", **kw: Any) -> bool:
+        """Record an UNATTENDED proposal — visible, attributable, inert.
+
+        This is what the autonomous adjudicator calls
+        (`ssop-supervisory.service` -> `supervisory.py supervisory:adjudicate`,
+        hourly). The proposal is written to the same ledger the human surface
+        reads, so confirming it is one action there, not a re-derivation.
+
+        `proposed_by` should name the writer. Blank is accepted (old callers) but
+        it is exactly the case ADR-008 makes fail CLOSED for: the unattended hunt
+        entry was written with an empty `tuned_by` and was otherwise
+        indistinguishable from a hand-written console entry.
+        """
+        return self.write(rule_id, decision, rationale, source="automation",
+                          tuned_by=proposed_by, state=PROPOSED, **kw)
+
+    def commit(self, rule_id: str, decision: str, rationale: str, *,
+               committed_by: str, **kw: Any) -> bool:
+        """Commit a tuning entry for an INTERACTIVE, user-directed session.
+
+        The actor is REQUIRED: a commit with no actor is a proposal wearing a
+        different name, and the whole point of this boundary is that the
+        distinction is recorded rather than inferred.
+        """
+        if not str(committed_by or "").strip():
+            raise TuningError(
+                "commit() requires committed_by — an unattributed commit is a "
+                "proposal wearing a different name")
+        return self.write(rule_id, decision, rationale, source="human",
+                          tuned_by=committed_by, state=COMMITTED, **kw)
 
     def list_all(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent tuning entries (for dashboards/supervisory review)."""

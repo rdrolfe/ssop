@@ -82,9 +82,15 @@ def _adjudicate_fingerprint_write(ticket) -> dict | None:
 
     led = TuningLedger.__new__(TuningLedger)
     led._memory = _FakeMemory()  # type: ignore[assignment]
+    # state="committed": this replicates the CONSOLE path
+    # (adjudicate_api -> adjudicate(authority="interactive")), which is a human
+    # click. Since ADR-008 an uncommitted write defaults to `proposed` and never
+    # suppresses, so omitting it would make this test assert the opposite of the
+    # property it names.
     led.write(rule_id=rule_id, decision="auto_fp",
               rationale=f"supervisory deny: {ticket.get('rationale', '')}",
-              source="human", fingerprint=fingerprint_from_verdict(vd))
+              source="human", tuned_by="console", state="committed",
+              fingerprint=fingerprint_from_verdict(vd))
     return led.lookup(rule_id)
 
 

@@ -24,7 +24,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.tuning_tools import TuningLedger, tuned_rule_suppresses  # noqa: E402
+from tools.tuning_tools import (  # noqa: E402
+    TuningError,
+    TuningLedger,
+    suppression_allowed,
+    tuned_rule_suppresses,
+    tuning_state,
+)
 
 
 class _FakePoint:
@@ -64,6 +70,19 @@ def _mk(rule_id, level, desc, groups):
     return {"rule": {"id": rule_id, "level": level, "description": desc, "groups": groups}}
 
 
+def _committed(led, *a, **kw):
+    """Write a COMMITTED tuning entry.
+
+    ADR-008 makes `write()` default to PROPOSED (fail closed), and a proposal
+    never suppresses whatever its fingerprint says — so without this, every
+    "want True" assertion in this file would silently invert into a test of the
+    opposite thing. Calls the class method directly to keep the name distinct.
+    """
+    kw.setdefault("state", "committed")
+    kw.setdefault("tuned_by", "test")
+    return TuningLedger.write(led, *a, **kw)
+
+
 def main() -> int:
     fails = 0
     fake = _FakeMemory()
@@ -72,7 +91,7 @@ def main() -> int:
 
     # Baseline tuning for rule 2902 (dpkg install), the flood case.
     seed = _mk("2902", 7, "New dpkg (Debian Package) installed.", ["syscheck"])
-    led.write("2902", "auto_fp", "human: routine package mgmt", source="human",
+    _committed(led, "2902", "auto_fp", "human: routine package mgmt", source="human",
               fingerprint=None)  # legacy, no fingerprint
     tuning = led.lookup("2902")
     assert tuning is not None
@@ -85,7 +104,7 @@ def main() -> int:
     from tools.ontology import fingerprint_from_verdict
     seed_v = {"rule_id": "2902", "groups": ["syscheck"], "level": 7,
               "category": "integrity", "description": "New dpkg (Debian Package) installed."}
-    led.write("2902", "auto_fp", "human: routine package mgmt", source="human",
+    _committed(led, "2902", "auto_fp", "human: routine package mgmt", source="human",
               fingerprint=fingerprint_from_verdict(seed_v))
     tuning = led.lookup("2902")
     assert tuning is not None and tuning.get("fingerprint"), "fingerprint not stored"
@@ -135,7 +154,7 @@ def main() -> int:
 
     # 7. legacy strong-TP gate still works for entries without a fingerprint:
     #    a tuned integrity rule at lvl 7 with a threat-desc token -> override
-    led.write("550", "auto_fp", "human: integrity drift", source="human", fingerprint=None)
+    _committed(led, "550", "auto_fp", "human: integrity drift", source="human", fingerprint=None)
     t550 = led.lookup("550")
     assert t550 is not None, "550 tuning lookup failed"
     mal = _mk("550", 7, "ET C2 beacon (checksum)", ["syscheck", "fim"])
@@ -147,7 +166,7 @@ def main() -> int:
     # 8. HOST-SCOPED EXCEPTION (option-C): a tuning with exclude_hosts must
     #    NEVER suppress an alert from an excluded host — even an IDENTICAL
     #    fingerprint — while other hosts still suppress.
-    led.write("2901", "auto_fp", "user option-C: dpkg noise, keep secrets host",
+    _committed(led, "2901", "auto_fp", "user option-C: dpkg noise, keep secrets host",
               source="human", fingerprint=fingerprint_from_verdict(
                   {"rule_id": "2901", "groups": ["dpkg", "syslog"], "level": 3,
                    "category": "security", "description": "New dpkg (Debian Package) requested to install."}))
@@ -176,7 +195,7 @@ def main() -> int:
     net_fp = {"rule_id": "87101", "groups": ["suricata"], "level": 3,
               "category": "threat", "description": "ET SCAN check.",
               "entity_scope": "pair:10.0.0.9>192.168.250.100"}
-    led.write("87101", "auto_fp", "deny: noisy scanner tuple", source="human",
+    _committed(led, "87101", "auto_fp", "deny: noisy scanner tuple", source="human",
               fingerprint=net_fp)
     t87101 = led.lookup("87101")
     assert t87101 is not None
@@ -201,7 +220,7 @@ def main() -> int:
     host_fp = {"rule_id": "991053", "groups": ["drill"], "level": 7,
                "category": "operational", "description": "Drill beacon.",
                "entity_scope": "host:we8105desk"}
-    led.write("991053", "auto_fp", "deny: drill host", source="human",
+    _committed(led, "991053", "auto_fp", "deny: drill host", source="human",
               fingerprint=host_fp)
     t991053 = led.lookup("991053")
     assert t991053 is not None
@@ -230,7 +249,7 @@ def main() -> int:
     prof_fp = {"rule_id": "52002", "groups": ["apparmor", "ossec"], "level": 5,
                "category": "operational",
                "profiles": ["snap-confine", "fusermount3", "unprivileged_userns"]}
-    led.write("52002", "auto_fp", "snapd stock noise (profiles adjudicated)",
+    _committed(led, "52002", "auto_fp", "snapd stock noise (profiles adjudicated)",
               source="human", tuned_by="rdrolfe", fingerprint=prof_fp)
     t52002 = led.lookup("52002")
     assert t52002 is not None
@@ -302,7 +321,7 @@ def main() -> int:
         fails += 1
 
     # An entry with NO allowlist keeps the old behaviour (a plain rule tuning):
-    led.write("52999", "auto_fp", "untuned profiles — rule-wide on purpose",
+    _committed(led, "52999", "auto_fp", "untuned profiles — rule-wide on purpose",
               source="human", tuned_by="rdrolfe",
               fingerprint={"rule_id": "52999", "groups": ["apparmor", "ossec"],
                            "level": 5, "category": "operational"})
@@ -323,6 +342,57 @@ def main() -> int:
     if entity_scope_from_alert(same_host) != "host:we8105desk":
         fails += 1
     if entity_scope_from_alert({}) != "":
+        fails += 1
+
+    # --- ADR-008 AUTHORITY GATE -------------------------------------------
+    # A proposal is INERT: visible, attributable, and it does not suppress —
+    # whatever its fingerprint says. This is the boundary, so it gets the
+    # sharpest assertions in the file.
+    _alert_61001 = {"rule": {"id": "61001", "level": 5, "groups": ["apparmor", "ossec"],
+                             "description": "Apparmor DENIED"},
+                    "agent": {"name": "infra-ops"}}
+    led.propose("61001", "auto_fp", "unattended: recurring desktop noise",
+                proposed_by="ssop-supervisory",
+                fingerprint={"rule_id": "61001", "groups": ["apparmor", "ossec"],
+                             "level": 5, "category": "operational"})
+    prop = led.lookup("61001")
+    assert prop is not None, "propose() did not land in the ledger"
+    s, reason = tuned_rule_suppresses(prop, _alert_61001, category="operational")
+    print(f"PROPOSED entry suppresses? {s} (want False) — {reason[:58]}")
+    if s or str(prop.get("state")) != "proposed":
+        fails += 1
+
+    # ...and the SAME payload once a human commits it DOES suppress, proving the
+    # gate is the state and not some incidental field.
+    led.commit("61001", "auto_fp", "operator confirmed on review",
+               committed_by="rdrolfe", fingerprint=prop.get("fingerprint"))
+    s, _ = tuned_rule_suppresses(led.lookup("61001"), _alert_61001,
+                                 category="operational")
+    print(f"same entry after COMMIT suppresses? {s} (want True)")
+    if not s:
+        fails += 1
+
+    # Missing/unrecognized state fails CLOSED.
+    if (tuning_state({}) != "proposed" or tuning_state({"state": "banana"}) != "proposed"
+            or tuning_state({"state": "COMMITTED"}) != "committed"):
+        print("state coercion wrong (missing/unknown must read proposed)")
+        fails += 1
+
+    # An unattributed commit is refused: a commit with no actor is a proposal
+    # wearing a different name.
+    try:
+        led.commit("61002", "auto_fp", "no actor named", committed_by="")
+        print("commit() with no actor was ALLOWED (want TuningError)")
+        fails += 1
+    except TuningError:
+        print("commit() with no actor refused")
+
+    # `escalate` is a suppressing decision on BOTH paths — the router accepted it
+    # while the analyst did not, so the same entry meant two things.
+    led.commit("61003", "escalate", "durable approve precedent", committed_by="rdrolfe")
+    ok_e, why_e = suppression_allowed(led.lookup("61003"))
+    print(f"committed escalate suppresses? {ok_e} (want True) — {why_e}")
+    if not ok_e:
         fails += 1
 
     print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")

@@ -141,10 +141,11 @@ def main() -> int:
     # luck, not a control. This line is the control: a suppression now has to
     # appear on a surface a human reads, with its source and actor.
     try:
-        from tools.tuning_tools import TuningLedger
+        from tools.tuning_tools import PROPOSED, TuningLedger, tuning_state
+        entries = TuningLedger().list_all(limit=500)
         _cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
         recent: list[dict] = []
-        for e in TuningLedger().list_all(limit=500):
+        for e in entries:
             try:
                 ts = datetime.datetime.fromisoformat(
                     str(e.get("ts", "")).replace("Z", "+00:00"))
@@ -160,6 +161,29 @@ def main() -> int:
             lines.append(f"**Tuning (24h):** {len(recent)} change(s) — {detail}")
         else:
             lines.append("**Tuning (24h):** none")
+
+        # ADR-008: a PROPOSAL is inert — it does not suppress. A propose-only
+        # boundary with no queue surface is just a silent suppression wearing a
+        # different name, so the queue is reported here with its oldest age.
+        # A proposal nobody looks at is the failure this line exists to prevent.
+        pend = [e for e in entries if tuning_state(e) == PROPOSED]
+        if pend:
+            ages = []
+            for e in pend:
+                try:
+                    ts = datetime.datetime.fromisoformat(
+                        str(e.get("ts", "")).replace("Z", "+00:00"))
+                    ages.append((datetime.datetime.now(datetime.timezone.utc)
+                                 - ts).days)
+                except (ValueError, TypeError):
+                    continue
+            who = ", ".join(sorted({str(e.get("tuned_by") or "unattributed")
+                                    for e in pend}))
+            lines.append(f"**Tuning proposals:** {len(pend)} PENDING (inert, not "
+                         f"suppressing), oldest {max(ages) if ages else 0}d — "
+                         f"proposed by {who} — commit in the console")
+        else:
+            lines.append("**Tuning proposals:** none pending")
     except Exception as e:  # noqa: BLE001 — a tuning read must not kill the digest
         lines.append(f"**Tuning (24h):** ERR {e}")
 

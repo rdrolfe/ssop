@@ -155,7 +155,8 @@ def main() -> int:
             led.write(rule_id, after.get("decision", "auto_fp"),
                       after["rationale"], source="human", ts=before.get("ts"),
                       tuned_by=after["tuned_by"], fingerprint=fp,
-                      exclude_hosts=before.get("exclude_hosts"))
+                      exclude_hosts=before.get("exclude_hosts"),
+                      state="committed")  # a rescope of a reviewed entry: committed
             print(f"  wrote {rule_id}")
 
     # --- attribution pass -------------------------------------------------
@@ -177,7 +178,8 @@ def main() -> int:
                       source=cur.get("source", "human"), ts=cur.get("ts"),
                       tuned_by=cur.get("tuned_by", ""),
                       fingerprint=cur.get("fingerprint"),
-                      exclude_hosts=cur.get("exclude_hosts"))
+                      exclude_hosts=cur.get("exclude_hosts"),
+                      state=cur.get("state", "committed"))
             print(f"{rule_id}: attribution written")
 
     if args.apply:

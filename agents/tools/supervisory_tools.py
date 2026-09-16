@@ -75,12 +75,21 @@ class SupervisoryClient:
 
     # --- adjudication ---
 
-    def adjudicate(self, ticket: dict[str, Any], decision: str, rationale: str) -> dict[str, Any]:
+    def adjudicate(self, ticket: dict[str, Any], decision: str, rationale: str,
+                   authority: str = "automation", actor: str = "") -> dict[str, Any]:
         """Record a supervisory verdict on a ticket.
 
         When the decision is a durable policy (auto_fp / operational / escalate
         on a specific rule), ALSO write the tuning ledger so the analyst
         respects it going forward — human adjudication is the source of truth.
+
+        `authority` (ADR-008) is the propose/commit seam, and it defaults to
+        "automation" ON PURPOSE: the unattended adjudicator
+        (`ssop-supervisory.service`, hourly) and a human console click run
+        through this same function, so the caller must say which it is. Any
+        caller that has not been updated PROPOSES — a tuning it writes is
+        visible and inert until a human commits it. `interactive` commits, and
+        `actor` names the human whose click it was.
         """
         ticket["status"] = "adjudicated"
         ticket["decision"] = decision
@@ -174,13 +183,26 @@ class SupervisoryClient:
                             "approve is not a tuning decision", rule_id,
                             prior.get("decision"))
                     else:
-                        TuningLedger().write(
-                            rule_id=rule_id, decision=tuning_decision,
-                            rationale=f"supervisory {decision}: {rationale}", source="human",
-                            fingerprint=fingerprint,
-                            exclude_hosts=prior_exclude,
-                            tuned_by=(prior_tuned_by if prior_exclude else ""),
-                        )
+                        _led = TuningLedger()
+                        _rationale = f"supervisory {decision}: {rationale}"
+                        if authority == "interactive":
+                            # A human clicked. Commit, and name them. The prior
+                            # actor survives so a scoped Option-C entry keeps
+                            # saying who scoped it.
+                            _led.commit(
+                                rule_id=rule_id, decision=tuning_decision,
+                                rationale=_rationale,
+                                committed_by=(prior_tuned_by or actor or "console"),
+                                fingerprint=fingerprint,
+                                exclude_hosts=prior_exclude)
+                        else:
+                            # Unattended: PROPOSE. Visible, attributable, inert.
+                            _led.propose(
+                                rule_id=rule_id, decision=tuning_decision,
+                                rationale=_rationale,
+                                proposed_by=(actor or "ssop-supervisory"),
+                                fingerprint=fingerprint,
+                                exclude_hosts=prior_exclude)
                 except Exception:  # noqa: BLE001 — tuning write must not break adjudication
                     logger.warning("tuning write skipped during adjudication of %s", ticket["ticket_id"])
         # Re-ship the adjudicated ticket to the indexer so the console

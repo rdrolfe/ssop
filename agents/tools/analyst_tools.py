@@ -134,18 +134,23 @@ class AnalystClient:
         # STATEFUL STEP — consult the tuning ledger: has this rule_id been
         # adjudicated? If yes, the prior decision is policy (idempotent; we
         # never re-decide a tuned class). Human-written entries are final.
+        from tools.tuning_tools import TuningLedger, suppression_allowed
         try:
-            from tools.tuning_tools import TuningLedger
             tuning = TuningLedger().lookup(rule_id)
         except Exception:  # noqa: BLE001 — ledger failure must never break triage
             tuning = None
-        if tuning and tuning.get("decision") in ("auto_fp", "operational"):
+        if tuning and suppression_allowed(tuning)[0]:
             # Fingerprint-aware suppression (thread #2): the ledger records
             # the decision-relevant signature of the alert that was tuned —
             # identical alerts suppress, only a MATERIAL delta (new attack
             # groups / category became attack / threat token / level rose)
             # lifts the tuning so the human re-adjudicates. Legacy entries
             # without a fingerprint fall back to the strong-TP heuristic.
+            #
+            # AUTHORITY (ADR-008): the pre-check is the SHARED one, not a local
+            # tuple. This path used to accept ("auto_fp", "operational") while
+            # the router accepted ("auto_fp", "operational", "escalate"), so a
+            # durable `escalate` entry meant different things on the two paths.
             from tools.tuning_tools import tuned_rule_suppresses
             suppress, reason = tuned_rule_suppresses(tuning, alert, category=c["category"])
             if not suppress:

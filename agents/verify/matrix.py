@@ -178,8 +178,9 @@ def main() -> int:
         # ledger (human adjudication) — encode it so the fixture is
         # deterministic in a clean environment too (data wins, 5715 precedent).
         if not ledger.lookup("86610"):
-            ledger.write("86610", "auto_fp",
-                         "verify seed: fixture high-severity-suricata-c2 (human adjudicated)", source="human")
+            ledger.commit("86610", "auto_fp",
+                          "verify seed: fixture high-severity-suricata-c2 (human adjudicated)",
+                          committed_by="verify-seed")
         # tuned-apparmor-no-dispatch / apparmor-burst-repeat: rule 52002 was
         # tuned auto_fp on 2026-09-14 (hermes-triage, ticket 7ab216f9) — a live
         # DECISION the fixtures now distinguish: 52002 must not dispatch, 52001
@@ -196,17 +197,21 @@ def main() -> int:
                      "snap-update-ns.firmware-updater",
                      "snap.firmware-updater.firmware-notifier"]
         if not ledger.lookup("52002"):
-            ledger.write("52002", "auto_fp",
-                         "verify seed: fixture tuned-apparmor-no-dispatch "
-                         "(triage adjudication 2026-09-14, rescoped 2026-09-15)",
-                         source="human", fingerprint={
-                             "rule_id": "52002", "groups": ["apparmor", "ossec"],
-                             "level": 5, "category": "operational",
-                             "threat_desc": False, "profiles": _aa_allow})
+            ledger.commit("52002", "auto_fp",
+                          "verify seed: fixture tuned-apparmor-no-dispatch "
+                          "(triage adjudication 2026-09-14, rescoped 2026-09-15)",
+                          committed_by="verify-seed", fingerprint={
+                              "rule_id": "52002", "groups": ["apparmor", "ossec"],
+                              "level": 5, "category": "operational",
+                              "threat_desc": False, "profiles": _aa_allow})
         if not ledger.lookup("hunt:apparmor-denials"):
-            ledger.write("hunt:apparmor-denials", "auto_fp",
-                         "verify seed: apparmor denial hunt tuned off (triage 2026-09-14)",
-                         source="human", fingerprint={"profiles": _aa_allow})
+            # COMMITTED on purpose: a proposal is inert by construction (ADR-008),
+            # so a seeded fixture asserting "tuned hunts do not dispatch" must
+            # seed the committed state or the fixture would test the opposite.
+            ledger.commit("hunt:apparmor-denials", "auto_fp",
+                          "verify seed: apparmor denial hunt tuned off (triage 2026-09-14)",
+                          committed_by="verify-seed",
+                          fingerprint={"profiles": _aa_allow})
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("tuning seed skipped — tuned fixtures may fail as BLOCKED")
 

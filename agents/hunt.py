@@ -159,9 +159,13 @@ def node_run_sweep(state: HuntState) -> HuntState:
             # synthetic "hunt:<id>" ledger key) suppresses it going forward.
             tuned = False
             try:
-                from tools.tuning_tools import TuningLedger
+                from tools.tuning_tools import TuningLedger, suppression_allowed
                 t = TuningLedger().lookup(f"hunt:{hid}")
-                tuned = bool(t and t.get("decision") in ("auto_fp", "operational"))
+                # SHARED authority gate (ADR-008): this path used to run its own
+                # existence check off a local decision tuple, so a `state` gate
+                # added to tuned_rule_suppresses would NOT have covered hunts —
+                # an uncommitted proposal could silence every hunt, forever.
+                tuned = suppression_allowed(t)[0]
                 # ANALYSIS-AWARE suppression (ADR-008 narrowing, 2026-09-15):
                 # when the entry names the profiles its adjudication covered,
                 # the tuning only holds while the hunt's OWN analysis agrees

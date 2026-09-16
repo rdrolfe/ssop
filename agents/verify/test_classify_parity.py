@@ -29,10 +29,21 @@ from tools.ontology import categorize_alert  # noqa: E402
 import tools.tuning_tools as tt  # noqa: E402
 
 # Tuned-FP rules: 2902 (dpkg), 550 (integrity checksum), 86601 (generic suricata)
+# Every entry carries `state: committed` (ADR-008): suppression requires a
+# COMMITTED entry, so a fixture that models "a human tuned this" must say so or
+# it silently becomes a fixture for the opposite property.
 _TUNED: dict[str, dict] = {
-    "2902": {"decision": "auto_fp", "rationale": "human: routine package mgmt", "source": "human"},
-    "550": {"decision": "auto_fp", "rationale": "human: integrity drift, host clean", "source": "human"},
-    "86601": {"decision": "auto_fp", "rationale": "human: generic suricata noise", "source": "human"},
+    "2902": {"decision": "auto_fp", "rationale": "human: routine package mgmt", "source": "human",
+             "state": "committed"},
+    "550": {"decision": "auto_fp", "rationale": "human: integrity drift, host clean", "source": "human",
+            "state": "committed"},
+    "86601": {"decision": "auto_fp", "rationale": "human: generic suricata noise", "source": "human",
+              "state": "committed"},
+    # An UNATTENDED proposal (what the hourly adjudicator writes). It must not
+    # suppress on EITHER path — the router and the analyst used to consult
+    # different decision tuples, so a gate could apply on one and not the other.
+    "61004": {"decision": "auto_fp", "rationale": "unattended: desktop noise",
+              "source": "automation", "state": "proposed", "tuned_by": "ssop-supervisory"},
 }
 
 
@@ -109,7 +120,25 @@ def main() -> int:
         else:
             print(f"[{name}] no expectation set")
 
-    print("NON-VACUOUS" if fails == 0 else f"{fails} PARITY FAILURES")
+    # --- ADR-008: an UNCOMMITTED proposal must not suppress on EITHER path ----
+    # Both paths now read ONE authority gate, so this asserts the property the
+    # boundary depends on: a proposal the router routes must not be silently
+    # noted by the analyst (or vice versa).
+    from tools.tuning_tools import suppression_allowed  # noqa: E402
+    from router import classify as _classify  # noqa: E402
+
+    pr = _fake_lookup("61004")
+    cat_p, role_p = _classify(_mk("61004", 7, "New dpkg (Debian Package) installed.",
+                                  ["syscheck"]))
+    routed_p = not (cat_p == "operational" and role_p is None)
+    allowed_p = suppression_allowed(pr)[0]
+    ok_p = (not allowed_p) and routed_p
+    print(f"[proposal on 61004] suppression_allowed={allowed_p} routed={routed_p} "
+          f"(want False+True) -> {'OK' if ok_p else 'FAIL'}")
+    if not ok_p:
+        fails += 1
+
+    print("NON-VACUOUS" if fails == 0 else f"{fails} NON-VACUITY FAILURES")
     return 0 if fails == 0 else 1
 
 
