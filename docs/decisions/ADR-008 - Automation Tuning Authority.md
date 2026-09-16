@@ -19,6 +19,8 @@ A tuning entry is not a note. It changes live detection: `router.classify` consu
 3. **Every tuning entry carries its provenance and its state.** `auto_fp` written by a process with no human in the loop is a different object from `auto_fp` a human signed off, even though both currently look identical in the ledger.
 4. **A tuning change must be VISIBLE where a human already looks.** The daily digest reports tuning entries written in the last 24h with their source and actor. A suppression that changes detection behaviour without appearing on any human surface is the failure this ADR exists to prevent.
 5. **Applies to hunts as well as rules** (`hunt:apparmor-denials` was tuned the same way).
+6. **The committing actor is "an interactive, user-directed session" — not "a human".** Measurement changed this rule: the ledger's `source` field is a **constant** (32/32 entries read `source: human`), including the two a scheduled process wrote unattended, so it discriminates nothing. The real signal is `tuned_by`, and the writers in use are: blank (genuine console writes), `hermes-supervisory-<date>` (an agent working in a session a human directed), `hermes-triage` (unattended, scheduled), `analyst-tier2-case-<id>` (a role agent, case-attributed). So: an agent writing under human direction may commit; an unattended scheduled process may not. **Blank attribution fails CLOSED to proposed** — the hunt entry was written unattended with an empty `tuned_by` and was otherwise indistinguishable from a hand-written console entry, so treating blank as human would launder it.
+7. **Scope must equal evidence.** A tuning may suppress only the class its adjudication actually examined. Measured counter-example: the triage entry for rule 52002 recorded five stock snap profiles as its evidence but was stored rule-wide, and `tuned_rule_suppresses` only takes its override-capable fingerprint path when the stored fingerprint carries `rule_id` — which that one did not. Result: a level-12 AppArmor denial on a profile nobody had seen suppressed silently, and AppArmor denials are how a container escape surfaces. A tuning whose blast radius exceeds its evidence is a suppression waiting to be wrong.
 
 **Alternatives Considered**
 
@@ -37,9 +39,23 @@ What becomes harder: unattended triage produces proposals that need a human clic
 
 **Declared vs enforced — stated plainly, because a boundary that exists only in prose stops anyone from checking:**
 
-- **ENFORCED (2026-09-15):** the daily digest reports tuning entries from the last 24h with source + actor. A suppression now has to appear on a human surface.
-- **DECLARED, NOT YET ENFORCED:** the propose/commit state machine. Today `hermes-triage` still writes entries that `router.classify` and `analyst.verdict` honour immediately. Enforcement lands in three places, and it must be all three or it is decorative: (1) `TuningLedger.write` gains a `state` (`proposed` | `committed`) derived from whether a human actor is present; (2) `tuned_rule_suppresses` — the shared decision helper both the router and the analyst call — considers only `committed` entries, so a proposal is inert by construction; (3) the console/API gains the confirm action that flips state and stamps the human actor.
-- **Until (1)–(3) land, an automated tuning entry still suppresses. Do not describe this boundary as active.**
+- **ENFORCED (2026-09-15):**
+  1. The daily digest reports tuning entries from the last 24h with source + actor. A suppression now has to appear on a human surface.
+  2. *Profile-scoped suppression*: when an entry's fingerprint names the profiles its adjudication covered, a denial on any other profile dispatches (`tuned_rule_suppresses`, applied before the fingerprint path; basename-normalised, because real profiles arrive as full paths). An alert whose profile cannot be read is NOT treated as out-of-scope — a documented limitation, asserted in `test_fingerprint_tuning.py` so it cannot drift silently.
+  3. *Analysis-aware hunt suppression*: when a hunt's entry carries a profiles allowlist, the tuning holds only while the hunt's own analysis agrees nothing is actionable; `finding == "suspicious"` (exec-class denials, unknown profiles/comms, load/unload/change_profile) surfaces instead of being silenced. Entries with no allowlist keep the previous blunt behaviour.
+- **DECLARED, NOT YET ENFORCED:** the propose/commit state machine. Today `hermes-triage` still writes entries that `router.classify` and `analyst.verdict` honour immediately. Enforcement lands in three places, and it must be all three or it is decorative: (1) `TuningLedger.write` gains a `state` (`proposed` | `committed`) derived from the rule in Decision §6 — with blank attribution failing closed; (2) `tuned_rule_suppresses` — the shared helper both the router and the analyst call — considers only `committed` entries, so a proposal is inert by construction; (3) the console/API gains the confirm action that flips state and stamps the human actor.
+- **Until (1)–(3) land, an unattended entry still takes effect the moment it is written.** Do not describe the propose/commit boundary as active.
+
+**Migration applied (2026-09-15), and it is the worked example of every rule above**
+
+`deploy/lab/narrow_apparmor_tuning.py` rescoped both unattended entries so scope equals evidence — dry run first, predicting the effect with the live comparator before writing:
+
+| entry | was | now |
+|---|---|---|
+| `52002` | rule-wide; fingerprint `{"scope": "rule", "profiles": [...]}`, no `rule_id` → override machinery never engaged | standard fingerprint (`rule_id`/`groups`/`level`/`category`) **plus** the five adjudicated profiles; any other profile dispatches |
+| `hunt:apparmor-denials` | no fingerprint; suppressed via a bare existence check, so exec-class denials were silenced too | the same allowlist, so the hunt's analysis-aware suppression engages |
+
+Attribution was preserved deliberately: `tuned_by` records the human commit, and the unattended proposer is recorded in the rationale (`proposed_by=hermes-triage ...`). That last detail is a lesson, not a formality — `TuningLedger.write()` persists a **fixed** field set and silently drops unknown keys, so the first version of the migration lost the proposer entirely. When recording provenance, verify it persisted by reading the entry back; a write that returns success is not a field that exists.
 
 **Related**
 

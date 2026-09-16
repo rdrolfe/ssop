@@ -222,6 +222,101 @@ def main() -> int:
     if s:
         fails += 1
 
+    # PROFILE SCOPING (ADR-008 narrowing, 2026-09-15). A tuning whose evidence
+    # was a set of stock AppArmor profiles must not silence a denial on ANOTHER
+    # profile. Measured before this existed: a level-12 deny on a profile the
+    # adjudication never saw suppressed silently — the whole apparmor channel
+    # was off, and denials are how a container escape surfaces.
+    prof_fp = {"rule_id": "52002", "groups": ["apparmor", "ossec"], "level": 5,
+               "category": "operational",
+               "profiles": ["snap-confine", "fusermount3", "unprivileged_userns"]}
+    led.write("52002", "auto_fp", "snapd stock noise (profiles adjudicated)",
+              source="human", tuned_by="rdrolfe", fingerprint=prof_fp)
+    t52002 = led.lookup("52002")
+    assert t52002 is not None
+
+    def _aa(profile=None, level=5, via_data=False):
+        a = {"rule": {"id": "52002", "level": level, "groups": ["apparmor", "ossec"],
+                      "description": "Apparmor DENIED"},
+             "agent": {"name": "infra-ops"}}
+        if profile and via_data:
+            a["data"] = {"apparmor": {"profile": profile}}
+        elif profile:
+            a["full_log"] = ('type=AVC msg=audit(1.2:3): apparmor="DENIED" '
+                             f'operation="open" profile="{profile}" name="/run/gdm3" '
+                             'comm="snapd"')
+        return a
+
+    s, _ = tuned_rule_suppresses(t52002, _aa("snap-confine"), category="operational")
+    print(f"adjudicated profile: suppress={s} (want True)")
+    if not s:
+        fails += 1
+
+    s, reason = tuned_rule_suppresses(t52002, _aa("nginx-worker"), category="operational")
+    print(f"UNSTUDIED profile: suppress={s} (want False) — {reason[:52]}")
+    if s:
+        fails += 1
+
+    s, reason = tuned_rule_suppresses(t52002, _aa("docker-default", level=12),
+                                      category="operational")
+    print(f"UNSTUDIED profile, level 12: suppress={s} (want False) — {reason[:52]}")
+    if s:
+        fails += 1
+
+    # Full-path profile form: this is what REAL alerts carry. Basename
+    # normalisation is what keeps the allowlist from overriding everything.
+    aa_path = {"rule": {"id": "52002", "level": 5, "groups": ["apparmor", "ossec"],
+                        "description": "Apparmor DENIED"},
+               "agent": {"name": "infra-ops"},
+               "full_log": ('apparmor="DENIED" operation="capable" '
+                            'profile="/snap/snapd/27710/usr/lib/snapd/snap-confine" '
+                            'name="capable" comm="snap-confine"')}
+    s, _ = tuned_rule_suppresses(t52002, aa_path, category="operational")
+    print(f"full-path stock profile: suppress={s} (want True — basename matched)")
+    if not s:
+        fails += 1
+
+    aa_path_other = {"rule": {"id": "52002", "level": 5, "groups": ["apparmor", "ossec"],
+                              "description": "Apparmor DENIED"},
+                     "agent": {"name": "infra-ops"},
+                     "full_log": ('apparmor="DENIED" profile="/usr/sbin/nginx-worker" '
+                                  'comm="nginx"')}
+    s, _ = tuned_rule_suppresses(t52002, aa_path_other, category="operational")
+    print(f"full-path unknown profile: suppress={s} (want False)")
+    if s:
+        fails += 1
+
+    s, _ = tuned_rule_suppresses(t52002, _aa("docker-default", via_data=True),
+                                 category="operational")
+    print(f"data.apparmor.profile honoured: suppress={s} (want False)")
+    if s:
+        fails += 1
+
+    # Documented limitation, asserted so it cannot drift silently: an alert
+    # whose profile is NOT readable is not treated as out-of-scope. Same
+    # decoder withholds full_log on some variants; overriding there would flood
+    # the analyst with the noise class the human already adjudicated.
+    s, _ = tuned_rule_suppresses(t52002, _aa(), category="operational")
+    print(f"profile unreadable: suppress={s} (want True — falls through, not out-of-scope)")
+    if not s:
+        fails += 1
+
+    # An entry with NO allowlist keeps the old behaviour (a plain rule tuning):
+    led.write("52999", "auto_fp", "untuned profiles — rule-wide on purpose",
+              source="human", tuned_by="rdrolfe",
+              fingerprint={"rule_id": "52999", "groups": ["apparmor", "ossec"],
+                           "level": 5, "category": "operational"})
+    t_rw = led.lookup("52999")
+    assert t_rw is not None
+    wide = {"rule": {"id": "52999", "level": 5, "groups": ["apparmor", "ossec"],
+                     "description": "Apparmor DENIED"},
+            "agent": {"name": "infra-ops"},
+            "full_log": 'apparmor="DENIED" profile="whatever-else" comm="x"'}
+    s, _ = tuned_rule_suppresses(t_rw, wide, category="operational")
+    print(f"no allowlist (rule-wide entry): suppress={s} (want True — unchanged)")
+    if not s:
+        fails += 1
+
     # scope helpers behave
     if entity_scope_from_alert(same_tuple) != "pair:10.0.0.9>192.168.250.100":
         fails += 1

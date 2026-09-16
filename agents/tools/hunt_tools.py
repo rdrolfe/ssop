@@ -220,7 +220,14 @@ class HuntClient:
         import posixpath as _pp
         benign_basenames = {"fusermount3", "unprivileged_userns",
                             "snap-update-ns.firmware-updater", "snap-confine",
-                            "cupsd", "firmware-notifier", "unpr"}
+                            "cupsd", "firmware-notifier", "unpr",
+                            # Adjudicated 2026-09-14 (ticket 7ab216f9, narrowed
+                            # 2026-09-15 ADR-008): part of the stock-snap noise
+                            # class on rule 52002. Kept here so the analysis and
+                            # the tuning allowlist speak the SAME vocabulary —
+                            # otherwise the hunt reports its own adjudicated
+                            # noise as `suspicious` and now boots it up.
+                            "snap.firmware-updater.firmware-notifier"}
         def _benign(prof: str) -> bool:
             base = _pp.basename(prof.rstrip("/"))
             return base in benign_basenames

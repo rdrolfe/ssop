@@ -184,14 +184,29 @@ def main() -> int:
         # tuned auto_fp on 2026-09-14 (hermes-triage, ticket 7ab216f9) — a live
         # DECISION the fixtures now distinguish: 52002 must not dispatch, 52001
         # (untuned) must. Seeded so both hold in a clean environment.
+        #
+        # Seeded in the NARROWED shape (ADR-008, 2026-09-15): rule-wide, this
+        # entry silenced every AppArmor denial on the rule. The live entry now
+        # carries the five stock profiles its adjudication verified, and the
+        # seed mirrors that so a clean env behaves like production. NOTE the
+        # fixture alert carries no `full_log`, so no profile is readable and it
+        # falls through to the ordinary path — which is why it still asserts
+        # `no_dispatch` (see the documented limitation in tuning_tools).
+        _aa_allow = ["snap-confine", "fusermount3", "unprivileged_userns",
+                     "snap-update-ns.firmware-updater",
+                     "snap.firmware-updater.firmware-notifier"]
         if not ledger.lookup("52002"):
             ledger.write("52002", "auto_fp",
                          "verify seed: fixture tuned-apparmor-no-dispatch "
-                         "(triage adjudication 2026-09-14)", source="human")
+                         "(triage adjudication 2026-09-14, rescoped 2026-09-15)",
+                         source="human", fingerprint={
+                             "rule_id": "52002", "groups": ["apparmor", "ossec"],
+                             "level": 5, "category": "operational",
+                             "threat_desc": False, "profiles": _aa_allow})
         if not ledger.lookup("hunt:apparmor-denials"):
             ledger.write("hunt:apparmor-denials", "auto_fp",
                          "verify seed: apparmor denial hunt tuned off (triage 2026-09-14)",
-                         source="human")
+                         source="human", fingerprint={"profiles": _aa_allow})
     except Exception:  # noqa: BLE001 — seed failure must not abort the matrix
         logger.warning("tuning seed skipped — tuned fixtures may fail as BLOCKED")
 

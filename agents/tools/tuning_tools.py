@@ -11,6 +11,7 @@ Hygiene: config-driven, imports at top, logging, structured errors.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -78,6 +79,49 @@ def _alert_host(alert: dict) -> str:
     return str(agent or "")
 
 
+_PROFILE_RE = re.compile(r'profile="([^"]+)"')
+
+
+def _profile_key(profile: str) -> str:
+    """Normalise an AppArmor profile for comparison.
+
+    Real profiles arrive as FULL PATHS (`/snap/snapd/27710/usr/lib/snapd/
+    snap-confine`), while an adjudication records the plain name. Comparing the
+    raw strings would make every real alert look out-of-scope and override the
+    tuning — a flood, not a fix. `hunt_tools._analyze_apparmor` matches on
+    basename for exactly this reason; do the same on BOTH sides so an allowlist
+    entry may be written either way.
+    """
+    import posixpath
+    text = str(profile or "").strip()
+    if not text:
+        return ""
+    return posixpath.basename(text.rstrip("/")) or text
+
+
+def _alert_apparmor_profile(alert: dict) -> str:
+    """The AppArmor profile an alert fired on, best-effort ("" if unreadable).
+
+    The profile is NOT a structured field in this pipeline: the Wazuh apparmor
+    decoder leaves it inside `full_log` as `profile="..."`, which is exactly how
+    `hunt_tools._analyze_apparmor` reads it. Reuse that convention rather than
+    inventing a field path that never appears in real alerts. `data.apparmor`
+    is also checked, so an upstream that DOES populate it still works.
+    """
+    log = str(alert.get("full_log") or "")
+    if log:
+        m = _PROFILE_RE.search(log)
+        if m:
+            return m.group(1)
+    data = alert.get("data")
+    ap = data.get("apparmor") if isinstance(data, dict) else None
+    if isinstance(ap, dict):
+        return str(ap.get("profile") or "")
+    if isinstance(ap, str):
+        return ap
+    return ""
+
+
 def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
     """Decide whether a tuned rule should suppress THIS alert (verdict note /
     no dispatch), or lift the tuning (override -> re-adjudication).
@@ -111,6 +155,30 @@ def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None
             f"({tuning.get('source')}) BUT host {host} is excluded from the "
             f"tuning (exclude_hosts) — dispatching for review")
     stored_fp = tuning.get("fingerprint") if isinstance(tuning, dict) else None
+    # PROFILE-SCOPED tuning (ADR-008 narrowing, 2026-09-15): when the entry's
+    # fingerprint names the AppArmor PROFILES the adjudication actually covered,
+    # a denial on a DIFFERENT profile is outside the adjudicated scope and must
+    # dispatch. This exists because a rule-wide auto_fp on an apparmor rule
+    # silences the whole channel — measured: a level-12 denial on a profile the
+    # human never saw suppressed silently, and AppArmor denials are how a
+    # container escape or privilege escalation surfaces.
+    #
+    # An alert whose profile cannot be read is NOT treated as out-of-scope: the
+    # same decoder withholds full_log on some variants, and overriding there
+    # would flood the analyst with the very noise class the human adjudicated.
+    # Such an alert falls through to the ordinary machinery (fingerprint delta /
+    # strong-TP gate), which is the pre-existing behaviour.
+    allowed = stored_fp.get("profiles") if isinstance(stored_fp, dict) else None
+    if allowed:
+        profile = _alert_apparmor_profile(alert)
+        allowed_keys = {_profile_key(p) for p in allowed}
+        if profile and _profile_key(profile) not in allowed_keys:
+            return False, (
+                f"rule {tuning.get('rule_id')} tuned {tuning.get('decision')} "
+                f"({tuning.get('source')}) for profiles "
+                f"[{', '.join(sorted(str(p) for p in allowed))}] BUT this alert "
+                f"fired on profile '{profile}' — outside the adjudicated scope, "
+                f"dispatching for review")
     if isinstance(stored_fp, dict) and stored_fp.get("rule_id"):
         # Fingerprint-aware path.
         from tools.ontology import fingerprint_from_alert, fingerprint_materially_differs

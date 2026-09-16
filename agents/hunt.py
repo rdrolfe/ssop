@@ -162,6 +162,24 @@ def node_run_sweep(state: HuntState) -> HuntState:
                 from tools.tuning_tools import TuningLedger
                 t = TuningLedger().lookup(f"hunt:{hid}")
                 tuned = bool(t and t.get("decision") in ("auto_fp", "operational"))
+                # ANALYSIS-AWARE suppression (ADR-008 narrowing, 2026-09-15):
+                # when the entry names the profiles its adjudication covered,
+                # the tuning only holds while the hunt's OWN analysis agrees
+                # there is nothing actionable. `finding == "suspicious"` is the
+                # analyzer's verdict that it saw exec-class denials, unknown
+                # profiles/comms, or load/unload/change_profile — the evasion
+                # signal the apparmor hunt exists to catch. Suppressing THAT on
+                # the strength of a tuning whose evidence was chronic stock
+                # denials is the tuning outliving its evidence. Entries with no
+                # allowlist keep the blunt behaviour (a plain human "hunt off").
+                _fp = t.get("fingerprint") if isinstance(t, dict) else None
+                if tuned and isinstance(_fp, dict) and _fp.get("profiles") \
+                        and result.get("finding") == "suspicious":
+                    tuned = False
+                    logger.info(
+                        "hunt %s: tuned, but the analysis found suspicious "
+                        "signals (%s) — tuning does not cover this result, "
+                        "surfacing it", hid, result.get("summary", ""))
             except Exception:  # noqa: BLE001 — tuning lookup must never break the sweep
                 tuned = False
             if finding == "clean":
