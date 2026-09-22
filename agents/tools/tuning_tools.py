@@ -600,6 +600,12 @@ class TuningLedger:
                         "proposed_by": prev.get("tuned_by", ""),
                         "ts": prev.get("ts", ""),
                     }
+                    # Keep the scope it argued for: for rule 52002 the narrower
+                    # fingerprint (host:vault-secrets, level 3) was the stated
+                    # reason a refusal would have lost information -- dropping
+                    # it here would lose exactly that.
+                    if prev.get("fingerprint"):
+                        _sup["fingerprint"] = prev["fingerprint"]
                 if _sup:
                     payload[SUPERSEDED_PROPOSAL] = _sup
             self._memory.client.upsert(
