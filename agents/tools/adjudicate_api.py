@@ -291,9 +291,21 @@ class AdjudicateHandler(BaseHTTPRequestHandler):
                 # ledger with attribution, so the human sees WHAT is tuned,
                 # WHO decided, and WHY — the human-managed view of our Qdrant
                 # ledger that was previously invisible.
-                from tools.tuning_tools import TuningLedger
+                # ADR-008 stage 3: the ledger now holds TWO kinds of claim and
+                # this surface must not blur them. Each entry carries the gate's
+                # OWN verdict, so the console can distinguish a decision that is
+                # in force from a proposal that is inert — before this they
+                # rendered identically and "committed" had to be taken on faith.
+                # Proposals are returned pre-derived in both shapes.
+                from tools.tuning_tools import (TuningLedger, pending_proposals,
+                                                suppression_allowed)
                 entries = TuningLedger().list_all()
-                self._send(200, {"ok": True, "tuning": entries})
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        _allowed, _why = suppression_allowed(entry)
+                        entry["suppression"] = {"allowed": _allowed, "reason": _why}
+                self._send(200, {"ok": True, "tuning": entries,
+                                 "proposals": pending_proposals(entries)})
             elif path == "/cases/stale":
                 # Aging as a managed thing: open cases untouched for the
                 # window (SO parity — a SOC sees its backlog, not a wall).

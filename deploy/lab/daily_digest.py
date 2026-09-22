@@ -141,7 +141,7 @@ def main() -> int:
     # luck, not a control. This line is the control: a suppression now has to
     # appear on a surface a human reads, with its source and actor.
     try:
-        from tools.tuning_tools import PROPOSED, TuningLedger, tuning_state
+        from tools.tuning_tools import TuningLedger, pending_proposals
         entries = TuningLedger().list_all(limit=500)
         _cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
         recent: list[dict] = []
@@ -166,7 +166,13 @@ def main() -> int:
         # boundary with no queue surface is just a silent suppression wearing a
         # different name, so the queue is reported here with its oldest age.
         # A proposal nobody looks at is the failure this line exists to prevent.
-        pend = [e for e in entries if tuning_state(e) == PROPOSED]
+        # ADR-008 stage 3: proposals come in TWO shapes now — a bare proposal
+        # (state=proposed) and one riding beside a committed decision
+        # (pending_proposal). Deriving them here with a local filter is how the
+        # second shape would go unreported, i.e. an automation judgement nobody
+        # ever sees. One shared derivation, so this line and the console cannot
+        # disagree about what is waiting for a human.
+        pend = pending_proposals(entries)
         if pend:
             ages = []
             for e in pend:
@@ -177,7 +183,7 @@ def main() -> int:
                                  - ts).days)
                 except (ValueError, TypeError):
                     continue
-            who = ", ".join(sorted({str(e.get("tuned_by") or "unattributed")
+            who = ", ".join(sorted({str(e.get("proposed_by") or "unattributed")
                                     for e in pend}))
             lines.append(f"**Tuning proposals:** {len(pend)} PENDING (inert, not "
                          f"suppressing), oldest {max(ages) if ages else 0}d — "

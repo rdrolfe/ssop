@@ -162,13 +162,30 @@ async function loadTuning() {
     entries.forEach(e => {
       const t = document.createElement("div");
       t.className = "ticket";
+      // ADR-008 stage 3: a proposal and a committed decision must not look the
+      // same here. The API hands us the GATE's own verdict (suppression), so
+      // this badge states whether the rule is actually suppressing — not what
+      // the entry claims to be.
+      const sup = e.suppression || {};
+      const inForce = sup.allowed === true;
+      const stateBadge = inForce
+        ? `<span class="badge tech" title="${esc(sup.reason || "")}">in force (signed)</span>`
+        : `<span class="badge" title="${esc(sup.reason || "")}" style="background:#7a5c00;color:#fff">${esc(e.state || "unknown")} — NOT suppressing</span>`;
+      const pp = e.pending_proposal;
+      const pending = (pp && pp.decision)
+        ? `<div class="details"><span class="lbl">AUTOMATION PROPOSES:</span> ${esc(pp.decision)} — ${esc(pp.rationale || "-")} <span class="meta">(by ${esc(pp.proposed_by || "unknown")}, ${esc(String(pp.ts || "").slice(0,19))}) — INERT until a human commits it; the decision above still governs</span></div>`
+        : "";
+      const prevProp = (e.superseded_proposal && e.superseded_proposal.decision)
+        ? `<div class="meta">superseded by this commit: ${esc(e.superseded_proposal.decision)} (proposed by ${esc(e.superseded_proposal.proposed_by || "unknown")})</div>`
+        : "";
       t.innerHTML = `
         <div class="top">
           <span class="badge tech">rule ${esc(e.rule_id || "-")}</span>
           <span class="title">${esc(e.decision || "-")}</span>
+          ${stateBadge}
         </div>
         <div class="meta">source: ${esc(e.source || "-")} · by: ${esc(e.tuned_by || "system")} · ts: ${esc((e.ts || "").slice(0,19))}</div>
-        <div class="details"><span class="lbl">Rationale:</span> ${esc(e.rationale || "-")}</div>`;
+        <div class="details"><span class="lbl">Rationale:</span> ${esc(e.rationale || "-")}</div>${pending}${prevProp}`;
       el.appendChild(t);
     });
   } catch (e) {

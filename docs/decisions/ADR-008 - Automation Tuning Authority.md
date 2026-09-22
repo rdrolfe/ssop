@@ -46,6 +46,38 @@ What becomes harder: unattended triage produces proposals that need a human clic
   4. **The propose/commit state machine.** `write()` defaults to PROPOSED; `suppression_allowed()` is the single gate and requires `state == "committed"`; a missing or unrecognized state fails CLOSED; `commit()` refuses an unattributed commit ("a proposal wearing a different name"). The gate had to be put in ONE place first: the hunt sweep ran its own existence check off a local tuple, so a gate added only to the shared helper would have left hunts silenceable forever, and the router accepted `escalate` while the analyst did not, so one entry meant two things. Writers: the hourly adjudicator (`ssop-supervisory.service` → `supervisory.py`) proposes through `adjudicate(authority="automation")` (the default), the console commits through `authority="interactive"`.
 - **NOT YET A CRYPTOGRAPHIC BOUNDARY — the honest limit.** The unattended writer runs as `User=rdrolfe`, the same OS user as everything else on that host, so any key it was asked to respect it could also read. What exists is a code-level boundary with a fail-closed default: it stops the automation through the path the automation actually uses, and it is auditable in the diff — but a future writer that simply called `commit()` would succeed. Making it real means a dedicated service user with the commit key owned by the human user (cheapest), or an Ed25519 signature with the private key held off-host. **Not started.**
 
+### Stage 2 — the boundary proper (2026-09-15, `e65fb64` + `5e70ac9`)
+
+**Signature-verified commits are LIVE.** `state="committed"` is a claim; the Ed25519 signature over the authorizing core is the proof, and the gate requires both. Verified on the live ledger: a hand-set committed state with no signature verifies as nothing and is treated as inert; an entry edited after signing is inert; a real commit suppresses. All 31 committed entries are signed and read-back verified, with zero committed-but-unverified entries anywhere.
+
+**Asymmetric, and that is a design decision worth keeping:** the router and analyst run on the unattended side and must be able to VERIFY, so the verifier holds only the public key. An HMAC would have handed the verifier the same secret the signer uses — the automation could have minted its own commits. The private key is at `~/.ssop-keys/tuning-commit.key` (0600, outside the group-shared runtime tree); the public key is world-readable.
+
+**What it does NOT yet cover, stated plainly:** the unattended processes still run as `rdrolfe`, the account that owns the private key. So the signature closes the *tampering and forgery* cases — a rewrite of a committed entry, a hand-set state field, a signature from an untrusted key — but the *separation* case is only staged: the moment those processes run as a different account, the private key is genuinely unreadable by them. The migration is written, idempotent, dry-run-first, with a rollback (`deploy/lab/migrate_agent_plane.sh`), and its probe (`agent_plane_probe.py`) proves the property from the automation side. It needs one privileged step — `groupadd`/`useradd`/`usermod` are not on the NOPASSWD whitelist — and until that runs, the honest description is: **signed, tamper-evident, and verifiable, but the signer and the automation are still the same UID.**
+
+**Plane split the migration implements:** nine unattended units → `ssop-agent`; `ssop-adjudicate-api` (a human click must be able to commit) and `ssop-qdrant-tunnel` (uses rdrolfe's key material) stay on `rdrolfe`.
+
+### Stage 3 — a proposal may not disarm a commit (2026-09-22)
+
+**Found live, two days late, and only by accident.** §6 ("the unattended plane may only propose") was enforced as "it writes `state=proposed`" — which still allowed the unattended writer to **REPLACE a committed entry with a proposal**. On `2026-09-17T04:22:42Z` the hourly `ssop-supervisory` duty rewrote rule **52002** (committed 09-14 by `hermes-triage`, ticket `7ab216f9`) into a proposal, and the rule silently stopped suppressing. No error, no alert, no digest line. The only signal was a verify fixture that pinned the old behaviour and went red on 09-18 — and it read as a *fixture* problem:
+
+```
+router tuned-apparmor-no-dispatch   FAIL:   expected=note actual=escalate
+```
+
+**Why it was invisible by construction.** A proposed entry looks exactly like a decision on every surface that renders `decision` / `tuned_by` / `ts` — the console did not show state *at all* — and the automation's overwrite is logged as an ordinary tuning write. So: the automation could not *grant itself* authority, but it could **revoke a human's**, and the human-facing surface could not tell the difference.
+
+**The fix — a proposal aimed at a committed rule does not touch the authorizing core.** It is stored in `pending_proposal`: a field the gate never reads and the signature never covers. The human's commit keeps governing, its signature stays valid, the automation's newer judgement stays visible and one confirm from adoption. Nothing is silently disarmed; nothing is lost.
+- **Rejected (a) refuse.** The Sep-17 proposal carried a *narrower, better-informed* fingerprint (`entity_scope: host:vault-secrets`, level 3) than the entry it replaced. Refusing throws that observation away and guarantees re-deriving it in three months.
+- **Rejected (c) explicit supersede.** Once an unattended writer can pass a flag to overwrite a human decision, the flag *is* the boundary — and flags get passed by whoever wrote the last caller.
+
+**Retention covers both shapes.** A commit landing over a pending proposal — or over a bare proposal — retains it as `superseded_proposal`, so the record answers "what did the automation want when this was committed?"
+
+**The surfaces had to move with it, or the fix would have INVERTED the failure.** Proposals are derived in ONE place (`pending_proposals()`): a surface that only knows `state=proposed` would stop reporting proposals riding a committed entry — the same invisibility, mirrored. The digest uses that derivation, and the console's `/tuning` now returns each entry with **the gate's own verdict** (`suppression: {allowed, reason}`), so "in force (signed)" versus "<state> — NOT suppressing" is *stated by the gate* rather than inferred from a state name by a human who has to trust it.
+
+**The gate itself was lying by accident, and that is how this was found.** The matrix seeded rule 52002 behind `if not ledger.lookup("52002")` — a guard ANY entry satisfies, including a proposal. So the moment the automation proposed, the fixture's premise silently evaporated and the gate went red **for a reason unrelated to the code under test** (09-18 and 09-21, same fixture, same message). Seeds now assert the *state* the fixture needs and repair it when a live writer has moved it.
+
+**Verified:** `verify/test_tuning_propose_guard.py` (20 checks, non-vacuous, including the tamper path — a tampered committed entry is preserved and stays inert, and the proposal is still recorded, so the automation can neither disarm a commit nor erase evidence of tampering); offline suite 30/30; live console probe showing `in_force: false` with the gate's reason beside two derived pending proposals; matrix re-scored **48/48**.
+
 **Migration applied (2026-09-15), and it is the worked example of every rule above**
 
 `deploy/lab/narrow_apparmor_tuning.py` rescoped both unattended entries so scope equals evidence — dry run first, predicting the effect with the live comparator before writing:

@@ -85,6 +85,7 @@ HERMETIC = [
     "agents/verify/test_case_archive.py",
     "agents/verify/test_case_decision_writeback.py",
     "agents/verify/test_decision_readers.py",
+    "agents/verify/test_tuning_propose_guard.py",
     "agents/verify/test_egress_and_vt.py",
     "agents/verify/test_ontology_export.py",
     "agents/verify/check_ontology.py",

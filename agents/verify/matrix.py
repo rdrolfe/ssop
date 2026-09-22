@@ -168,7 +168,7 @@ def main() -> int:
     # Seed deterministic tuning state the fixtures depend on (idempotent).
     # Fixtures stay pure data; this is the matrix's setup phase.
     try:
-        from tools.tuning_tools import TuningLedger
+        from tools.tuning_tools import COMMITTED, TuningLedger, tuning_state
         ledger = TuningLedger()
         # tuned-rule-no-escalate: rule 987654 is pre-tuned auto_fp by policy.
         if not ledger.lookup("987654"):
@@ -196,7 +196,16 @@ def main() -> int:
         _aa_allow = ["snap-confine", "fusermount3", "unprivileged_userns",
                      "snap-update-ns.firmware-updater",
                      "snap.firmware-updater.firmware-notifier"]
-        if not ledger.lookup("52002"):
+        # ADR-008 stage 3 — a fixture's premise must not depend on LIVE ledger
+        # state. These seeds were guarded with `if not ledger.lookup(...)`, which
+        # any entry satisfies — including a PROPOSAL. That is exactly how the
+        # router fixture went red on 09-18 and again on 09-21: the unattended
+        # supervisory duty had rewritten 52002 (committed 09-14) into a proposal,
+        # a proposal never suppresses by construction, so the router escalated and
+        # the fixture failed for a reason unrelated to the code under test. Seed
+        # the STATE the fixture needs and repair it when a live writer moved it.
+        _p52002 = ledger.lookup("52002")
+        if not _p52002 or tuning_state(_p52002) != COMMITTED:
             ledger.commit("52002", "auto_fp",
                           "verify seed: fixture tuned-apparmor-no-dispatch "
                           "(triage adjudication 2026-09-14, rescoped 2026-09-15)",
@@ -204,7 +213,8 @@ def main() -> int:
                               "rule_id": "52002", "groups": ["apparmor", "ossec"],
                               "level": 5, "category": "operational",
                               "threat_desc": False, "profiles": _aa_allow})
-        if not ledger.lookup("hunt:apparmor-denials"):
+        _phunt = ledger.lookup("hunt:apparmor-denials")
+        if not _phunt or tuning_state(_phunt) != COMMITTED:
             # COMMITTED on purpose: a proposal is inert by construction (ADR-008),
             # so a seeded fixture asserting "tuned hunts do not dispatch" must
             # seed the committed state or the fixture would test the opposite.

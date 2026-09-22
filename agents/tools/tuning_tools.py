@@ -142,6 +142,12 @@ def _alert_apparmor_profile(alert: dict) -> str:
 # default — auditable in the diff, not unforgeable.
 PROPOSED = "proposed"
 COMMITTED = "committed"
+# ADR-008 stage 3 — a proposal that lands on an ALREADY-COMMITTED rule is stored
+# here, beside the decision, instead of replacing it. Neither name is in
+# SIG_FIELDS: the authorizing core is untouched, so the commit's signature stays
+# valid and the gate keeps governing. See the guard in write().
+PENDING_PROPOSAL = "pending_proposal"
+SUPERSEDED_PROPOSAL = "superseded_proposal"
 # Decisions that SUPPRESS alerting, as ONE constant on purpose: the router used
 # to accept `escalate` while the analyst did not, so the same entry meant
 # different things on the two paths (measured 2026-09-15).
@@ -299,6 +305,49 @@ def suppression_allowed(tuning: dict | None) -> tuple[bool, str]:
             f"does not verify (missing, or the entry changed after signing) — "
             f"treating it as INERT and dispatching")
     return True, f"committed {decision} (signed)"
+
+
+def pending_proposals(entries: list[dict] | None) -> list[dict[str, Any]]:
+    """Every automation judgement awaiting a human, derived in ONE place.
+
+    There are TWO shapes after ADR-008 stage 3, and a surface that knows only
+    the first is how a proposal goes invisible — the exact failure the stage-3
+    guard exists to prevent, mirrored onto the reporting side:
+
+      * a bare proposal    — the entry ITSELF is the proposal (state="proposed")
+      * riding a commit    — entry["pending_proposal"], beside state="committed"
+
+    The second shape must be reported as pending (it is un-adopted), while the
+    entry's decision must still be reported as IN FORCE (it is). Both facts are
+    true at once, which is the whole point of keeping the proposal rather than
+    letting it overwrite the commit.
+
+    Returns normalised dicts: rule_id/decision/rationale/proposed_by/ts/shape.
+    """
+    out: list[dict[str, Any]] = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        pp = e.get(PENDING_PROPOSAL)
+        if isinstance(pp, dict) and str(pp.get("decision") or "").strip():
+            out.append({
+                "rule_id": e.get("rule_id"),
+                "decision": pp.get("decision"),
+                "rationale": pp.get("rationale", ""),
+                "proposed_by": pp.get("proposed_by", ""),
+                "ts": pp.get("ts", ""),
+                "shape": PENDING_PROPOSAL,
+            })
+        elif tuning_state(e) == PROPOSED:
+            out.append({
+                "rule_id": e.get("rule_id"),
+                "decision": e.get("decision"),
+                "rationale": e.get("rationale", ""),
+                "proposed_by": e.get("tuned_by", ""),
+                "ts": e.get("ts", ""),
+                "shape": PROPOSED,
+            })
+    return out
 
 
 def tuned_rule_suppresses(tuning: dict, alert: dict, category: str | None = None) -> tuple[bool, str]:
@@ -471,6 +520,49 @@ class TuningLedger:
             # FAIL CLOSED on state: an unrecognized value becomes PROPOSED, so a
             # typo or a future state name cannot silently grant suppression.
             _state = state if state in (PROPOSED, COMMITTED) else PROPOSED
+            prev = self.lookup(rule_id) or {}
+            # ------------------------------------------------------------------
+            # ADR-008 stage 3: a PROPOSAL may not disarm a COMMIT.
+            #
+            # "The unattended plane may only propose" was enforced as "it writes
+            # state=proposed" — which still let it REPLACE a committed entry with
+            # a proposal. That is un-committing a human decision by stealth, and
+            # it happened: the hourly ssop-supervisory duty rewrote rule 52002
+            # (committed 09-14) into a proposal at 09-17T04:22Z, the rule quietly
+            # stopped suppressing, and the only reason anyone knows is that a
+            # verify fixture asserted the old behaviour and went red.
+            #
+            # So a proposal against a committed rule does not touch the
+            # authorizing core. It is recorded ALONGSIDE it — in a field the gate
+            # never reads and the signature never covers. The human's decision
+            # keeps governing; the automation's newer judgement stays visible in
+            # the console, one confirm away from adoption; nothing is lost, and
+            # nothing is silently disarmed.
+            # ------------------------------------------------------------------
+            if _state == PROPOSED and tuning_state(prev) == COMMITTED:
+                payload: dict[str, Any] = dict(prev)  # verbatim => sig still valid
+                payload[PENDING_PROPOSAL] = {
+                    "decision": decision,
+                    "rationale": rationale,
+                    "source": source,
+                    "proposed_by": tuned_by,
+                    "ts": ts or datetime.now(timezone.utc).isoformat(),
+                }
+                if fingerprint:
+                    payload[PENDING_PROPOSAL]["fingerprint"] = fingerprint
+                self._memory.client.upsert(
+                    collection_name=TUNING_COLLECTION,
+                    points=[PointStruct(
+                        id=pid,
+                        vector=[0.0] * 384,
+                        payload=payload,
+                    )],
+                )
+                logger.info(
+                    "tuning propose: rule %s -> %s recorded as pending_proposal "
+                    "beside the committed %s (by %s) — the commit still governs",
+                    rule_id, decision, prev.get("decision"), tuned_by or "system")
+                return True
             payload: dict[str, Any] = {
                 "rule_id": rule_id,
                 "decision": decision,
@@ -490,6 +582,26 @@ class TuningLedger:
                 # Proof that a human-plane key authorised this commit. Without
                 # it a committed entry is inert (see suppression_allowed).
                 payload["commit_sig"] = commit_sig
+            if _state == COMMITTED:
+                # The human just decided. Retain what was pending (one
+                # generation) so the record answers "what did the automation
+                # want when this was committed?" — otherwise that judgement is
+                # destroyed by the act of resolving it. TWO shapes count:
+                #   * a proposal riding the previous commit (pending_proposal)
+                #   * a bare proposal the decision now replaces outright
+                _sup = None
+                if isinstance(prev.get(PENDING_PROPOSAL), dict):
+                    _sup = prev[PENDING_PROPOSAL]
+                elif tuning_state(prev) == PROPOSED and prev.get("decision"):
+                    _sup = {
+                        "decision": prev.get("decision"),
+                        "rationale": prev.get("rationale", ""),
+                        "source": prev.get("source", ""),
+                        "proposed_by": prev.get("tuned_by", ""),
+                        "ts": prev.get("ts", ""),
+                    }
+                if _sup:
+                    payload[SUPERSEDED_PROPOSAL] = _sup
             self._memory.client.upsert(
                 collection_name=TUNING_COLLECTION,
                 points=[PointStruct(
