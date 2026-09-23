@@ -8,11 +8,19 @@ verify matrix. Designed to be run by a scheduled delivery (Hermes cron) so
 the owner gets the daily orientation review without going looking.
 """
 import json
+import os
 import socket
 import subprocess
 import sys
 import datetime
 from pathlib import Path
+
+# Shared state dir — NOT Path.home()/.ssop/state. The unattended units now run
+# as `ssop-agent`, whose $HOME is the runtime tree, so a ~-derived path splits
+# into two directories: the drill and boot-evidence writing in one, the digest
+# reading the other (which is exactly how the drill line went silently stale).
+# SSOP_STATE_DIR is pinned in the tree's .env so both planes agree.
+STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
 
 
 def sh(cmd: str, timeout: int = 25) -> str:
@@ -240,7 +248,7 @@ def main() -> int:
         lines.append(f"**Coverage:** ERR {e}")
 
     # Boot evidence
-    be = sh("tail -1 ~/.ssop/state/boot-evidence.log 2>/dev/null")
+    be = sh(f"tail -1 {STATE_DIR}/boot-evidence.log 2>/dev/null")
     lines.append("**Boot evidence:** " + (be if be else "n/a"))
 
     # Disk
@@ -263,7 +271,7 @@ def main() -> int:
 
     # Purple-team drill (last receipt from drill.py)
     try:
-        dp = Path.home() / ".ssop" / "state" / "drill-last.json"
+        dp = STATE_DIR / "drill-last.json"
         if dp.exists():
             rec = json.loads(dp.read_text())
             p1 = rec.get("phase1_live_fire", {})

@@ -9,9 +9,16 @@ User=rdrolfe
 Group=rdrolfe
 RemainAfterExit=yes
 # ExecStart no-ops; ExecStop runs on shutdown and writes the marker.
+#
+# This path is HARDCODED and must match what boot-evidence resolves, or the
+# control silently inverts. The two units run as different users after the
+# ADR-008 plane split (this one is rdrolfe; boot-evidence is ssop-agent, whose
+# $HOME is the runtime tree), so a $HOME-relative path would put the marker
+# somewhere the checker never looks — and every boot would report UNCLEAN
+# forever. One absolute path, owned rdrolfe:ssop mode 2775, both planes write.
 ExecStart=/bin/true
-ExecStop=/bin/mkdir -p /home/rdrolfe/.ssop/state
-ExecStop=/bin/touch /home/rdrolfe/.ssop/state/graceful-shutdown
+ExecStop=/bin/mkdir -p /home/rdrolfe/agent-runtime/.ssop/state
+ExecStop=/bin/touch /home/rdrolfe/agent-runtime/.ssop/state/graceful-shutdown
 
 [Install]
 WantedBy=multi-user.target

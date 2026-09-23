@@ -25,7 +25,26 @@ from logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_CA_BUNDLE = Path.home() / ".ssop" / "ca" / "ca-bundle.crt"
+def _default_ca_bundle() -> Path:
+    """Plane-neutral CA bundle: SSOP_CA_BUNDLE > in-tree certs/ca > legacy ~.
+
+    NOT just `Path.home()/".ssop"/ca`: after the ADR-008 plane split the
+    unattended units run as `ssop-agent`, whose passwd home IS the runtime tree,
+    so a $HOME-only default points at a directory that does not exist on that
+    plane — and the failure is a hard `FileNotFoundError` at import-driven
+    client construction, i.e. every duty dies at once. The copy under
+    `certs/ca` lives in the tree and is readable by BOTH planes.
+    """
+    raw = os.getenv("SSOP_CA_BUNDLE", "").strip()
+    if raw:
+        return Path(raw)
+    in_tree = Path(__file__).resolve().parent.parent / "certs" / "ca" / "ca-bundle.crt"
+    if in_tree.is_file():
+        return in_tree
+    return Path.home() / ".ssop" / "ca" / "ca-bundle.crt"
+
+
+DEFAULT_CA_BUNDLE = _default_ca_bundle()
 
 
 def tls_verify_enabled() -> bool:

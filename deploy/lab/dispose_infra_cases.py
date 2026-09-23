@@ -32,6 +32,7 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -41,7 +42,10 @@ sys.path.insert(0, ".")
 
 APPLY = "--apply" in sys.argv
 CLOSE = "--close" in sys.argv
-RECEIPT = Path.home() / ".ssop" / "state" / "infra-case-disposition.json"
+# Shared state dir — NOT Path.home()/.ssop/state; see drill.py for the why.
+# SSOP_STATE_DIR is pinned in the tree's .env so both planes agree.
+STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
+RECEIPT = STATE_DIR / "infra-case-disposition.json"
 
 #: reason-code prefix -> label in the report (the shared derivation's reasons)
 _REASON_LABELS = {

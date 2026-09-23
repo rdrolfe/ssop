@@ -12,7 +12,8 @@ Run this AS the unattended user (temporarily set as a unit's ExecStart, since
   4. verification works     — a real committed entry verifies from here
   5. commit() refuses       — an unattended writer cannot mint a commit
 
-Reads only. Writes nothing to the ledger.
+Reads the ledger only; the one file it writes is a temp entry in the state dir,
+immediately removed, to prove that directory is writable from this plane.
 """
 import os
 import stat
@@ -111,6 +112,21 @@ else:
     except Exception as e:  # noqa: BLE001
         check("commit() refuses from the automation plane", False,
               f"unexpected {type(e).__name__}: {e}")
+
+# 6. the plane must be able to WRITE its own state dir. Receipts (drill, sweep,
+#    infra disposition) and the boot-evidence log live there, and after the
+#    split a $HOME-derived path pointed at a directory the agent could not
+#    write — the drill would fail to record its own result. A probe that only
+#    reads would have called that healthy.
+state_dir = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
+probe_file = state_dir / ".probe-write-check"
+try:
+    probe_file.write_text("probe")
+    probe_file.unlink()
+    check("state dir is WRITABLE from the automation plane", True, str(state_dir))
+except OSError as e:
+    check("state dir is WRITABLE from the automation plane", False,
+          f"{state_dir}: {type(e).__name__} {e}")
 
 print("\nBOUNDARY HOLDS" if fails == 0 else f"\n{fails} BOUNDARY FAILURES")
 sys.exit(0 if fails == 0 else 1)

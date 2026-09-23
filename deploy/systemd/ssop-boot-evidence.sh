@@ -6,7 +6,7 @@
 # infra-ops vanished mid-session. Every boot appends one line to the evidence
 # log so the next unexplained stop has a trail.
 set -u
-STATE_DIR="$HOME/.ssop/state"
+STATE_DIR="${SSOP_STATE_DIR:-$HOME/.ssop/state}"
 LOG="$STATE_DIR/boot-evidence.log"
 MARKER="$STATE_DIR/graceful-shutdown"
 
