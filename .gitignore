@@ -18,3 +18,8 @@ agent-env/
 *.log
 .DS_Store
 ssop-share*
+
+# Isolated worktrees (see branch-workspace-hygiene skill) — must stay ignored
+# so a worktree's contents can never be swept into this repo
+.worktrees/
+worktrees/
