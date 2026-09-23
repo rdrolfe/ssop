@@ -75,6 +75,14 @@ def _env_dict(name: str, default: str = "") -> dict[str, int]:
 
 RUNTIME_DIR = Path(_env("SSOP_RUNTIME_DIR", str(Path.home() / "agent-runtime")))
 
+#: Shared runtime state dir — drill/sweep receipts, the boot-evidence log, and the
+#: graceful-shutdown marker. ONE definition for BOTH planes: it is pinned in the
+#: tree's .env, because after the ADR-008 split a $HOME-derived path names a
+#: DIFFERENT directory for rdrolfe and for the ssop-agent units. Nothing errors —
+#: both directories exist — but the writer and the reader stop seeing each other,
+#: and the marker/checker pair turns into a permanent false alarm.
+STATE_DIR = Path(_env("SSOP_STATE_DIR", str(RUNTIME_DIR / ".ssop" / "state")))
+
 # ---- tuning commit signing (ADR-008 stage 2) ------------------------------
 # The PRIVATE key authorises a tuning commit and lives on the human plane
 # (mode 0600, owned by the operator, OUTSIDE the group-shared runtime tree).

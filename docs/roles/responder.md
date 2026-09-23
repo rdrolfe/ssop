@@ -49,7 +49,7 @@ supervisor_decision}`. Tier2 produces an approval ticket.
 1. Supervisor deny → refuse (authority)
 2. Recommendation gate (tier1+ needs a role's recommendation)
 3. Protected-entity guard (fail-closed)
-4. Tier + approval expiry (15 min, `config.py:153`)
+4. Tier + approval expiry (15 min, `config.py:161`)
 
 ## Verify coverage
 `agents/verify/fixtures_soar.yaml` — trigger matching, guard (protected

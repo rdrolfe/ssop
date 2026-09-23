@@ -43,7 +43,8 @@ logger = logging.getLogger("drill")
 # tree, so a ~-derived path silently becomes TWO directories: this script
 # writing a receipt in one place while the digest reads another. SSOP_STATE_DIR
 # is pinned in the tree's .env so both planes name the same path.
-STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
+import config  # noqa: E402 — the .env bootstrap: a pin in the tree's .env (SSOP_STATE_DIR)
+STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or str(config.RUNTIME_DIR / ".ssop" / "state"))
 RECEIPT = STATE_DIR / "drill-last.json"
 WINDOW_S = 120  # phase-1 polling window for the fired alert
 

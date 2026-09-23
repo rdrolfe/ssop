@@ -22,8 +22,9 @@ SSOP_AUDIT_KEY_DIR, ...), so both planes name the same place.
 Rule: any occurrence must have an `SSOP_` override within a few lines — same
 statement is typical, but the override may sit in a helper above the literal.
 
-Non-vacuous by construction: it also asserts it FOUND the guarded occurrences,
-so a refactor that deletes the state paths fails loudly here.
+Non-vacuous by construction: it asserts it actually SCANNED the tree, and that it
+still RECOGNISES the guarded form (a broken regex would otherwise make "no
+violations" meaningless).
 """
 from __future__ import annotations
 
@@ -78,10 +79,21 @@ def main() -> int:
                 unguarded.append(
                     f"{p.relative_to(REPO)}:{i + 1}: {line.strip()[:100]}")
 
-    print(f"scanned {len(sources())} sources in deploy/ + agents/")
-    print(f"[{'OK  ' if guarded >= 8 else 'FAIL'}] found {guarded} guarded "
-          f".ssop path(s) with an SSOP_ override (>=8 expected)")
-    if guarded < 8:
+    scanned = sources()
+    print(f"scanned {len(scanned)} sources in deploy/ + agents/")
+    # Coverage floor: the scan must actually reach the source tree, or "no
+    # violations" is a statement about nothing.
+    if len(scanned) < 50:
+        print(f"[FAIL] only {len(scanned)} source(s) scanned — not reaching the tree")
+        fails += 1
+    # Recognition floor: BAD/GUARD must still match the guarded form, or absence of
+    # violations proves nothing. Deliberately low: consolidation (paths moving into
+    # config.STATE_DIR) legitimately REMOVES occurrences, and a guard that fails
+    # when the code gets cleaner is noise. The load-bearing assertion is the
+    # zero-violation check below.
+    print(f"[{'OK  ' if guarded >= 2 else 'FAIL'}] found {guarded} guarded "
+          f".ssop path(s) with an SSOP_ override (>=2 expected)")
+    if guarded < 2:
         fails += 1
 
     if unguarded:

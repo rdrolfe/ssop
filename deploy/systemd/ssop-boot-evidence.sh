@@ -6,7 +6,18 @@
 # infra-ops vanished mid-session. Every boot appends one line to the evidence
 # log so the next unexplained stop has a trail.
 set -u
-STATE_DIR="${SSOP_STATE_DIR:-$HOME/.ssop/state}"
+# Resolve the shared state dir EXACTLY as config.STATE_DIR does: the pinned env
+# var, then the tree's .env, then the tree default. The writer (this unit) and the
+# reader (boot-evidence) MUST agree — a mismatch reports UNCLEAN on every boot
+# forever, which is a control that trains you to ignore it. $HOME is NOT a valid
+# answer here: this unit runs as rdrolfe while boot-evidence runs as ssop-agent,
+# whose home IS this tree.
+RUNTIME="$(cd "$(dirname "$0")" && pwd)"
+STATE_DIR="${SSOP_STATE_DIR:-}"
+if [ -z "$STATE_DIR" ] && [ -f "$RUNTIME/.env" ]; then
+  STATE_DIR="$(sed -n 's/^SSOP_STATE_DIR=//p' "$RUNTIME/.env" | tail -1)"
+fi
+STATE_DIR="${STATE_DIR:-$RUNTIME/.ssop/state}"
 LOG="$STATE_DIR/boot-evidence.log"
 MARKER="$STATE_DIR/graceful-shutdown"
 

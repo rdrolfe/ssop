@@ -41,7 +41,8 @@ sys.path.insert(0, ".")
 APPLY = "--apply" in sys.argv
 # Shared state dir — NOT Path.home()/.ssop/state; see drill.py for the why.
 # SSOP_STATE_DIR is pinned in the tree's .env so both planes agree.
-STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
+import config  # noqa: E402 — the .env bootstrap: a pin in the tree's .env (SSOP_STATE_DIR)
+STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or str(config.RUNTIME_DIR / ".ssop" / "state"))
 RECEIPT = STATE_DIR / "case-decision-sweep.json"
 
 

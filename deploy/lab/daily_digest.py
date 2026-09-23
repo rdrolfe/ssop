@@ -20,7 +20,8 @@ from pathlib import Path
 # into two directories: the drill and boot-evidence writing in one, the digest
 # reading the other (which is exactly how the drill line went silently stale).
 # SSOP_STATE_DIR is pinned in the tree's .env so both planes agree.
-STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state"))
+import config  # noqa: E402 — the .env bootstrap: a pin in the tree's .env (SSOP_STATE_DIR)
+STATE_DIR = Path(os.getenv("SSOP_STATE_DIR") or str(config.RUNTIME_DIR / ".ssop" / "state"))
 
 
 def sh(cmd: str, timeout: int = 25) -> str:

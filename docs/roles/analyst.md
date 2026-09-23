@@ -46,7 +46,7 @@ In priority order:
               or (category == threat AND threat-desc token)   # ET malware at low lvl
    ```
    `medium_escalate_categories = ("authentication", "threat")`
-   (`config.py:111`).
+   (`config.py:119`).
 5. **Entity recidivism** — if the same `(srcip, dstip)` pair has a recent
    open case (`case_tools.recent_entity_cases`), the verdict surfaces
    `existing_chain` so the router ATTACHES instead of re-minting (`:166-181`).
@@ -66,12 +66,12 @@ escalate. The single-node + sweep paths share this write path.
 `{verdict: note|escalate, level, category, agent, rationale, ...}` —
 optionally `existing_chain`, `tuning_override`, `recommended_playbook`.
 
-## Config thresholds (`config.py:107-116`)
+## Config thresholds (`config.py:115-124`)
 | Key | Default | Meaning |
 |---|---|---|
 | `ANALYST_HIGH_LEVEL` | 7 | level ≥ 7 → severity high |
 | `ANALYST_MEDIUM_LEVEL` | 4 | level ≥ 4 → severity medium |
-| `medium_escalate_categories` | auth, threat | categories that escalate at medium (`config.py:188`) |
+| `medium_escalate_categories` | auth, threat | categories that escalate at medium (`config.py:196`) |
 | `ANALYST_FP_RULE_IDS` | 510 | never auto-escalate (rootcheck) |
 | `noise_rules` | 5501,5502,5715 | baseline events → note |
 
