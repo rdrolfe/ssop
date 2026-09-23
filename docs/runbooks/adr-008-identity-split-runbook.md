@@ -16,11 +16,60 @@ Idempotent. **Dry-run by default**; `--apply` changes things; `--rollback` undoe
 
 ---
 
+## What actually happened (2026-09-23) — read this before re-running anything
+
+Applied successfully, but **not** by the straight path below. Three preconditions the
+script assumed were wrong, and each one presented as a different symptom. Full
+post-mortem: `docs/decisions/ADR-008 - Automation Tuning Authority.md`, "APPLIED (2026-09-23)".
+
+| symptom | real cause | fix that worked |
+|---|---|---|
+| `203/EXEC` — `Permission denied` running `ssop-supervisory.sh` | `chgrp -R ssop` failed for **all 2,708 files** (the shell running it lacked the `ssop` group, so the group change was `EPERM`) and the script hides that behind `2>/dev/null`. Modes changed, group never did → agent fell through to `other` = `--x`, and a script that can't be *read* can't be executed | `chgrp -R ssop` from a session that has the group (or `sudo -n chown -R rdrolfe:ssop`) |
+| same, again, after the group was right | `/home/rdrolfe` is `0750 rdrolfe:rdrolfe` — the service account could not **traverse** into the tree | `setfacl -m u:ssop-agent:x /home/rdrolfe` (traverse only; mask `r-x`, `other::---`) |
+| exit `1`, `FileNotFoundError: … CA bundle is missing: /home/rdrolfe/agent-runtime/.ssop/ca/ca-bundle.crt` | `$HOME` diverges — `ssop-agent`'s home **is** the tree, so every `~`-path lands inside it | pin absolute paths in `.env` (below), publish the public key into the tree |
+
+**These four lines must exist in `/home/rdrolfe/agent-runtime/.env`** or the plane
+breaks in ways that look like application bugs:
+
+```
+SSOP_RUNTIME_DIR=/home/rdrolfe/agent-runtime
+SSOP_CA_BUNDLE=/home/rdrolfe/agent-runtime/certs/ca/ca-bundle.crt
+SSOP_AUDIT_KEY_DIR=/home/rdrolfe/.ssop/audit
+SSH_KEY_PATH=/home/rdrolfe/.ssh/hermes_ssop
+SSOP_TUNING_COMMIT_PUB=/home/rdrolfe/agent-runtime/certs/tuning-commit.key.pub
+SSOP_TUNING_COMMIT_KEY=/home/rdrolfe/.ssop-keys/tuning-commit.key
+```
+
+The last two state the boundary explicitly: the plane **verifies** with the published
+public key and **cannot sign**, because the private key stays `0700` in your home. If
+the public key is missing, the plane verifies nothing, every committed entry reads as
+inert, and suppression dies silently — fail-open. Publish it:
+
+```bash
+install -m 0644 ~/.ssop-keys/tuning-commit.key.pub ~/agent-runtime/certs/tuning-commit.key.pub
+```
+
+**And one unit is not like the others:** `/etc/systemd/system/ssop-intel.service` is a
+root-owned *real file*, not a symlink into the runtime tree, and there is no
+`~/agent-runtime/ssop-intel.service`. The script edits runtime-dir copies, so it
+reports `MISSING` for this unit and leaves it running as you:
+
+```bash
+sudo sed -i 's/^User=rdrolfe$/User=ssop-agent/; s/^Group=rdrolfe$/Group=ssop/' /etc/systemd/system/ssop-intel.service
+sudo systemctl daemon-reload && sudo systemctl restart ssop-intel.service
+```
+
+**Corrected expectations:** the script prints `User=…` for **8** units, not 9, plus a
+`MISSING` line for `ssop-intel`. Its `VERIFY` block counts that as a FAIL, which is
+correct — believe it.
+
+---
+
 ## Step 0 — preconditions (verified as of 2026-09-22)
 
 | Check | State |
 |---|---|
-| All 11 units run as `rdrolfe` | yes |
+| All 11 units run as `rdrolfe` | yes — but note: only **8** unit files exist in the runtime dir; `ssop-intel` is a root-owned `/etc` file and `ssop-qdrant-tunnel` is also a real `/etc` file (stays `rdrolfe`) |
 | `ssop` group / `ssop-agent` user | **absent** — this is why the script exits 3 |
 | `~/agent-runtime` md5 == repo copy | yes |
 | Private key outside the tree, 0700 | yes (`~/.ssop-keys`) |
