@@ -68,23 +68,28 @@ def main() -> int:
     control = _delta(base, stored_level)      # identical signature
     delta = _delta(base, delta_level)         # material delta (level rose)
 
-    # 1. CONTROL: identical -> note + no dispatch
+    # 1. CONTROL: identical -> note + no dispatch, and the basis must say
+    # WHY it suppressed (tuned_entry). A control that lands on the same
+    # category for the wrong reason is the failure this catches.
     vc = a.verdict(control)
     cc = router.classify(control)
-    ok_c = vc["verdict"] == "note" and cc == ("operational", None)
-    print(f"CONTROL identical: verdict={vc['verdict']} classify={cc} "
-          f"{'OK' if ok_c else 'FAIL'}")
+    ok_c = (vc["verdict"] == "note" and (cc.category, cc.role) == ("operational", None)
+            and cc.basis.value == "tuned_entry")
+    print(f"CONTROL identical: verdict={vc['verdict']} classify={cc.category}/{cc.role} "
+          f"basis={cc.basis.value} {'OK' if ok_c else 'FAIL'}")
     if not ok_c:
         fails += 1
 
-    # 2. DELTA: escalate + tuning_override; router must route to analyst
+    # 2. DELTA: escalate + tuning_override; router must route to analyst and
+    # must attribute it to the TUNING DELTA, not to a generic heuristic.
     vd = a.verdict(delta)
     cd = router.classify(delta)
     ok_d = (vd["verdict"] == "escalate" and vd.get("tuning_override") is True
-            and cd == ("security", "analyst"))
+            and (cd.category, cd.role) == ("security", "analyst")
+            and cd.basis.value == "tuned_delta")
     print(f"DELTA level {delta_level}: verdict={vd['verdict']} "
-          f"tuning_override={vd.get('tuning_override')} classify={cd} "
-          f"{'OK' if ok_d else 'FAIL'}")
+          f"tuning_override={vd.get('tuning_override')} classify={cd.category}/{cd.role} "
+          f"basis={cd.basis.value} {'OK' if ok_d else 'FAIL'}")
     print(f"   rationale: {vd.get('rationale','')[:100]}")
     if not ok_d:
         fails += 1

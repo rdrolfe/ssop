@@ -129,7 +129,8 @@ def main() -> int:
         # router classify: tuning gate -> operational/None means suppressed;
         # anything else means it dispatches (override).
         from router import classify  # noqa: E402
-        cat, role = classify(alert)
+        c = classify(alert)
+        cat, role = c.category, c.role
         routed = not (cat == "operational" and role is None)
 
         # 1. shared category: analyst's classify must equal the shared source
@@ -163,13 +164,16 @@ def main() -> int:
     from router import classify as _classify  # noqa: E402
 
     pr = _fake_lookup("61004")
-    cat_p, role_p = _classify(_mk("61004", 7, "New dpkg (Debian Package) installed.",
-                                  ["syscheck"]))
+    cp = _classify(_mk("61004", 7, "New dpkg (Debian Package) installed.",
+                        ["syscheck"]))
+    cat_p, role_p = cp.category, cp.role
     routed_p = not (cat_p == "operational" and role_p is None)
     allowed_p = suppression_allowed(pr)[0]
-    ok_p = (not allowed_p) and routed_p
+    # An uncommitted proposal must be INERT: it neither suppresses nor claims
+    # tuned_entry as its basis (it is not a decision, it is a request for one).
+    ok_p = (not allowed_p) and routed_p and cp.basis.value != "tuned_entry"
     print(f"[proposal on 61004] suppression_allowed={allowed_p} routed={routed_p} "
-          f"(want False+True) -> {'OK' if ok_p else 'FAIL'}")
+          f"basis={cp.basis.value} (want False+True+not tuned_entry) -> {'OK' if ok_p else 'FAIL'}")
     if not ok_p:
         fails += 1
 
