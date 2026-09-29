@@ -278,14 +278,28 @@ def main() -> int:
     # pipeline's status was grep's (always 0) and a RED harness still printed
     # "48 passed / 0 failed" — the same trap, one layer down. 2026-09-25: a
     # FAILing timer-liveness gate hid behind exactly this for a week.
-    m = sh("timeout 250 ./agent-env/bin/python3 -m verify.matrix > /tmp/ssop-digest-matrix.log 2>&1; "
+    #
+    # The timeout is NOT a constant, it tracks the matrix's runtime, which
+    # grows with the case spine: every case-store scan pages the collection
+    # and the recidivism lookups were widened from limit=1000 to 2000 on
+    # 2026-09-28 (cf25deb) after the collection outgrew the old cap. Measured
+    # 2026-09-28: 460s (22:02:33 -> 22:10:13) against a 250s budget, so the
+    # digest would have failed EVERY morning for a reason that has nothing to
+    # do with the harness. 900s leaves ~2x headroom; if this ever trips
+    # again, raise it with a measurement rather than a guess, and prefer
+    # splitting the matrix into its own cron job over an unbounded timeout.
+    # exit 124 is `timeout` killing the child — reported distinctly below so
+    # "too slow" is never mistaken for "the gate went red".
+    m = sh("timeout 900 ./agent-env/bin/python3 -m verify.matrix > /tmp/ssop-digest-matrix.log 2>&1; "
            "rc=$?; grep -E 'SSOP verify matrix' /tmp/ssop-digest-matrix.log | sed \"s|$| (exit $rc)|\"; "
-           "if [ $rc -ne 0 ]; then echo '  FAILING:'; "
+           "if [ $rc -eq 124 ]; then echo '  TIMED OUT at 900s — matrix runtime has outgrown the "
+           "digest budget; re-measure and raise, or split the matrix into its own job'; "
+           "elif [ $rc -ne 0 ]; then echo '  FAILING:'; "
            "grep -E '^(timer liveness|docs citations|registry reentrancy|misp corpus|bake-off parity)' "
            "/tmp/ssop-digest-matrix.log | grep -E 'FAIL|problem'; "
            "grep -E 'FAIL$' /tmp/ssop-digest-matrix.log | head -6; "
            "grep -E '^ +fail ' /tmp/ssop-digest-matrix.log | head -6; fi",
-           timeout=280)
+           timeout=950)
     lines.append("**Matrix:** " + ((m.split("=== ", 1)[-1].rstrip() if m else
                                     "n/a (did not run — check ./agent-env/bin/python3 -m verify.matrix)")))
 
