@@ -39,7 +39,38 @@ SYSTEMD_DIR = "/etc/systemd/system"
 # *-*-* *:0/15:00 -> 15 minutes
 _MINUTE_RE = re.compile(r"\*:\d/(\d+):00")
 # *-*-* 03:30:00 -> daily (24h)
-_DAILY_RE = re.compile(r"^\*-\*-\* \d{2}:\d{2}:00$")
+_DAILY_RE = re.compile(r"^\*-\*-\* \d{1,2}:\d{2}:\d{2}$")
+# *-*-* *:15:00 -> hourly at minute 15 (hour field wildcard, minute literal).
+# Without this the supervisory timer (hourly) derived no cadence and fell back
+# to the 1h unknown-cadence window — which its own 60min cadence plus jitter
+# exceeded every hour, a permanent false FAIL.
+_HOURLY_RE = re.compile(r"^\*-\*-\* \*:\d{1,2}:\d{2}$")
+# RandomizedDelaySec=N[s|min|h] — designed-in jitter, not staleness.
+_RANDOM_DELAY_RE = re.compile(r"^RandomizedDelaySec=(\d+)\s*(s|sec|second|seconds|min|m|h)?\s*$")
+
+
+def _randomized_delay_minutes(unit_path: str) -> float:
+    """Minutes of designed-in jitter from the unit's RandomizedDelaySec.
+
+    A timer with RandomizedDelaySec=600 fires up to 10min late BY DESIGN, so
+    that slack must not read as staleness. Returns 0.0 when absent.
+    """
+    try:
+        text = open(unit_path, encoding="utf-8").read()
+    except OSError:
+        return 0.0
+    for line in text.splitlines():
+        m = _RANDOM_DELAY_RE.match(line.strip())
+        if not m:
+            continue
+        val = int(m.group(1))
+        unit = (m.group(2) or "s").lower()
+        if unit.startswith("h"):
+            return val * 60.0
+        if unit.startswith("m"):
+            return float(val)
+        return val / 60.0
+    return 0.0
 
 
 def _now() -> datetime:
@@ -62,6 +93,8 @@ def _cadence_minutes(unit_path: str) -> int | None:
             return int(m.group(1))
         if _DAILY_RE.match(cal):
             return 24 * 60
+        if _HOURLY_RE.match(cal):
+            return 60
     return None
 
 
@@ -140,12 +173,16 @@ def check_timers() -> list[dict[str, Any]]:
         assert last is not None  # Pyright narrowing (tuple unpack doesn't narrow)
         age_min = (_now() - last).total_seconds() / 60.0
         tol = float(os.getenv("SSOP_TIMER_TOLERANCE", "2.5"))
-        limit = (cad * tol) if cad else 60.0
+        # RandomizedDelaySec is designed-in slack; add it so jitter never
+        # reads as staleness (the supervisory timer jitters up to 600s).
+        jitter = _randomized_delay_minutes(unit_path)
+        limit = (cad * tol if cad else 60.0) + jitter
         if age_min > limit:
             problems.append({"timer": name, "cadence_min": cad,
                              "last_age_min": round(age_min, 1),
                              "detail": f"last fire {age_min:.0f}min ago > {limit:.0f}min "
-                                       f"(cadence {cad or '?'}min x {tol})"})
+                                       f"(cadence {cad or '?'}min x {tol}"
+                                       + (f" + {jitter:.0f}min jitter)" if jitter else ")")})
     return problems
 
 

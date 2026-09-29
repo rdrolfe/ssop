@@ -210,8 +210,20 @@ def main() -> int:
     # A decided case that renders thin is a real defect, so it is named.
     try:
         from tools.advisory_gen import render_advisory
-        from tools.case_tools import CASE_COLLECTION, CaseStore, case_decision
+        from tools.case_tools import (
+            CASE_COLLECTION, PROV_UNATTESTED, CaseStore, case_decision,
+        )
         cs2 = CaseStore()
+        # ONE provenance derivation for the whole sweep. render_advisory calls
+        # provenance_for() when it is handed a case but no provenance, and
+        # provenance_for(cid) delegates to provenance_map({cid}) — which
+        # rebuilds the receipt index AND rescans every case point for that one
+        # id. In an 887-case loop that was 887 full store scans: measured
+        # 794s of the digest's ~13min run on 2026-09-27 (0.9s/case), which is
+        # what pushed the job past its call timeouts and made it look hung.
+        # One map build, then pass the value in — the shape render_advisory's
+        # own docstring prescribes for callers that hold the case dicts.
+        _prov = cs2.provenance_map()
         total = decided = rendered = thin = new_undecided = 0
         thin_ids: list[str] = []
         for r in cs2._get_memory().search_memory(
@@ -222,14 +234,15 @@ def main() -> int:
             total += 1
             if case_decision(c)[0]:
                 decided += 1
+                _cid = str(c.get("case_id", ""))
                 try:
                     # Internal coverage metric: the question here is "does the
                     # advisory COMPILE", not "is the evidence attested" — with
                     # the publish gate in force, a pre-digest case would
                     # otherwise be counted as a render FAILURE and the coverage
                     # number would lie. Provenance is reported on its own line.
-                    md = render_advisory(c.get("case_id", ""), case=c,
-                                         allow_unattested=True)
+                    md = render_advisory(_cid, case=c, allow_unattested=True,
+                                         provenance=_prov.get(_cid, PROV_UNATTESTED))
                 except Exception:  # noqa: BLE001 — a render failure is the finding
                     md = ""
                 if md and len(md) >= 300:
@@ -261,13 +274,24 @@ def main() -> int:
     # 0.5s and the line printed "n/a" as though there were nothing to report:
     # an unrun check that looks like a passing check. Use the venv explicitly,
     # give it room under load, and say so when it genuinely did not run.
-    m = sh("timeout 250 ./agent-env/bin/python3 -m verify.matrix 2>&1 | grep -E 'SSOP verify matrix'",
+    # The EXIT CODE is part of the report: the old form piped into grep, so the
+    # pipeline's status was grep's (always 0) and a RED harness still printed
+    # "48 passed / 0 failed" — the same trap, one layer down. 2026-09-25: a
+    # FAILing timer-liveness gate hid behind exactly this for a week.
+    m = sh("timeout 250 ./agent-env/bin/python3 -m verify.matrix > /tmp/ssop-digest-matrix.log 2>&1; "
+           "rc=$?; grep -E 'SSOP verify matrix' /tmp/ssop-digest-matrix.log | sed \"s|$| (exit $rc)|\"; "
+           "if [ $rc -ne 0 ]; then echo '  FAILING:'; "
+           "grep -E '^(timer liveness|docs citations|registry reentrancy|misp corpus|bake-off parity)' "
+           "/tmp/ssop-digest-matrix.log | grep -E 'FAIL|problem'; "
+           "grep -E 'FAIL$' /tmp/ssop-digest-matrix.log | head -6; "
+           "grep -E '^ +fail ' /tmp/ssop-digest-matrix.log | head -6; fi",
            timeout=280)
-    lines.append("**Matrix:** " + ((m.split("=== ")[-1] if m else
+    lines.append("**Matrix:** " + ((m.split("=== ", 1)[-1].rstrip() if m else
                                     "n/a (did not run — check ./agent-env/bin/python3 -m verify.matrix)")))
 
-    # Docs citations (ontology spec drift gate)
-    dc = sh("timeout 20 python3 -m verify.check_docs 2>&1", timeout=30)
+    # Docs citations (ontology spec drift gate). Same venv rule as the matrix:
+    # a bare `python3` here is the trap named three lines up.
+    dc = sh("timeout 20 ./agent-env/bin/python3 -m verify.check_docs 2>&1", timeout=30)
     lines.append("**Docs:** " + (dc.strip() if dc else "n/a"))
 
     # Purple-team drill (last receipt from drill.py)
