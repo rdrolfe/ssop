@@ -10,7 +10,6 @@ Usage: python3 ingest_bots.py <input.json.gz> <index> [--limit N]
 import base64
 import gzip
 import json
-import ssl
 import sys
 import urllib.error
 import urllib.request

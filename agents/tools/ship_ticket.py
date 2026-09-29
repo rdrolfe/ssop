@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import json
-import ssl
 import sys
 import urllib.request
 from datetime import datetime, timezone
