@@ -261,6 +261,33 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — coverage must never kill the digest
         lines.append(f"**Coverage:** ERR {e}")
 
+    # Decision BASIS — how much of the router's work rests on a human.
+    # Distinct from Coverage above: a case can be DECIDED (by the router on
+    # the INFRA tier0/1 path) and still be UNADJUDICATED, because a
+    # heuristic or a category fallback decided it and nobody signed it.
+    # That share is the number that would justify a learned classifier, so
+    # it is reported next to coverage rather than buried.
+    try:
+        from basis_audit import _count, _live_alerts
+        _alerts = _live_alerts(days=1, limit=500)
+        if _alerts:
+            _b, _rules, _unadj = _count(_alerts)
+            _tot = sum(_b.values())
+            _adj = sum(_b.get(k, 0) for k in ("tuned_entry", "drill_gate", "noise_rule"))
+            _deg = _b.get("degraded", 0)
+            _lines = [f"**Decision basis:** {_adj}/{_tot} adjudicated "
+                      f"({100.0 * _adj / _tot:.0f}%)"]
+            for _k in ("group_heuristic", "ontology", "transport_rule", "rule_map",
+                       "tuned_delta", "unclassified"):
+                if _b.get(_k):
+                    _lines.append(f"{_k} {_b[_k]}")
+            if _deg:
+                _lines.append(f"DEGRADED {_deg} — a router guard is RAISING, "
+                              f"check the journal")
+            lines.append(" | ".join(_lines))
+    except Exception as e:  # noqa: BLE001 — a basis line must never kill the digest
+        lines.append(f"**Decision basis:** ERR {e}")
+
     # Boot evidence
     be = sh(f"tail -1 {STATE_DIR}/boot-evidence.log 2>/dev/null")
     lines.append("**Boot evidence:** " + (be if be else "n/a"))

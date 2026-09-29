@@ -74,7 +74,8 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
     """
     from router import classify, dispatch
     alert = fixture.get("alert", {})
-    category, role = classify(alert)
+    c = classify(alert)
+    category, role = c.category, c.role
     # Fixture may declare the expected router_role; the verdict check for the
     # router driver is about DISPATCH, not escalate/note.
     expected_role = fixture.get("expect", {}).get("router_role")
@@ -115,6 +116,7 @@ def drive_router_classify(fixture: Dict[str, Any]) -> RoleOutcome:
                        category=category, role=role, dispatched=dispatched,
                        tuned=tuned, tuning_override=tuning_override,
                        burst=burst, dispatch_action=dispatch_action,
+                       basis=c.basis.value, basis_detail=c.basis_detail,
                        wrote_case=False, driver_role="router")
 
 

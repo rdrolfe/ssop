@@ -24,8 +24,9 @@ import json
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from dotenv import load_dotenv
 
@@ -235,14 +236,76 @@ class Cursor:
         return self.data.get("last_ts")
 
 
-# --- Classification ---
-def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
-    """Return (category, role) for an alert."""
+# --- Classification basis: WHY a decision came out the way it did ---
+#
+# `classify` returns a hard (category, role) pair. That pair says WHAT the
+# router decided and never says how much of the decision rests on a human
+# adjudication. A rule in the hand-written RULE_MAP, a signed tuning entry,
+# and the ontology fallback all yield the same tuple shape, so a reader
+# cannot tell a rule somebody thought about from a rule that merely matched
+# a substring. That gap is the reason a "should we add a classifier?"
+# question could not be answered with data: the unadjudicated share of
+# live decisions was not measurable.
+#
+# Basis closes that gap WITHOUT changing the decision. It is metadata about
+# provenance, never authority: ADR-008 keeps authority in the signed tuning
+# entry, and a basis value must never be read as a reason to suppress or
+# dispatch. The dispatch verdict is unchanged by any value here.
+class Basis(str, Enum):
+    """Provenance of a classification. Stable identifiers — they are
+    rendered in the console/digest and counted by the basis audit."""
+
+    NOISE_RULE = "noise_rule"            # settings.noise_rules membership
+    DRILL_GATE = "drill_gate"            # ontology.is_drill_replay() — synthetic
+    TUNED_ENTRY = "tuned_entry"          # signed/committed ledger entry suppressed it
+    TUNED_DELTA = "tuned_delta"          # tuned rule, MATERIAL fingerprint delta -> re-adjudicate
+    TRANSPORT_RULE = "transport_rule"    # transport.yaml backend map
+    RULE_MAP = "rule_map"                # hand-written Wazuh RULE_MAP
+    GROUP_HEURISTIC = "group_heuristic"  # rule.groups substring test
+    ONTOLOGY = "ontology"                # categorize_alert() fallback
+    UNCLASSIFIED = "unclassified"        # fell through to DEFAULT
+    # A guard RAISED and was swallowed: the decision is real but its basis
+    # is untrustworthy, because the gate that would have decided it never
+    # ran. This is the value that keeps a silent fallthrough from being
+    # laundered as an ordinary ontology decision — the router/analyst
+    # disagreement class ADR-008 stage 2 was about, in the other direction.
+    DEGRADED = "degraded"
+
+
+class Classification(NamedTuple):
+    """classify()'s return value.
+
+    A NamedTuple so it unpacks and indexes like the historical 2-tuple
+    (`category, role = classify(a)` still works at 2-tuple sites only by
+    explicit index; positional unpacking to 2 names is intentionally a
+    loud TypeError/ValueError rather than a silent drop of basis). Callers
+    that used `classify(a)[0]` keep working unchanged.
+    """
+
+    category: str
+    role: str | None
+    basis: Basis
+    basis_detail: str = ""   # rule id / guard name — the "which one"
+
+
+def classify(alert: dict[str, Any]) -> Classification:
+    """Return the (category, role) decision AND its Basis.
+
+    The dispatch verdict is byte-identical to the pre-basis implementation.
+    Every return path names the basis explicitly — there is no default,
+    because a default would silently attribute a decision to a source the
+    caller never consulted. Degraded guards (drill gate / tuning lookup)
+    contribute Basis.DEGRADED rather than falling through anonymously.
+    """
     rule = alert.get("rule") or {}  # tolerate rule=None (e.g. SO zeek.notice)
     rid = str(rule.get("id", ""))
     groups = rule.get("groups", [])
+    # Set when a guard raised and was swallowed below. Carried into the
+    # basis of whatever later path decides, so a swallowed gate is visible
+    # instead of being laundered as a clean ontology decision.
+    degraded_by: str = ""
     if rid in NOISE_RULES:
-        return "operational", None
+        return Classification("operational", None, Basis.NOISE_RULE, rid)
     # DRILL GATE (layer-2): synthetic-corpus hosts firing synthetic alert ids
     # are drill replays — never dispatch, same shared helper the analyst uses
     # (tools.ontology, single source of truth). See settings.drill_* knobs.
@@ -250,10 +313,10 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
         from tools.ontology import is_drill_replay
         drill, _reason = is_drill_replay(alert)
         if drill:
-            return "operational", None
+            return Classification("operational", None, Basis.DRILL_GATE, rid)
     except Exception as e:  # noqa: BLE001 — gate must never break dispatch
-        import logging
-        logging.getLogger(__name__).warning("drill gate failed for %s: %s", rid, e)
+        logger.warning("drill gate failed for %s: %s", rid, e)
+        degraded_by = "drill_gate"
     # Tuned rules (auto_fp / operational) are not dispatched — the analyst
     # noted them and a human confirmed; no role should re-engage. EXCEPT: a
     # tuned rule firing with a MATERIAL fingerprint delta (new attack groups,
@@ -277,37 +340,47 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
             _cat = categorize_alert(alert)
             suppress, _reason = tuned_rule_suppresses(tuning, alert, category=_cat)
             if suppress:
-                return "operational", None
+                return Classification("operational", None, Basis.TUNED_ENTRY, rid)
             # Material delta on a tuned rule: the override MUST reach a human.
             # Falling through to the normal heuristics can DROP the override —
             # a dpkg/syslog rule (2902) with a delta ends up (operational,
             # None) and never dispatches, so the analyst never sees it. Force
             # the analyst route so dispatch_security applies the tuning
             # override and escalates for re-adjudication.
-            return "security", "analyst"
+            return Classification("security", "analyst", Basis.TUNED_DELTA, rid)
     except Exception as e:  # noqa: BLE001 — tuning lookup must never break dispatch
-        import logging
-        logging.getLogger(__name__).warning("tuning lookup failed for %s: %s", rid, e)
+        logger.warning("tuning lookup failed for %s: %s", rid, e)
+        # The ledger is the ONE authority surface (ADR-008). A failure to
+        # read it means the router may route an alert the ledger would have
+        # suppressed — mark degraded so the basis audit can see the window
+        # rather than discovering it as a churn spike.
+        degraded_by = degraded_by or "tuning_lookup"
     # Transport-aware rule map: backend-specific overrides win (SO rules),
     # else the Wazuh RULE_MAP.
     _tmap = _transport_rule_map()
     if rid in _tmap:
-        return _tmap[rid]
+        return Classification(_tmap[rid][0], _tmap[rid][1], Basis.TRANSPORT_RULE, rid)
     if rid in RULE_MAP:
-        return RULE_MAP[rid]
+        return Classification(RULE_MAP[rid][0], RULE_MAP[rid][1], Basis.RULE_MAP, rid)
     groups_str = " ".join(groups)
+
+    def _heuristic(category: str, role: str | None, why: str) -> Classification:
+        b = Basis.DEGRADED if degraded_by else Basis.GROUP_HEURISTIC
+        detail = f"{why}:{degraded_by}" if degraded_by else why
+        return Classification(category, role, b, detail)
+
     if "authentication_failed" in groups_str or "invalid_login" in groups_str:
-        return "security", "analyst"
+        return _heuristic("security", "analyst", "auth_failed")
     if "rootcheck" in groups_str:
-        return "security", "analyst"
+        return _heuristic("security", "analyst", "rootcheck")
     if "apparmor" in groups_str:
-        return "pattern", "hunt"
+        return _heuristic("pattern", "hunt", "apparmor")
     if "suricata" in groups_str or "ids" in groups_str:
-        return "security", "analyst"
+        return _heuristic("security", "analyst", "ids")
     if "low_diskspace" in groups_str:
-        return "infra", "infra"
+        return _heuristic("infra", "infra", "low_diskspace")
     if "syscheck" in groups_str or "fim" in groups_str:
-        return "security", "analyst"
+        return _heuristic("security", "analyst", "syscheck")
     # Ontology fallback — the single source of truth (thread #1). Unmatched
     # rule ids/groups MUST NOT silently fall to (operational, None): the
     # analyst verdict() categorizes via tools.ontology.categorize_alert, so
@@ -318,12 +391,15 @@ def classify(alert: dict[str, Any]) -> tuple[str, str | None]:
         from tools.ontology import categorize_alert
         cat = categorize_alert(alert)
         if cat in ("threat", "authentication", "integrity"):
-            return "security", "analyst"
+            return Classification("security", "analyst", Basis.ONTOLOGY, f"{cat}:{rid}")
         if cat in ("compliance", "operational"):
-            return DEFAULT_CATEGORY, DEFAULT_ROLE
+            return Classification(DEFAULT_CATEGORY, DEFAULT_ROLE, Basis.ONTOLOGY,
+                                  f"{cat}:{rid}" + (f":{degraded_by}" if degraded_by else ""))
     except Exception:  # noqa: BLE001 — ontology fallback must never break dispatch
-        pass
-    return DEFAULT_CATEGORY, DEFAULT_ROLE
+        logger.warning("ontology fallback failed for %s", rid)
+        degraded_by = degraded_by or "ontology_fallback"
+    return Classification(DEFAULT_CATEGORY, DEFAULT_ROLE, Basis.UNCLASSIFIED,
+                          f"{rid}:{degraded_by}" if degraded_by else rid)
 
 
 # --- Dispatch handlers ---
@@ -391,7 +467,7 @@ def dispatch_infra(alert: dict[str, Any]) -> dict[str, Any]:
     rule = alert.get("rule") or {}  # tolerate rule=None (e.g. SO zeek.notice)
     rid = str(rule.get("id", ""))
     level = int(rule.get("level", 0))
-    category, _ = classify(alert)
+    category = classify(alert).category
     result = {
         "action": "dispatched_to_infra", "agent": agent,
         "rule_id": rule.get("id"), "ts": datetime.now(timezone.utc).isoformat(),
@@ -689,9 +765,14 @@ def dispatch(alert: dict[str, Any], burst_count: int = 1) -> dict[str, Any]:
     burst_count > 1 means this is a repeat of a known burst signature —
     the alert is deduped (counted, not re-dispatched) unless it's the first.
     """
-    category, role = classify(alert)
+    c = classify(alert)
+    category, role = c.category, c.role
     alert_id = alert.get("id") or str(uuid.uuid4())
-    result = {"alert_id": alert_id, "category": category, "role": role, "burst": burst_count}
+    result = {"alert_id": alert_id, "category": category, "role": role, "burst": burst_count,
+              # Provenance of the decision, carried on the dispatch record so
+              # the basis audit and the pane of glass can distinguish an
+              # adjudicated decision from a heuristic one without re-deriving.
+              "basis": c.basis.value, "basis_detail": c.basis_detail}
     if role is None:
         result["dispatch"] = {"action": "no_dispatch_needed", "reason": "unclassified or noise"}
         return result
@@ -806,8 +887,14 @@ def run(limit: int = 50, dry_run: bool = False) -> dict[str, Any]:
             if not dry_run:
                 result = dispatch(source, burst_count=burst)
             else:
-                result = {"alert_id": alert_id, "category": classify(source)[0], "role": classify(source)[1],
-                          "burst": burst, "dispatch": {"action": "dry_run_skip"}}
+                # Classify ONCE — the dry-run path used to call classify()
+                # twice for the same alert, which is two ledger lookups and
+                # two chances to disagree with itself.
+                _c = classify(source)
+                result = {"alert_id": alert_id, "category": _c.category, "role": _c.role,
+                          "burst": burst, "basis": _c.basis.value,
+                          "basis_detail": _c.basis_detail,
+                          "dispatch": {"action": "dry_run_skip"}}
             report["results"].append(result)
             report["processed"] += 1
             # Checkpoint discipline (issue: failed dispatch): only a result

@@ -97,6 +97,27 @@ def inv_verdict_matches(fixture: Dict[str, Any], outcome: Dict[str, Any], stores
     return Check("verdict", CHECK_FAIL, detail)
 
 
+def inv_basis_matches(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
+    """If a fixture declares expect.basis, classify() must report that basis.
+
+    The basis names WHY the router decided, so a fixture that pins the
+    decision must be able to pin the provenance too — otherwise a tuned
+    rule that stops suppressing, or a rule that silently falls through to
+    the heuristic, would still pass the verdict check. Only the router
+    driver has a basis; the other drivers legitimately do not.
+    """
+    expected = fixture.get("expect", {}).get("basis")
+    if expected is None:
+        return Check("basis", CHECK_OK, "no basis expectation declared")
+    if outcome.get("driver_role") != "router":
+        return Check("basis", CHECK_OK, f"basis not applicable to {outcome.get('driver_role')}")
+    actual = outcome.get("basis")
+    detail = f"expected={expected} actual={actual}"
+    if actual == expected:
+        return Check("basis", CHECK_OK, detail)
+    return Check("basis", CHECK_FAIL, detail)
+
+
 def inv_no_case_when_expected(fixture: Dict[str, Any], outcome: Dict[str, Any], stores: Stores) -> Check:
     """If fixture says no_case, no case may have been minted.
 
@@ -344,6 +365,7 @@ def inv_hunt_intel_checked(fixture: Dict[str, Any], outcome: Dict[str, Any], sto
 # registry
 INVARIANTS: List[tuple[str, Callable[[Dict, Dict, Stores], Check]]] = [
     ("verdict", inv_verdict_matches),
+    ("basis", inv_basis_matches),
     ("no_case", inv_no_case_when_expected),
     ("case", inv_case_when_expected),
     ("no_dispatch", inv_no_dispatch_for_noise),

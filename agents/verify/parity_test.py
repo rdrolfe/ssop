@@ -46,11 +46,14 @@ print("SO normalized rule.level:", so_norm.get("rule", {}).get("level"), "| has 
 a = AnalystClient()
 def run(label, alert):
     v = a.verdict(alert)
-    cat, role = classify(alert)
+    c = classify(alert)
+    cat, role = c.category, c.role
     print(f"=== {label} ===")
-    print(f"  verdict: {v['verdict']} | category: {v.get('category')} | role: {role}")
+    print(f"  verdict: {v['verdict']} | category: {v.get('category')} | role: {role}"
+          f" | basis: {c.basis.value} ({c.basis_detail})")
     print(f"  techniques: {v.get('techniques')} | rationale: {v.get('rationale','')[:60]}")
-    return {"verdict": v["verdict"], "category": v.get("category"), "role": role, "techniques": v.get("techniques")}
+    return {"verdict": v["verdict"], "category": v.get("category"), "role": role,
+            "basis": c.basis.value, "techniques": v.get("techniques")}
 
 r_w = run("WAZUH shape", wazuh_alert)
 r_s = run("SO shape (normalized)", so_norm)

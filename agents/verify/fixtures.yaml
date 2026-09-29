@@ -144,6 +144,12 @@ fixtures:
       # Router dedupes the repeat (burst repeat -> burst_deduped, no dispatch).
       # Hunt may legitimately flag a denial burst as suspicious — its job.
       hunt_may_escalate: true
+      # 52001 is UNTUNED, so the router reaches it by the `apparmor` group
+      # substring test. Pinning the basis means this fixture also fails if
+      # 52001 ever acquires a tuning entry (it would become tuned_entry) —
+      # which would silently stop exercising burst dedupe, the exact
+      # data-change-not-code-change failure this rule already documents.
+      basis: group_heuristic
 
   - id: tuned-apparmor-no-dispatch
     description: "AppArmor 52002 is human/triage-tuned auto_fp — must NOT dispatch"
@@ -168,6 +174,11 @@ fixtures:
       category: operational
       no_dispatch: true
       hunt_may_escalate: true
+      # The stronger assertion: this rule is suppressed by a COMMITTED
+      # ledger entry, not by any heuristic. Before basis existed, a router
+      # that stopped honouring the tuning but still produced
+      # (operational, None) by another route would pass this fixture.
+      basis: tuned_entry
 
   - id: missing-fields-adversarial
     description: "Alert missing rule/agent fields — must not crash, must not escalate"
