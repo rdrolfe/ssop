@@ -269,39 +269,45 @@ def main() -> int:
     d = sh("df -h / | tail -1 | awk '{print $5\" used, \"$4\" avail\"}'")
     lines.append("**Disk (/):** " + d)
 
-    # Matrix — MUST run in the runtime venv. The digest used to call the
-    # system `python3`, which has no dotenv/langgraph, so the gate died in
-    # 0.5s and the line printed "n/a" as though there were nothing to report:
-    # an unrun check that looks like a passing check. Use the venv explicitly,
-    # give it room under load, and say so when it genuinely did not run.
-    # The EXIT CODE is part of the report: the old form piped into grep, so the
-    # pipeline's status was grep's (always 0) and a RED harness still printed
-    # "48 passed / 0 failed" — the same trap, one layer down. 2026-09-25: a
-    # FAILing timer-liveness gate hid behind exactly this for a week.
+    # The matrix used to run INLINE here, which made the whole digest unable
+    # to finish inside one terminal call: the gate takes ~460s and the tool
+    # caps at 420s, so the delivery path was structurally at risk. The matrix
+    # now runs on its own schedule and publishes a result file
+    # (deploy/lab/run_matrix_gate.py -> $SSOP_STATE_DIR/matrix-last.json);
+    # the digest only READS it, so a slow gate can never delay the report
+    # that has to reach a human.
     #
-    # The timeout is NOT a constant, it tracks the matrix's runtime, which
-    # grows with the case spine: every case-store scan pages the collection
-    # and the recidivism lookups were widened from limit=1000 to 2000 on
-    # 2026-09-28 (cf25deb) after the collection outgrew the old cap. Measured
-    # 2026-09-28: 460s (22:02:33 -> 22:10:13) against a 250s budget, so the
-    # digest would have failed EVERY morning for a reason that has nothing to
-    # do with the harness. 900s leaves ~2x headroom; if this ever trips
-    # again, raise it with a measurement rather than a guess, and prefer
-    # splitting the matrix into its own cron job over an unbounded timeout.
-    # exit 124 is `timeout` killing the child — reported distinctly below so
-    # "too slow" is never mistaken for "the gate went red".
-    m = sh("timeout 900 ./agent-env/bin/python3 -m verify.matrix > /tmp/ssop-digest-matrix.log 2>&1; "
-           "rc=$?; grep -E 'SSOP verify matrix' /tmp/ssop-digest-matrix.log | sed \"s|$| (exit $rc)|\"; "
-           "if [ $rc -eq 124 ]; then echo '  TIMED OUT at 900s — matrix runtime has outgrown the "
-           "digest budget; re-measure and raise, or split the matrix into its own job'; "
-           "elif [ $rc -ne 0 ]; then echo '  FAILING:'; "
-           "grep -E '^(timer liveness|docs citations|registry reentrancy|misp corpus|bake-off parity)' "
-           "/tmp/ssop-digest-matrix.log | grep -E 'FAIL|problem'; "
-           "grep -E 'FAIL$' /tmp/ssop-digest-matrix.log | head -6; "
-           "grep -E '^ +fail ' /tmp/ssop-digest-matrix.log | head -6; fi",
-           timeout=950)
-    lines.append("**Matrix:** " + ((m.split("=== ", 1)[-1].rstrip() if m else
-                                    "n/a (did not run — check ./agent-env/bin/python3 -m verify.matrix)")))
+    # The read is honest about AGE. A gate result from yesterday rendered as
+    # today's is precisely the failure this platform keeps earning: the
+    # Sep 23 digest reported a stale boot-evidence line while the real
+    # evidence had already been written. So the age is always shown, and a
+    # result older than MATRIX_MAX_AGE_MIN is called STALE rather than
+    # presented as current.
+    MATRIX_MAX_AGE_MIN = 30 * 60  # the gate runs daily; 30h tolerates one missed run
+    matrix_path = STATE_DIR / "matrix-last.json"
+    mtxt = ""
+    try:
+        res = json.loads(matrix_path.read_text(encoding="utf-8"))
+        ran = datetime.datetime.fromisoformat(res["ts"])
+        age_min = (datetime.datetime.now(datetime.timezone.utc) - ran).total_seconds() / 60.0
+        summary = res.get("summary") or "no summary line in the log"
+        bits = [f"{summary} (exit {res.get('exit')}, {res.get('duration_s')}s, "
+                f"ran {age_min:.0f}min ago)"]
+        if res.get("timed_out"):
+            bits.append("  TIMED OUT — the gate did not finish; raise the runner's budget")
+        for p in (res.get("problems") or [])[:4]:
+            bits.append("  " + p)
+        for f in (res.get("fails") or [])[:4]:
+            bits.append("  " + f)
+        if age_min > MATRIX_MAX_AGE_MIN:
+            bits.append(f"  STALE — result is {age_min/60:.1f}h old (limit "
+                        f"{MATRIX_MAX_AGE_MIN/60:.0f}h); the gate has not reported recently")
+        mtxt = "\n".join(bits)
+    except FileNotFoundError:
+        mtxt = "n/a (no matrix result yet — run deploy/lab/run_matrix_gate.py)"
+    except Exception as e:  # noqa: BLE001 — an unreadable result must not kill the digest
+        mtxt = f"n/a (matrix result unreadable: {e})"
+    lines.append("**Matrix:** " + mtxt)
 
     # Docs citations (ontology spec drift gate). Same venv rule as the matrix:
     # a bare `python3` here is the trap named three lines up.
