@@ -1214,6 +1214,40 @@ class CaseStore:
 
     # --- audit-integrity (supervisory duty) ---
 
+    def _iter_case_payloads(self) -> Iterator[dict[str, Any]]:
+        """Yield every case payload in the collection, with no cap.
+
+        WHY NOT search_memory(): it is scroll_all() plus `results[:limit]`,
+        so `limit` is a silent POST-SCAN truncation — the scan sees
+        everything, then the result list is cut. For these recidivism lookups
+        that is a correctness bug, not a performance knob: the fields being
+        matched (source.srcip/dstip, source.agent, source.hunt_id) live
+        INSIDE the `content` JSON string, not as indexed payload fields, so
+        Qdrant cannot push the filter down. Every point has to be examined
+        in Python, and any cap turns "is this incident already being
+        worked?" into a coin flip.
+
+        Measured 2026-09-28: limit=1000 against a 1236-point collection
+        dropped ~20% of cases. When a repeated entity's case fell in the
+        dropped tail, analyst verdict() saw no chain and escalated instead
+        of attaching — minting a duplicate case for an incident already
+        under work, which is exactly what recidivism exists to prevent.
+
+        scroll_all() pages the whole collection with a runaway guard rather
+        than a business cap, so this cannot silently miss cases as the spine
+        grows.
+        """
+        mem = self._get_memory()
+        for rec in mem.scroll_all(CASE_COLLECTION):
+            raw = (rec.payload or {}).get("content", "")
+            # Parity with search_memory(..., "case-"): skip non-case debris
+            # that shares the collection.
+            if "case-" not in str(raw).lower():
+                continue
+            payload = self._parse_content(raw)
+            if payload:
+                yield payload
+
     def recent_hunt_cases(self, hunt_id: str, window_s: int = 86400,
                           include_closed: bool = False) -> list[dict[str, Any]]:
         """Find open/recent cases filed by the same HUNT (by hunt_id).
@@ -1233,12 +1267,7 @@ class CaseStore:
         out: list[dict[str, Any]] = []
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
-            mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
-                                       scroll_limit=10000):
-                payload = self._parse_content(r.get("content", ""))
-                if not payload:
-                    continue
+            for payload in self._iter_case_payloads():
                 if payload.get("status") == "closed" and not include_closed:
                     continue
                 src = payload.get("source", {})
@@ -1268,12 +1297,7 @@ class CaseStore:
         out: list[dict[str, Any]] = []
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
-            mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
-                                       scroll_limit=10000):
-                payload = self._parse_content(r.get("content", ""))
-                if not payload:
-                    continue
+            for payload in self._iter_case_payloads():
                 if payload.get("status") == "closed":
                     continue
                 src = payload.get("source", {})
@@ -1315,12 +1339,7 @@ class CaseStore:
         cutoff = (datetime.now(timezone.utc).timestamp() - window_s
                   if window_s is not None else None)
         try:
-            mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
-                                       scroll_limit=10000):
-                payload = self._parse_content(r.get("content", ""))
-                if not payload:
-                    continue
+            for payload in self._iter_case_payloads():
                 if payload.get("status") == "closed":
                     continue
                 src = payload.get("source", {})
