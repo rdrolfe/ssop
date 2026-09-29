@@ -1234,7 +1234,7 @@ class CaseStore:
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
             mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
                                        scroll_limit=10000):
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
@@ -1269,7 +1269,7 @@ class CaseStore:
         cutoff = datetime.now(timezone.utc).timestamp() - window_s
         try:
             mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
                                        scroll_limit=10000):
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
@@ -1316,7 +1316,7 @@ class CaseStore:
                   if window_s is not None else None)
         try:
             mem = self._get_memory()
-            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=1000,
+            for r in mem.search_memory(CASE_COLLECTION, "case-", limit=2000,
                                        scroll_limit=10000):
                 payload = self._parse_content(r.get("content", ""))
                 if not payload:
