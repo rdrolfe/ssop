@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=rdrolfe
-Group=rdrolfe
+User=ssop-agent
+Group=ssop
 ExecStart=/home/rdrolfe/agent-runtime/ssop-router.sh
 Nice=10
 # A hung run must not pin the router forever (it wedged for 19h Aug 30-31).

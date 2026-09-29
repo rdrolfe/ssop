@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=rdrolfe
-Group=rdrolfe
+User=ssop-agent
+Group=ssop
 ExecStart=/home/rdrolfe/agent-runtime/ssop-supervisory.sh
 Nice=10
