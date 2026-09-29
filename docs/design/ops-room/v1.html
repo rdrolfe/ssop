@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSOP · Operations Room — chat design</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --ink:#e6e9ef; --dim:#9aa4b2; --faint:#6b7480;
+    --event:#4a9eff;   /* immutable fact */
+    --proposal:#f0a132; /* needs a human decision, inert */
+    --question:#b388ff;
+    --health:#5ec98a;
+    --human:#ffffff;
+    --danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+  header{display:flex;align-items:baseline;gap:14px;margin-bottom:6px;flex-wrap:wrap}
+  h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:13px}
+  .tag{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px}
+
+  .grid{display:grid;grid-template-columns:1fr 330px;gap:20px;margin-top:22px;align-items:start}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+  /* ---------- chat ---------- */
+  .chat{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .chat-head{padding:13px 16px;border-bottom:1px solid var(--line);background:var(--panel2);
+    display:flex;align-items:center;gap:10px}
+  .chan{font-weight:640}
+  .chat-head .meta{color:var(--faint);font-size:12px;margin-left:auto}
+  .msgs{padding:6px 0 14px;max-height:none}
+
+  .daysep{text-align:center;color:var(--faint);font-size:11px;letter-spacing:.08em;
+    text-transform:uppercase;margin:16px 0 10px}
+  .daysep::before,.daysep::after{content:"";display:inline-block;width:26px;height:1px;
+    background:var(--line);vertical-align:middle;margin:0 10px}
+
+  .m{display:grid;grid-template-columns:38px 1fr;gap:10px;padding:7px 16px 7px 14px;
+    border-left:3px solid transparent}
+  .m + .m{border-top:1px solid rgba(42,47,58,.5)}
+  .av{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;
+    font-size:12px;font-weight:700;color:#0f1115}
+  .who{font-weight:620;font-size:13px}
+  .time{color:var(--faint);font-size:11px;margin-left:7px;font-weight:400}
+  .body{margin-top:2px}
+  .cls{font-size:10px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;
+    border-radius:4px;padding:1px 6px;margin-left:7px;vertical-align:1px}
+  .txt{color:var(--ink)}
+  .txt code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+    font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#cbd3df}
+  .link{color:var(--event);text-decoration:none;border-bottom:1px dotted rgba(74,158,255,.5)}
+  .kv{color:var(--dim);font-size:12.5px;margin-top:3px}
+
+  .m.event{border-left-color:var(--event)}
+  .m.proposal{border-left-color:var(--proposal);background:rgba(240,161,50,.045)}
+  .m.question{border-left-color:var(--question)}
+  .m.health{border-left-color:var(--health);background:rgba(94,201,138,.035)}
+  .m.human{border-left-color:var(--human);background:rgba(255,255,255,.045)}
+  .m.refused{border-left-color:var(--danger);background:rgba(255,107,107,.055)}
+
+  .c-event{color:var(--event)} .c-proposal{color:var(--proposal)}
+  .c-question{color:var(--question)} .c-health{color:var(--health)}
+  .c-human{color:var(--human)} .c-refused{color:var(--danger)}
+
+  .chip{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;
+    border-radius:4px;padding:2px 7px;border:1px solid currentColor;opacity:.9}
+
+  .compose{border-top:1px solid var(--line);background:var(--panel2);padding:12px 16px}
+  .compose .bar{display:flex;align-items:center;gap:9px;color:var(--faint);font-size:12.5px}
+  .compose .fake{flex:1;background:#0b0d11;border:1px solid var(--line);border-radius:7px;
+    padding:8px 11px;color:#59616d}
+
+  /* ---------- authority panel ---------- */
+  .side{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .side h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+    margin:0 0 10px;font-weight:700}
+  .side h3{font-size:13px;margin:16px 0 7px;display:flex;align-items:center;gap:7px}
+  .side h3:first-of-type{margin-top:4px}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .side ul{margin:0;padding-left:17px;color:var(--dim);font-size:12.5px}
+  .side li{margin:3px 0}
+  .side code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;padding:0 4px;
+    font:11.5px ui-monospace,Menlo,monospace;color:#cbd3df}
+  .rule{border:1px solid var(--line);background:#0b0d11;border-radius:8px;padding:10px 12px;
+    margin-top:12px;font-size:12.5px;color:var(--dim)}
+  .rule b{color:var(--ink)}
+  .legend{margin-top:6px;font-size:12px;color:var(--dim);display:grid;gap:5px}
+  .legend div{display:flex;gap:8px;align-items:flex-start}
+  .legend .sw{width:10px;height:10px;border-radius:2px;margin-top:4px;flex:none}
+  footer{margin-top:26px;color:var(--faint);font-size:12px;border-top:1px solid var(--line);
+    padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>SSOP · Operations Room</h1>
+    <span class="tag">design mock — not deployed</span>
+    <span class="sub">Mattermost room where the agents and you talk. Non-authoritative by construction.</span>
+  </header>
+
+  <div class="grid">
+
+    <!-- ================= CHAT ================= -->
+    <div class="chat">
+      <div class="chat-head">
+        <span class="chan"># soc-operations</span>
+        <span class="tag">witness channel</span>
+        <span class="meta">6 members · agents post, humans decide — elsewhere</span>
+      </div>
+
+      <div class="msgs">
+
+        <div class="daysep">Today</div>
+
+        <!-- HEALTH -->
+        <div class="m health">
+          <div class="av" style="background:var(--health)">OP</div>
+          <div>
+            <div><span class="who">ssop-ops</span><span class="time">06:39</span>
+              <span class="cls c-health">health</span></div>
+            <div class="txt">Verify matrix gate green — <b>48 passed / 0 failed / 0 blocked</b>, exit 0, 92.7s.
+              <span class="kv">Published for the 08:00 digest.</span></div>
+          </div>
+        </div>
+
+        <!-- EVENT -->
+        <div class="m event">
+          <div class="av" style="background:var(--event)">RT</div>
+          <div>
+            <div><span class="who">ssop-router</span><span class="time">07:12</span>
+              <span class="cls c-event">event</span></div>
+            <div class="txt">Dispatched 3 alerts to analyst. Burst of 3 from
+              <code>203.0.113.50</code> → <code>sshd</code> auth failures.</div>
+            <div class="kv">No verdict yet. This message records a fact, nothing more.</div>
+          </div>
+        </div>
+
+        <!-- EVENT -->
+        <div class="m event">
+          <div class="av" style="background:var(--event)">AN</div>
+          <div>
+            <div><span class="who">ssop-analyst</span><span class="time">07:12</span>
+              <span class="cls c-event">event</span></div>
+            <div class="txt">Case <code>case-616a5fd4dd</code> opened — verdict <b>note</b>,
+              2 supporting sources.</div>
+            <div class="kv">Not a duplicate. Recidivism check found no open chain for this entity pair.</div>
+          </div>
+        </div>
+
+        <!-- HUMAN (advisory) -->
+        <div class="m human">
+          <div class="av" style="background:var(--human)">RD</div>
+          <div>
+            <div><span class="who">rdrolfe</span><span class="time">07:14</span>
+              <span class="cls c-human">answer</span>
+              <span class="chip c-human">advisory · not an authorization</span></div>
+            <div class="txt">looks fine, but block that IP anyway</div>
+            <div class="kv">Carries no commit authority. See below.</div>
+          </div>
+        </div>
+
+        <!-- REFUSED -->
+        <div class="m refused">
+          <div class="av" style="background:var(--danger)">RT</div>
+          <div>
+            <div><span class="who">ssop-router</span><span class="time">07:14</span>
+              <span class="cls c-refused">refused</span></div>
+            <div class="txt">I won't act on a chat message — blocking an IP is a state change and
+              only the console can make it.</div>
+            <div class="kv">Deep link ready: <a class="link" href="#">console → case-616a5fd4dd → Actions → Block source IP</a></div>
+          </div>
+        </div>
+
+        <!-- PROPOSAL -->
+        <div class="m proposal">
+          <div class="av" style="background:var(--proposal)">SV</div>
+          <div>
+            <div><span class="who">ssop-supervisory</span><span class="time">07:15</span>
+              <span class="cls c-proposal">proposal</span>
+              <span class="chip c-proposal">inert</span></div>
+            <div class="txt">Proposing tuning: <code>rule 59012</code> FP suppression, entity scope
+              <code>agent_scoped</code>. 14 suppressions in 7d, 0 true positives observed.</div>
+            <div class="kv">Inert until a human commits. It cannot suppress anything on its own, and
+              it cannot modify the commit core.
+              <a class="link" href="#">console → Tuning → review</a></div>
+          </div>
+        </div>
+
+        <!-- PROPOSAL (stale) -->
+        <div class="m proposal">
+          <div class="av" style="background:var(--proposal)">SV</div>
+          <div>
+            <div><span class="who">ssop-supervisory</span><span class="time">08:00</span>
+              <span class="cls c-proposal">proposal</span>
+              <span class="chip c-proposal">inert</span></div>
+            <div class="txt">Reminder: 2 proposals pending, oldest <b>16 days</b>. Still inert.</div>
+            <div class="kv">The room can nag. It cannot decide.</div>
+          </div>
+        </div>
+
+        <!-- QUESTION -->
+        <div class="m question">
+          <div class="av" style="background:var(--question)">HU</div>
+          <div>
+            <div><span class="who">ssop-hunt</span><span class="time">08:02</span>
+              <span class="cls c-question">question</span></div>
+            <div class="txt">Staged a hunt pack for <code>CVE-2026-31337</code> (KEV-listed) —
+              1 of 10 hosts matched on version.</div>
+            <div class="kv">Asking, not deciding. Promote it in the console if you want it to run.</div>
+          </div>
+        </div>
+
+        <!-- HEALTH -->
+        <div class="m health">
+          <div class="av" style="background:var(--health)">OP</div>
+          <div>
+            <div><span class="who">ssop-ops</span><span class="time">10:11</span>
+              <span class="cls c-health">health</span></div>
+            <div class="txt">All 8 unattended units <b>active</b> on <code>ssop-agent</code>.
+              Adjudicate API active on <code>rdrolfe</code>.</div>
+          </div>
+        </div>
+
+        <div class="m event">
+          <div class="av" style="background:var(--event)">AN</div>
+          <div>
+            <div><span class="who">ssop-analyst</span><span class="time">10:14</span>
+              <span class="cls c-event">event</span></div>
+            <div class="txt">Recidivism fix confirmed live — repeated entity attached to
+              <code>case-616a5fd4dd</code> instead of minting a duplicate.</div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="compose">
+        <div class="bar">
+          <span style="color:var(--human)">●</span>
+          <div class="fake">Message #soc-operations…</div>
+          <span>your replies are advisory, not authorizations</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= AUTHORITY ================= -->
+    <div class="side">
+      <h2>The contract</h2>
+
+      <h3><span class="dot" style="background:var(--event)"></span>Agents may</h3>
+      <ul>
+        <li>Post <b>events</b> — facts that already happened, with case IDs</li>
+        <li>Post <b>health</b> — gates, timers, units, disk</li>
+        <li>Post <b>proposals</b> — always rendered inert, always linking to the console</li>
+        <li>Post <b>questions</b>, and remind you when something goes stale</li>
+        <li>Echo back a decision <i>after</i> you made it in the console</li>
+      </ul>
+
+      <h3><span class="dot" style="background:var(--danger)"></span>Agents may never</h3>
+      <ul>
+        <li>Approve, reject, escalate or close a case</li>
+        <li>Commit, accept or discard a tuning proposal</li>
+        <li>Block an IP, revoke a ticket, or change a verdict</li>
+        <li>Treat <b>any</b> message — yours included — as an instruction that mutates state</li>
+        <li>Render raw attacker-controlled alert text inline</li>
+      </ul>
+
+      <h3><span class="dot" style="background:var(--human)"></span>Why your messages carry a chip</h3>
+      <ul>
+        <li>A reply in this room is <b>advisory</b>. The click in the console is the authorization.</li>
+        <li>Labelling it visibly means nobody can later read a chat reply as a signed adjudication.</li>
+        <li>It keeps ADR-008 stage 3 intact: a proposal stays inert, and a human's word is not a commit.</li>
+      </ul>
+
+      <div class="rule">
+        <b>The one-line test.</b> If acting on a message in this room would change a verdict, a
+        signature, or a blocklist — it is not a chat action. It's a console action.
+      </div>
+
+      <h3 style="margin-top:18px"><span class="dot" style="background:var(--faint)"></span>Record of truth</h3>
+      <ul>
+        <li>This room is a <b>witness</b>, not a system of record.</li>
+        <li>Authoritative: append-only spine receipts + Ed25519-signed commits.</li>
+        <li>Retention can be short. Anything that matters is reconstructible from the spine.</li>
+      </ul>
+
+      <h3><span class="dot" style="background:var(--proposal)"></span>Message classes</h3>
+      <div class="legend">
+        <div><span class="sw" style="background:var(--event)"></span><span><b>event</b> — a fact. Immutable, no action.</span></div>
+        <div><span class="sw" style="background:var(--proposal)"></span><span><b>proposal</b> — wants a decision, cannot act.</span></div>
+        <div><span class="sw" style="background:var(--question)"></span><span><b>question</b> — agent is asking you.</span></div>
+        <div><span class="sw" style="background:var(--health)"></span><span><b>health</b> — the machine talking about itself.</span></div>
+        <div><span class="sw" style="background:var(--human)"></span><span><b>answer</b> — you. Advisory only.</span></div>
+        <div><span class="sw" style="background:var(--danger)"></span><span><b>refused</b> — a request the agent declined.</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    Illustrative content, using real events from Sep 29. The room does not exist yet — this is the shape
+    being agreed before anything gets built.
+  </footer>
+</div>
+</body>
+</html>
