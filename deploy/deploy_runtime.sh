@@ -51,14 +51,16 @@ CHECK_ONLY=0
 # Files that MUST agree between repo and runtime. Config and tools, because
 # those are what an agent imports at runtime.
 #
-# drill.py is deliberately NOT here: it exists only on the runtime (it is
-# not in agents/), so there is nothing to compare against. Noted rather than
-# faked -- a tracked list that silently skips a file is worse than a short one.
+# drill.py WAS deliberately absent here (it lived only on .29, with no repo
+# source) until 2026-09-30. That was a real gap: the daily drill runner could
+# not be reviewed, diffed, or restored from source. It is now agents/drill.py
+# and tracked here, so it cannot silently drift again.
 TRACKED=(
   config.py
   router.py
   analyst.py
   agent.py
+  drill.py
   hunt.py
   tools/attach_case_report.py
   tools/investigator.py
