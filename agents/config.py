@@ -151,6 +151,19 @@ class Settings:
     wazuh_api_user: str = _env("WAZUH_API_USER", "wazuh-wui")
     wazuh_api_password: str = _env("WAZUH_API_PASSWORD", "")
 
+    # --- BOTS ground-truth corpus host ---
+    # The BOTS replay slices (bots-http-poc, bots-dns-poc, bots-winsecurity,
+    # bots-suricata-poc) are a FIXED corpus loaded on the Security Onion box.
+    # They do NOT exist on the live-alert host: Investigator resolves ONE
+    # backend host from transport.yaml, then correlated both the live stream
+    # and the BOTS slices against it. Running the wazuh backend therefore
+    # queried bots-* on the wazuh indexer and got HTTP 404 for every entity,
+    # on every run, since 2026-09-13 (the warning appeared in every
+    # ssop-drill and ssop-analyst journal entry) — a permanently degraded
+    # correlation leg that looked like a transient network blip.
+    # Blank = use the backend host (correct only when BOTS lives there too).
+    bots_host: str = _env("BOTS_INDEXER_HOST", "")
+
     # --- Proxmox ---
     proxmox_host: str = _env("PROXMOX_HOST", "localhost")
     proxmox_user: str = _env("PROXMOX_USER", "root@pam")

@@ -115,6 +115,39 @@ class Investigator:
         self._ctx = verified_ssl_context()
         self.host = indexer_host
 
+        # BOTS ground-truth corpus host (BOTS_INDEXER_HOST). Blank => the
+        # backend host, which is correct only if the BOTS slices are loaded
+        # there too. The replay corpus ships on Security Onion, so running
+        # the wazuh backend without this set 404s on every bots-* query.
+        self._bots_host = ""
+        self._bots_auth = ""
+        _bh = (settings.bots_host or "").strip()
+        if _bh:
+            _ep = _bh.replace("https://", "").replace("http://", "")
+            self._bots_host = _ep.split(":")[0]
+            # Authenticate with the BOTS host's account. The corpus is loaded
+            # on Security Onion, which is NOT necessarily the active backend
+            # (the runtime runs wazuh), so the constructor args are the WRONG
+            # credentials here — they belong to the live-alert host. Always
+            # prefer the securityonion block's user; only fall back to the
+            # constructor args if that read yields nothing.
+            _bu, _bp = "", ""
+            try:
+                import yaml as _y
+                _so = ((_y.safe_load(
+                    (settings.hunts_dir.parent / "transport.yaml").read_text()
+                ) or {}).get("backends") or {}).get("securityonion") or {}
+                _bu = _so.get("user") or ""
+                _bp = settings.so_indexer_password or _so.get("password") or ""
+            except Exception as e:  # noqa: BLE001 — fall back to backend creds
+                logger.warning("BOTS creds from transport failed (%s); "
+                               "falling back to backend credentials", e)
+            if not (_bu and _bp):
+                _bu, _bp = user or "", password or ""
+            if _bu and _bp:
+                self._bots_auth = "Basic " + base64.b64encode(
+                    f"{_bu}:{_bp}".encode()).decode()
+
         # LIVE-alert correlation: in addition to the replayed BOTS ground-truth
         # slices, correlate the entity against the LIVE alert stream so the
         # operational lab (real attacks into Wazuh/SO) shows up in evidence.
@@ -192,10 +225,18 @@ class Investigator:
 
     # --- query helpers ---
     def _search(self, index: str, body: dict[str, Any], port: int = 9200) -> dict[str, Any]:
+        # The BOTS replay slices live on their own host (see
+        # settings.bots_host / BOTS_INDEXER_HOST). Querying them against the
+        # live-alert backend host 404s, which silently dropped a whole
+        # correlation source from every investigation.
+        host, auth = self.host, self._auth
+        if index.startswith("bots-") and self._bots_host:
+            host = self._bots_host
+            auth = self._bots_auth or auth
         req = urllib.request.Request(
-            f"https://{self.host}:{port}/{index}/_search",
+            f"https://{host}:{port}/{index}/_search",
             data=json.dumps(body).encode(),
-            headers={"Authorization": self._auth, "Content-Type": "application/json"})
+            headers={"Authorization": auth, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=25, context=self._ctx) as resp:
             return json.loads(resp.read().decode())
 
