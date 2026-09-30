@@ -1,0 +1,32 @@
+# SSOP SYNTHETIC-SIGNAL injector — standing purple-team cadence.
+#
+# Fires fabricated MITRE-shaped signals (T1046 scan, T1053.005 task,
+# T1071.001 HTTP exfil, T1566.001 phishing, T1572 DNS tunnel) directly into
+# the live Wazuh alerts index using NEVER-tuned rule ids, so the router sweep
+# mints fresh cases and the analyst/supervisory timers complete the chains
+# into IRIS. Fixed doc ids -> re-runs overwrite, never duplicate.
+#
+# *** These are FABRICATED ALERTS, not adversary telemetry. ***
+# Nothing on any host executes anything. This unit is named
+# `ssop-synthetic-signals` (renamed from the misleading `ssop-atomic` on
+# 2026-09-30) precisely so nobody reads it as Atomic Red Team. It was never
+# Atomic Red Team; the old name invited that assumption and it was wrong.
+# Real atomic execution is unbuilt — see wayfinder ticket
+# `atomic-red-team-real-execution`.
+#
+# Cadence: every 30 minutes, offset from the router sweep (which runs every
+# 3 min) so injected signals get picked up on the next sweep. Cost: ~1s of
+# writes + the downstream chain. The 5 rules are fresh (9910xx/9915xx) so
+# no tuning collision; if a supervisory deny ever auto-tunes them, the
+# injector's fixed ids still land but dispatch goes silent — check the
+# tuning ledger before assuming the pipeline is broken.
+[Unit]
+Description=SSOP synthetic-signal injector (30m; fabricated alerts, executes nothing)
+
+[Timer]
+OnCalendar=*-*-* *:0/30:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

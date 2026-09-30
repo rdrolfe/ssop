@@ -29,7 +29,7 @@ APPLY=0
 ROLLBACK=0
 
 # Units that must move to the automation plane.
-UNITS="ssop-supervisory ssop-router ssop-analyst ssop-hunt ssop-atomic ssop-intel ssop-drill ssop-selfheal ssop-boot-evidence"
+UNITS="ssop-supervisory ssop-router ssop-analyst ssop-hunt ssop-synthetic-signals ssop-intel ssop-drill ssop-selfheal ssop-boot-evidence"
 # Deliberately NOT moved:
 #   ssop-adjudicate-api  — the HUMAN console: a click must be able to commit, so
 #                          it keeps the private key (and therefore stays rdrolfe).

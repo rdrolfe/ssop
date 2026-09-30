@@ -1,0 +1,11 @@
+[Unit]
+Description=SSOP synthetic-signal injector (fabricated alerts; executes nothing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ssop-agent
+Group=ssop
+ExecStart=/home/rdrolfe/agent-runtime/deploy/lab/ssop-synthetic-signals.sh
+Nice=10
