@@ -98,6 +98,34 @@ its way to.
   candidate families are Windows-centric, the fleet's 4 Wazuh agents are all
   Linux, and `RULE_MAP` carries no Windows rule IDs at all.
 
+- [Our "atomic" timer executed nothing; renamed, real execution unbuilt](tickets/atomic-red-team-real-execution.md):
+  `ssop-atomic.timer` ran every 30m and fabricated alert documents **straight
+  into the Wazuh index** — its own docstring said "Writes REAL-shape alert
+  docs into the live Wazuh alerts index." It executes nothing and never did.
+  Renamed to `ssop-synthetic-signals` (commit `1c5b9c7`) because the old
+  name invited exactly the wrong assumption. **No Atomic Red Team is
+  installed anywhere in the fleet**, and the `ubuntu-target` /
+  `windows-target` hosts the `ssop-platform-ops` fleet map describes as
+  "intentional Atomic Red Team victim/bastion hosts generating real attack
+  telemetry" **do not exist** — `qm list` returns 19 VMs and the only
+  `ubuntu|windows|target` matches are `win2019GTA` and `Windrose-win11`, both
+  stopped, neither a Wazuh agent. **That skill entry and the matching agent
+  memory are stale and describe an unbuilt capability — do not build on
+  them.** So the standing purple-team cadence produces zero real adversary
+  telemetry: valuable for exercising router→analyst→supervisory→IRIS,
+  worthless as detection ground truth, same shape as the `probe_corpus()`
+  gap. Charted as `atomic-red-team-real-execution`, gated on the same
+  criterion as the Emotet ticket: a real observed target with a Wazuh agent,
+  or it closes as not-buildable. Two calls recorded there: **Linux-first**
+  (no new VM, no new agent, no `RULE_MAP` change — Windows needs all three),
+  and **seeded-deterministic selection rather than random**, because a
+  random wave on a 3-minute router cadence makes escalations unattributable
+  to a technique and costs the drill invariant its fixed baseline. The
+  load-bearing hazard: a supervisory `deny` **writes the tuning ledger**, so
+  real atomic execution on an observed agent can auto-tune real rules
+  against traffic we attacked ourselves — an `is_synthetic_or_atomic()` gate
+  beside `is_drill_replay()` is required before any live wave.
+
 ## Not yet specified (fog)
 
 - **Which decision gets model authority.** `supervise_case`'s approve/deny is
