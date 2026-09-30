@@ -78,6 +78,26 @@ its way to.
   **Do not treat this as boilerplate to be collapsed into a tool registry** —
   twenty explicit greppable nodes is the right call for an auditable platform.
 
+- [MDNC is a bibliography, not an observable source](tickets/mdnc-behavior-hunt-emotet.md):
+  the 97-tag malware index at `malware.dontneedcoffee.com` contains **no
+  IOCs, hashes, or behaviors** — every reference is 2012-2019, and the tags
+  are names. The only family on it we cover is `cerber`, and that hunt works
+  because it carries BOTS ground truth (PID 3968, hash `AAE3F5A2...`, literal
+  string `121214.tmp`); strip the ground truth and the name is a string with
+  no telemetry. **The conversion that works is writeup → behaviors → a
+  behavior-named hunt YAML, dropping the family name** — 9 of 10 existing
+  hunts are already named for behavior, not malware. Charted as
+  `mdnc-behavior-hunt-emotet` (Emotet `vssadmin delete shadows` is the
+  recommended first candidate; TrickBot/Ursn and Cobalt Strike beaconing are
+  alternates). **Sequenced after** `llm-decision-authority`, not blocked by
+  it: a new hunt that escalates moves the numbers the drill invariant
+  protects, so don't build that surface against a moving baseline. Gated
+  first on naming ground truth — no ground truth, no hunt, because a hunt
+  that can never be proven either way is the negative-control failure
+  `probe_promote()` already fixed once. Also unresolved there: all three
+  candidate families are Windows-centric, the fleet's 4 Wazuh agents are all
+  Linux, and `RULE_MAP` carries no Windows rule IDs at all.
+
 ## Not yet specified (fog)
 
 - **Which decision gets model authority.** `supervise_case`'s approve/deny is
