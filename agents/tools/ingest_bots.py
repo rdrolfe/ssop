@@ -114,16 +114,40 @@ def ingest(path: str, index: str, limit: int = 0, backend: str = ""):
     url = f"https://{host}:{port}/_bulk"
     print(f"ingesting -> {host}:{port}/{index} (backend={backend or 'default'})")
     # Pre-create the index (OpenSearch auto-creates, but explicit is safer)
+    #
+    # number_of_replicas: 0 is DELIBERATE on a single-node deployment. The
+    # default of 1 replica can never be allocated when one node holds the
+    # primary ("same_shard" decider), so every bots-* index sat permanently
+    # UNASSIGNED and held the whole cluster at yellow. That cost us twice:
+    # it looked like a cert fault during the SO publication investigation,
+    # and it is the kind of permanent background noise that hides a real
+    # fault. The user confirmed the trade (2026-09-30): this lab is
+    # single-node BY CHOICE, and if the host dies the corpus is rebuilt
+    # from the slice files — so a replica protects nothing. Raise this to
+    # 1 the day a second data node exists.
     import urllib.request as ur
     idx_req = ur.Request(
         f"https://{host}:{port}/{index}",
-        data=b"{}", method="PUT",
+        data=json.dumps({"settings": {"index": {"number_of_replicas": 0}}}).encode(),
+        method="PUT",
         headers={"Authorization": auth, "Content-Type": "application/json"})
     try:
         ur.urlopen(idx_req, timeout=15, context=ctx)
     except urllib.error.HTTPError as e:
         if e.code != 400:  # 400 = already exists
             print(f"index create: HTTP {e.code}")
+
+    # An index created before this setting (or by a direct curl) keeps the
+    # old value, so apply it unconditionally. Cheap, idempotent.
+    try:
+        put = ur.Request(
+            f"https://{host}:{port}/{index}/_settings",
+            data=json.dumps({"index": {"number_of_replicas": 0}}).encode(),
+            method="PUT",
+            headers={"Authorization": auth, "Content-Type": "application/json"})
+        ur.urlopen(put, timeout=15, context=ctx)
+    except urllib.error.HTTPError as e:
+        print(f"replica setting: HTTP {e.code}")
 
     count = 0
     batch = []
