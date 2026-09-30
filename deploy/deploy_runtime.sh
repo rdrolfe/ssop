@@ -68,6 +68,10 @@ TRACKED=(
   tools/ontology.py
   tools/tls.py
   tools/ingest_bots.py
+  tools/observables.py
+  tools/enrichment.py
+  tools/alert_contract.py
+  tools/__init__.py
 )
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
