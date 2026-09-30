@@ -20,9 +20,11 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import ssl
 import sys
 import urllib.request
+from pathlib import Path
 from typing import Any
 from tools.tls import verified_ssl_context  # issue #29: verified TLS
 
@@ -39,26 +41,71 @@ def _ctx() -> ssl.SSLContext:
     return c
 
 
+def _transport_path() -> Path:
+    """transport.yaml beside this module (the repo keeps it at agents/, the
+    runtime at the root — a CWD-relative open() silently reads a DIFFERENT
+    file or nothing at all depending on where the process was launched)."""
+    return Path(__file__).resolve().parent.parent / "transport.yaml"
+
+
 def _so_target() -> tuple[str, int, str, str] | None:
-    """SO ES endpoint + creds from transport.yaml + settings (runtime only)."""
+    """SO ES endpoint + creds from transport.yaml + settings (runtime only).
+
+    Every field is REQUIRED and validated. An unconfigured backend returns
+    None with the reason named; it never falls back to a guessed host, port,
+    or credential. A hardcoded default here is indistinguishable from a
+    working config at the call site — a placeholder `endpoint: ''` silently
+    degraded to a hardcoded IP and the SO publish leg failed for a month
+    behind a green drill receipt (issue: SO case publication).
+    """
     try:
         import yaml
         from config import settings
-        with open("transport.yaml") as f:
-            cfg = yaml.safe_load(f)
-        b = cfg["backends"]["securityonion"]
-        import re
-        m = re.match(r"https?://([^:]+)(?::(\d+))?", b["endpoint"])
-        host = m.group(1) if m else "192.168.1.76"
-        port = int(m.group(2) or 9200) if m else 9200
-        user = b.get("user")
+        tpath = _transport_path()
+        if not tpath.exists():
+            logger.error(
+                "attach_case_report: SO publish UNAVAILABLE — transport.yaml not "
+                "found at %s; case will NOT be published to Security Onion", tpath)
+            return None
+        cfg = yaml.safe_load(tpath.read_text(encoding="utf-8")) or {}
+        b = (cfg.get("backends") or {}).get("securityonion") or {}
+
+        endpoint = (b.get("endpoint") or "").strip()
+        if not endpoint:
+            logger.error(
+                "attach_case_report: SO publish UNAVAILABLE — backends."
+                "securityonion.endpoint is unset in %s (placeholder or empty); "
+                "set it to https://<host>:<port>. Case will NOT be published.",
+                tpath)
+            return None
+        m = re.match(r"^https?://([^:/?#]+)(?::(\d+))?", endpoint)
+        if not m:
+            logger.error(
+                "attach_case_report: SO publish UNAVAILABLE — endpoint %r is not "
+                "an http(s) URL; case will NOT be published.", endpoint)
+            return None
+        host = m.group(1)
+        port = int(m.group(2) or 9200)
+
+        user = (b.get("user") or "").strip()
+        # A committed placeholder is a config bug, not a usable username.
+        if not user or (user.startswith("<") and user.endswith(">")):
+            logger.error(
+                "attach_case_report: SO publish UNAVAILABLE — backends."
+                "securityonion.user is %r (unset or unsubstituted placeholder); "
+                "case will NOT be published.", user or "<empty>")
+            return None
         pw = settings.so_indexer_password
-        if not user or not pw:
-            logger.warning("attach_case_report: SO creds missing, skipping")
+        if not pw:
+            logger.error(
+                "attach_case_report: SO publish UNAVAILABLE — "
+                "SO_INDEXER_PASSWORD is empty; case will NOT be published.")
             return None
         return host, port, user, pw
     except Exception as e:  # noqa: BLE001 — repo checkout / no transport
-        logger.warning("attach_case_report: SO target unavailable: %s", e)
+        logger.exception(
+            "attach_case_report: SO target unavailable (%s); case will NOT be "
+            "published to Security Onion", e)
         return None
 
 
