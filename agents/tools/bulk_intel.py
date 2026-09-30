@@ -279,3 +279,85 @@ def probe_corpus(client: Any | None = None) -> dict[str, Any]:
         out["error"] = f"{type(e).__name__}: {e}"
         out["summary"] = f"probe failed — {out['error']}"
     return out
+
+
+def probe_promote(client: Any | None = None,
+                  known: list[str] | None = None) -> dict[str, Any]:
+    """POSITIVE control: prove a real corpus match promotes to `suspicious`.
+
+    `probe_corpus()` is a NEGATIVE control — 40 hex zeros must return zero
+    matches. That proves the corpus is reachable and not matching noise, and
+    nothing more. It cannot detect a broken PROMOTE path: if `STRONG_TYPES`
+    or `promote_finding()` regressed, the negative control would still pass
+    while every genuine match silently degraded to `info`. A gate that cannot
+    see the thing must not report success, so this asks the positive question
+    through the same call path hunt.py uses:
+
+        bulk_intel_for(result) -> promote_finding("clean", intel)
+
+    `known` is the list of observables to try, in order; each is looked up in
+    the live corpus. Callers pass a value they believe the corpus contains (a
+    domain a hunt actually observed). If none of them match, the probe
+    reports `unproven` — NOT a failure, because it may simply be that this
+    deployment's corpus is empty. Only a POSITIVE match that then fails to
+    promote is a genuine defect.
+    """
+    out: dict[str, Any] = {"enabled": False, "proved": False, "unproven": True,
+                           "degraded": True, "promoted": None, "why": None,
+                           "tried": [], "matched_value": None,
+                           "error": None, "summary": ""}
+    try:
+        if client is None:
+            from tools.misp_client import MispClient
+            client = MispClient()
+        out["enabled"] = bool(client.available())
+        if not out["enabled"]:
+            out["summary"] = ("MISP not configured on this host "
+                              "(MISP_URL / MISP_API_KEY unset)")
+            return out
+        # Candidates: caller-supplied first, then the negative control so the
+        # probe still proves reachability when no known value is offered.
+        candidates = list(known or []) + [_PROBE_VALUE]
+        out["tried"] = candidates
+        for value in candidates:
+            res = client.match_many([value])
+            if res.get("degraded"):
+                out["error"] = res.get("error")
+                out["summary"] = f"UNREACHABLE — {out['error']}"
+                return out
+            if not res.get("matched"):
+                continue
+            # A positive match: drive the REAL path, with the observable typed
+            # the way the extractor types a domain (STRONG_TYPES keys on the
+            # observable's own type, not on MISP's response type).
+            result = {"detail": [{"domain": value}]}
+            # Same path hunt.py uses, with the already-built client injected
+            # so the probe does not open a second connection.
+            intel = BulkIntel(misp=client).match(
+                collect_observables(result), external=False)
+            finding, why = promote_finding("clean", intel)
+            out["degraded"] = bool(intel.get("degraded"))
+            out["matched_value"] = value
+            out["promoted"] = {"finding": finding, "why": why,
+                               "strong_matches": intel.get("strong_matches"),
+                               "types": intel.get("types")}
+            out["proved"] = (finding == "suspicious")
+            out["unproven"] = not out["proved"]
+            if out["proved"]:
+                out["summary"] = (f"POSITIVE CONTROL OK — corpus match on "
+                                  f"{value} promoted to 'suspicious' "
+                                  f"({why}; strong={intel.get('strong_matches')})")
+            else:
+                out["summary"] = (f"POSITIVE CONTROL FAILED — corpus match on "
+                                  f"{value} did NOT promote (got {finding!r} / "
+                                  f"{why}; types={intel.get('types')}) — the "
+                                  f"extract→match→promote path is broken")
+            return out
+        out["degraded"] = False
+        out["summary"] = ("reachable, but no supplied value matched the corpus "
+                          "(unproven, not failed) — pass known=[...] with an "
+                          "observable this deployment's corpus contains")
+    except Exception as e:  # noqa: BLE001 — the probe reports, never raises
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["summary"] = f"probe failed — {out['error']}"
+    return out

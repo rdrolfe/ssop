@@ -64,11 +64,35 @@ def _misp_gate() -> bool:
     from a run where the corpus was never actually consulted.
     """
     try:
-        from tools.bulk_intel import probe_corpus
+        from tools.bulk_intel import probe_corpus, probe_promote
 
         p = probe_corpus()
         ok = bool(p.get("reachable"))
         print("misp corpus: " + ("ok — " if ok else "FAIL — ") + (p.get("summary") or "?"))
+
+        # POSITIVE control, alongside the negative one above. probe_corpus()
+        # uses 40 hex zeros and proves only that the corpus answers and is not
+        # matching noise -- it cannot see a broken PROMOTE path. Without this,
+        # a regression in STRONG_TYPES or promote_finding() would leave the
+        # negative control green while every genuine match silently degraded to
+        # `info` and nothing escalated.
+        #
+        # `MISP_PROBE_KNOWN` is a comma-separated list of observables this
+        # deployment's corpus is known to contain. Empty => the positive
+        # control reports `unproven` (not a failure): an empty or unfamiliar
+        # corpus is a legitimate state, and failing the matrix for it would be
+        # a gate that cries wolf.
+        known_env = os.environ.get("MISP_PROBE_KNOWN", "").strip()
+        known = [v.strip() for v in known_env.split(",") if v.strip()]
+        pp = probe_promote(known=known)
+        if pp.get("proved"):
+            print("misp promote: ok — " + (pp.get("summary") or ""))
+        elif pp.get("unproven"):
+            print("misp promote: unproven — " + (pp.get("summary") or ""))
+        else:
+            # A real match that did NOT promote is a genuine defect.
+            ok = False
+            print("misp promote: FAIL — " + (pp.get("summary") or ""))
         return ok
     except Exception as e:  # noqa: BLE001 — a gate must not crash the matrix
         print(f"misp corpus: ERROR {e}")
