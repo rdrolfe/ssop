@@ -37,6 +37,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from router import Basis, Classification, classify  # noqa: E402
 
 
+class _UntunedLedger:
+    """A ledger that answers honestly without touching the network.
+
+    SSOP_ALLOW_NO_QDRANT_KEY=1 (set above) only excuses a MISSING API KEY.
+    TuningLedger.__init__ then goes on to call ensure_collection(), which is
+    a LIVE network call — and in the hermetic suite there is no Qdrant
+    server, so it raises TuningError. router.py:325 catches that and sets
+    degraded_by="tuning_lookup", so every heuristic path reported
+    Basis.DEGRADED and three tests here failed on an environment
+    accident rather than on the property they assert. It passed on any
+    host where Qdrant happened to be up: a gate that only holds when the
+    environment is convenient.
+
+    Stub __init__ AND lookup once, here, so "ledger reachable, rule
+    untuned" is an explicit fixture instead of a race against whoever
+    happens to be running Qdrant. This is the same hermetic pattern
+    test_classify_parity uses, for the same reason. Tests that want the
+    raising path patch TuningLedger with their own Boom inside a `with`,
+    which still wins over this default.
+    """
+
+    def __init__(self, memory=None) -> None:
+        pass
+
+    def lookup(self, rule_id: str):
+        return None  # untuned -> the group heuristic decides
+
+
+import tools.tuning_tools as _tt  # noqa: E402
+
+_tt.TuningLedger = _UntunedLedger
+
+
 def _alert(rid, groups=None, level=5, desc="test", agent="vault-secrets"):
     return {
         "rule": {"id": rid, "level": level, "groups": groups or [], "description": desc},
@@ -163,6 +196,10 @@ class TestDegradedBasisIsReachable(unittest.TestCase):
         """
         import tools.tuning_tools as tt
 
+        # The clean leg is hermetic by construction: the module-level
+        # _UntunedLedger stub above guarantees the ledger is reachable, so
+        # this leg cannot degrade. That is what makes the comparison below
+        # meaningful instead of a race against whoever is running Qdrant.
         clean = classify(_alert(_NO_RULE_ID, ["syscheck"], level=7,
                                 desc="New dpkg (Debian Package) installed."))
 
@@ -175,7 +212,13 @@ class TestDegradedBasisIsReachable(unittest.TestCase):
                                        desc="New dpkg (Debian Package) installed."))
         self.assertEqual(clean.category, degraded.category)
         self.assertEqual(clean.role, degraded.role)
-        self.assertNotEqual(clean.basis, degraded.basis)
+        # Guards on the premise itself: without these, a stub that silently
+        # failed to apply would leave both sides DEGRADED and the equality
+        # assertions above would pass vacuously — the test would measure
+        # nothing while reporting green.
+        self.assertEqual(clean.basis, Basis.GROUP_HEURISTIC)
+        self.assertEqual(degraded.basis, Basis.DEGRADED)
+        self.assertIn("tuning_lookup", degraded.basis_detail)
 
     def test_rulemap_hit_ignores_degraded_flag_but_still_decides(self):
         """A degraded flag must not flip a definite decision into degraded.
