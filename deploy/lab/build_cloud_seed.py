@@ -68,8 +68,11 @@ def collect_pubkeys() -> list[str]:
 
 
 def get_or_create_password() -> str:
-    d = Path.home() / ".ssop"
-    d.mkdir(exist_ok=True)
+    # SSOP_STATE_DIR is pinned in the tree .env so both planes name the same
+    # place; this records an OPERATOR credential outside the runtime tree, so
+    # it follows the state dir's parent (not the state dir itself).
+    d = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state")).parent
+    d.mkdir(parents=True, exist_ok=True)
     f = d / f"{NAME}-password.txt"
     if f.exists():
         return f.read_text().strip()

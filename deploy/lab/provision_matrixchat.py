@@ -74,8 +74,11 @@ def collect_pubkeys() -> list[str]:
 def get_or_create_password() -> str:
     """GENERATE here, RECORD outside the repo at ~/.ssop/<name>-password.txt
     (0600). Recording it costs one file and removes a whole class of lockout."""
-    secrets_dir = Path.home() / ".ssop"
-    secrets_dir.mkdir(exist_ok=True)
+    # SSOP_STATE_DIR is pinned in the tree .env so both planes name the same
+    # place; this records an OPERATOR credential outside the runtime tree, so
+    # it follows the state dir's parent (not the state dir itself).
+    secrets_dir = Path(os.getenv("SSOP_STATE_DIR") or (Path.home() / ".ssop" / "state")).parent
+    secrets_dir.mkdir(parents=True, exist_ok=True)
     pw_file = secrets_dir / f"{NAME}-password.txt"
     if pw_file.exists():
         return pw_file.read_text().strip()
