@@ -78,7 +78,51 @@ its way to.
   **Do not treat this as boilerplate to be collapsed into a tool registry** —
   twenty explicit greppable nodes is the right call for an auditable platform.
 
-- [MDNC is a bibliography, not an observable source](tickets/mdnc-behavior-hunt-emotet.md):
+- [The LLM decision is a novel-class tuning PROPOSAL, not a verdict](tickets/llm-decision-authority.md):
+  resolved by grilling 2026-09-30. **The model may propose a tuning-ledger
+  decision for an alert class the ledger has never been taught; code must
+  still decide the verdict, and the human must still write the policy.**
+  Vocabulary is the ledger's own — `FINAL_DECISIONS = {auto_fp, operational,
+  escalate}` in `tools/tuning_tools.py:33` — **not** `supervise_case`'s
+  `approve`/`deny`; those are different word sets and translating between them
+  loses the audit trail. The recommendation is literally a proposal for a
+  policy entry. Three non-negotiables carried into implementation: model
+  output is marked as model output **structurally**; recommendation and human
+  decision land adjacent on the same timeline event so disagreement is visible
+  without cross-referencing systems; and model prose never feeds another
+  automated decision (indexing it, prioritizing it, or pulling it into the
+  daily digest a human acts on is a NEW decision needing a new ticket —
+  confidently wrong is worse than absent, because it gets trusted).
+- **[KEY FINDING] The tuning flywheel the model was meant to enable is already
+  built.** The operator's described loop — alert → investigated → human
+  approves → rule tuned → suppressed if FP → baseline grows until only noise
+  surfaces — is `TuningLedger` + the pre-heuristic ledger consult at
+  `tools/analyst_tools.py:134-160` + the ledger write inside
+  `tools/supervisory_tools.adjudicate()`. **The model is not needed to close
+  it; building it as first described would add a step to a loop that already
+  turns.** The real hole is narrower and better: the ledger learns only from
+  **human** adjudications, so an un-adjudicated class has no baseline and
+  escalates every time forever, and cost scales linearly with operator
+  attention. Worst case is the **cognate-new** alert — same shape as something
+  tuned, but a material fingerprint delta, so `tuned_rule_suppresses` re-opens
+  it for human review. New to the ledger, not new to us. **That is what the
+  model is for.** Do not re-derive any of this, and do not mistake the
+  flywheel for unbuilt work.
+- **Trust is measured as agreement rate, not accumulated as a feeling.** Every
+  recommendation is one data point on model-vs-human agreement; after ~50 there
+  is a real number. The population is clean by construction — `supervise_case`
+  already refuses to re-adjudicate (decided/closed cases close with the prior
+  verdict), so the comparison only ever covers fresh cases.
+- **Packet sanitization decided:** structured observables (IPs, ports, domains,
+  hashes, rule ids) in raw — typed, cannot carry instruction; free text (rule
+  descriptions, HTTP paths, User-Agent, DNS query names, payload excerpts)
+  quoted and labelled attacker-influenced. Recorded honestly as **partial
+  mitigation, not a guarantee.**
+- **Cost:** operator's starting goal is **10 cases/day**, reassessed after real
+  data. Not a ceiling. Note the arithmetic — the router sweeps every 3 minutes,
+  so "always-on" would be ~480 calls/day; **gating on novel classes only** is
+  what makes 10/day natural rather than a throttle.
+- **[MDNC is a bibliography, not an observable source](tickets/mdnc-behavior-hunt-emotet.md):
   the 97-tag malware index at `malware.dontneedcoffee.com` contains **no
   IOCs, hashes, or behaviors** — every reference is 2012-2019, and the tags
   are names. The only family on it we cover is `cerber`, and that hunt works
