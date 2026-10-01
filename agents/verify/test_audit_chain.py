@@ -41,19 +41,20 @@ def mint_key(keys_dir: Path, name: str) -> bytes:
     """Mint a key the way `load_or_create_key` does, and write it canonically.
 
     THE FLAKE, ROOT-CAUSED: the on-disk key convention is "raw bytes, optionally
-    newline-terminated", and the reader strips exactly one trailing newline. Raw
-    `os.urandom(32)` bytes whose LAST byte happens to be 0x0A are ambiguous — the
-    reader strips KEY MATERIAL, the computed key_id stops matching the writer's,
-    and verification reports "key_id ... unknown — forged or foreign key". That
-    is a ~1/256-per-key coin flip: the intermittent offline-suite failure that
-    went unexplained for several sessions (and it is why the suite now dumps a
-    failing test's last lines — that dump is what finally named the check).
+    newline-terminated", and the reader strips exactly one trailing newline —
+    but ONLY when the file does not already end in b"\n\n" (see
+    read_key_file). `os.urandom(31) + b"\x0a"` produced a key ending in \n\n
+    ~12 times per 2000 (1/256): nothing was stripped, the key was read back
+    byte-identical, key_id still matched, and the chain verified CLEAN. The
+    ambiguity check downstream asserted fail-closed and so failed ~0.5% of
+    runs. That was a bad FIXTURE, not a bad verifier — in that case the key is
+    genuinely unambiguous and verifying is the correct behaviour. The fixture is
+    now deterministic (30 random bytes + 0x00 + 0x0A); see the check.
 
-    Production is immune BY CONSTRUCTION: `load_or_create_key` never writes a key
-    whose edge byte is whitespace-adjacent (it substitutes 0x00 for a trailing
-    0x0A). This helper reproduces that guarantee instead of hoping the coin lands
-    right. Note the failure direction is FAIL-CLOSED (a loud unknown-key
-    problem), never a silent pass — see the ambiguity check at the end.
+    This helper is still worth keeping: it mints the way production does, so
+    tests that just need a working key never depend on where the coin lands.
+    Note the failure direction that DOES matter stays FAIL-CLOSED (a loud
+    unknown-key problem), never a silent pass.
     """
     key = os.urandom(32)
     if key[-1:] == b"\n":
@@ -216,7 +217,20 @@ def main() -> int:
         amb = td / "ambiguous.jsonl"
         amb_keys = td / "keys-amb"
         amb_keys.mkdir()
-        k_amb = os.urandom(31) + b"\x0a"
+        # DETERMINISTIC construction — do NOT leave this to os.urandom.
+        # `read_key_file` strips a trailing newline ONLY when the file does not
+        # already end in b"\n\n". So a 32-byte key whose LAST TWO bytes are
+        # both 0x0A is read back byte-identical: nothing is stripped, key_id
+        # still matches, and the chain verifies CLEAN.
+        # `os.urandom(31) + b"\x0a"` hit that case ~12/2000 (1/256), which is
+        # the intermittent offline-suite failure — and it failed in the
+        # SILENT direction (ok=True, problems=[]), because in that case the
+        # key is genuinely NOT ambiguous and the verifier is behaving
+        # correctly. The old assertion was wrong ~0.5% of runs, not the code.
+        # Assert the trap deterministically: 30 random bytes + 0x00 + 0x0A, so
+        # the file ends in exactly ONE newline and stripping must occur.
+        k_amb = os.urandom(30) + b"\x00\x0a"
+        assert k_amb[-2:] != b"\n\n", "ambiguity fixture must not double-newline"
         (amb_keys / "audit-amb.key").write_bytes(k_amb)
         w_amb = AuditChainWriter(amb, key=k_amb)
         w_amb.write(case_id="case-amb", role="analyst", event="note", status="open",
