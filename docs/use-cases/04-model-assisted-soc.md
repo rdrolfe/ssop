@@ -193,6 +193,6 @@ hasn't been answered.
 
 ---
 
-**Related:** [ADR-008 — Automation Tuning Authority](../decisions/ADR-008%20-%20Automation%20Tuning%20Authority.md) ·
+**Related:** [ADR-008 — Automation Tuning Authority](../decisions/ADR-008 - Automation Tuning Authority.md) ·
 [use case 1 — the flywheel this sits on top of](01-cutting-alert-volume.md) ·
-[the framing note on measured trust](README.md#the-framing-how-this-platform-earns-your-trust)
+[the framing note on measured trust](README.md)

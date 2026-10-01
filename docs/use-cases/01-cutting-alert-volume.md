@@ -144,6 +144,6 @@ distinguishable a year from now.
 
 ---
 
-**Related:** [ADR-008 — Automation Tuning Authority](../decisions/ADR-008%20-%20Automation%20Tuning%20Authority.md) ·
+**Related:** [ADR-008 — Automation Tuning Authority](../decisions/ADR-008 - Automation Tuning Authority.md) ·
 [use case 4 — the model layer, which attacks the cold-start hole this leaves](04-model-assisted-soc.md) ·
 [`docs/roles/supervisory.md`](../roles/supervisory.md) (who commits)

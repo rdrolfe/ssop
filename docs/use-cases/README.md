@@ -83,14 +83,9 @@ how you'd know it *failed*. Where something is designed but unbuilt, it says so.
 | # | Scenario | Status | The hard part |
 |---|---|---|---|
 | 1 | [Cutting alert volume without losing the signal](01-cutting-alert-volume.md) | **Live, proven** | Knowing when you've over-suppressed |
-| 2 | Proving a detection exists before you claim it | Partial — BOTS corpus only | A negative control that can see a positive defect |
-| 3 | Running Security Onion single-node without leaking egress | **Live, proven** | A service scoping itself is not a boundary |
+| 2 | [Proving a detection exists before you claim it](02-proving-a-detection-exists.md) | Partial — corpus replay, no live adversary | A negative control that can see a positive defect |
+| 3 | [Running Security Onion without leaking egress](03-security-onion-egress-boundary.md) | **Live, proven** | A service scoping itself is not a boundary |
 | 4 | [An LLM-assisted SOC that keeps authority with the human](04-model-assisted-soc.md) | **Specified, unbuilt** | Knowing what the model is for — and isn't |
-
-**2 and 3 are not written yet.** They're listed so the set is visible and so the
-gap is on the record. Both mechanisms are live in the code and documented
-elsewhere — `docs/lab/case-bakeoff.md` for the detection validation and
-`agents/transport.yaml` for the egress registry.
 
 Each is written so you can disagree with it. If a scenario's framing is wrong
 for your situation, the reasoning is there to argue with.
