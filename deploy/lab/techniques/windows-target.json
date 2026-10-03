@@ -257,6 +257,6 @@
   "open_items": [
     "Sysmon IDs 3/7/8/10/11/13/22 are NOT yet observed because the Sysmon config include-filter suppresses most events. Widen the filter to exercise them (T1003.001 LSASS ProcessAccess = ID 10 is blocked in the catalog as do-not-run precisely because Sysmon was absent; it can now be reconsidered).",
     "Manager logs 785k+ 'Too many fields for JSON decoder' errors starting 15:35, BEFORE the Sysmon change at 22:36 \u2014 pre-existing, unrelated to Sysmon, likely from the synthetic injector. Worth its own ticket.",
-    ".78 host clock is ~3h behind Hermes; host 10:45 vs Hermes 13:45."
+    ".78 clock is CORRECT - do not 'fix' it. Verified 2026-10-03: .78 UTC and Hermes UTC agree to the second (delta 0.0s). .78 is Pacific Standard Time with DST active, so it shows -07:00 (PDT) while BaseUtcOffset reports -08:00. That difference is DST, not drift. W32Time Running, stratum 5, synced. Comparing wall-clock to Hermes (EDT) always LOOKS like a 3h gap; compare UTC."
   ]
 }
