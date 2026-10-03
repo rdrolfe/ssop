@@ -88,3 +88,10 @@ comment in `agents/tools/ontology_export.py`, `docs/project-map.html`).
   the human front-end (ADR-006).
 - Replacing the per-indicator enrichment client (GreyNoise / VT / OTX). MISP is
   the bulk pre-filter that runs BEFORE it, not a substitute.
+
+## Maps
+
+- **[map-lab-provisioning.md](map-lab-provisioning.md)** — the lab target cannot be built:
+  `provision_lab.py` completes the install but the host boots with
+  `DataSourceNone` (no user, no keys, no network). Root cause, six recorded
+  traps, and the interim plan to use `c2-sink` as the attacker platform.
