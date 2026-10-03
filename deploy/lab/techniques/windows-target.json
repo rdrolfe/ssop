@@ -22,8 +22,8 @@
     "collected_channels": [
       "Security"
     ],
-    "sysmon": "ABSENT",
-    "process_creation_4688": "DISABLED (auditpol: No Auditing)",
+    "sysmon": "INSTALLED 2026-10-03. Sysmon 15.2.22 on .78, signature Verified (CN=Microsoft Windows Publisher, thumbprint CDCC1456D261BC0EB00975F46DFFB2E24592EDAD). Sysmon64 + SysmonDrv services both Running. Lab config filters ProcessCreate, NetworkConnect (445/3389/135), CreateRemoteThread, ImageLoad (lsass.exe), RegistryEvent (CurrentVersion\\Run) and FileCreate (Windows\\Temp).",
+    "process_creation_4688": "ENABLED 2026-10-03 (was: No Auditing). auditpol now Success and Failure for Process Creation, Account Management, Task Scheduler, Registry.",
     "implication": "Only techniques that emit Security-channel events are verifiable. Anything needing 4688, Sysmon, or PowerShell 4104 is NOT detectable on this host as configured.",
     "rule_ids_already_firing": [
       "67023",
@@ -195,6 +195,19 @@
   "ssop_chain_gap": {
     "observed": "Wazuh detected the technique (level 8), but ssop-cases opened 0.",
     "cause": "router.py RULE_MAP has 23 mapped rules and NONE of them are the Windows rules this host emits (60109/60110/67027/60106/67028). Unmapped rules never classify, so they never become cases.",
-    "next": "Map the Windows rule ids in RULE_MAP with an explicit category and level. Until then Windows detection is proven at the sensor but does not enter the SSOP decision chain."
+    "next": "Map the Windows rule ids in RULE_MAP with an explicit category and level. Until then Windows detection is proven at the sensor but does not enter the SSOP decision chain.",
+    "resolved": "RESOLVED 2026-10-03. RULE_MAP had 23 entries and none covered Windows, so unmapped Windows rules fell to DEFAULT_CATEGORY=operational. Firing T1136.001 minted a REAL tier-2 escalation from rule 60154 (Administrators Group Changed, L12). Mapped 30 Windows rule ids (20 explicitly + the ones the host actually emits); host now emits 30 distinct rules and 0 are unmapped. After a correct deploy, re-firing produced escalated 0 with cases still opening.",
+    "deploy_trap": "The runtime layout is FLAT. deploy_runtime.sh copies agents/<f> -> $RT/<f>, so the live file is /home/rdrolfe/agent-runtime/router.py, not agents/router.py. Scp'ing to agents/ silently changes nothing."
+  },
+  "verified_chain": {
+    "date": "2026-10-03",
+    "result": "real attack -> Wazuh -> classify -> case, escalated 0",
+    "evidence": [
+      "technique fired: New-LocalUser + Add-LocalGroupMember -> CREATED_AND_ELEVATED",
+      "Wazuh: 60109 L8 user account created, 60154 L12 admins group changed, 60111 L8 account deleted (from cleanup)",
+      "router: 60109/60154 now security/analyst (were unmapped -> operational)",
+      "analyst sweep after deploy: 'Analyzed 10 alerts, escalated 0'",
+      "cleanup: REMOVED - no persistence left behind"
+    ]
   }
 }

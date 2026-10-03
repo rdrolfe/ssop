@@ -84,6 +84,75 @@ RULE_MAP: dict[str, tuple[str, str | None]] = {
     "550":   ("security", "analyst"),
     "553":   ("security", "analyst"),
     "554":   ("security", "analyst"),
+    # --- Windows (win-target .78) ---------------------------------------
+    # Mapped 2026-10-03 after T1136.001 fired for real and Wazuh detected it
+    # at level 8 with no case opened: the rules were absent from this map, so
+    # they never classified. Verified end-to-end by re-firing the technique.
+    # Account / group changes — persistence + privilege escalation
+    "60109": ("security", "analyst"),    # user account enabled or created
+    "60110": ("security", "analyst"),    # user account changed
+    "60111": ("security", "analyst"),    # user account deleted
+    "60112": ("security", "analyst"),    # security group created
+    "60113": ("security", "analyst"),    # security group type changed
+    "60114": ("security", "analyst"),    # member added to security group
+    "60154": ("security", "analyst"),    # administrators group changed
+    # Mapped 2026-10-03 after it minted a tier-2 escalation from a real
+    # technique: it was UNMAPPED, so it fell to DEFAULT_CATEGORY=operational,
+    # and the analyst's high-severity path escalated it to tier 2. Lab-generated
+    # alerts must never do that. security/analyst keeps it as a case for review
+    # without the escalation.
+    # Persistence
+    "4698":  ("security", "analyst"),    # scheduled task created
+    "7045":  ("security", "analyst"),    # service installed
+    "4697":  ("security", "analyst"),    # service started
+    "4657":  ("security", "analyst"),    # registry value set
+    # Credential access
+    "10":    ("security", "analyst"),    # Sysmon: process accessed lsass.exe
+    "10.2":  ("security", "analyst"),    # Sysmon: lsass handle opened
+    # Logon context. 60106/67028 fire on EVERY SSH session on this host — they
+    # are volume, not signal. Log-only, same treatment as 5501/5502 above, so
+    # a lab session cannot flood the analyst queue.
+    "60106": ("operational", None),      # Windows logon success
+    "60107": ("operational", None),      # logon failure
+    "60108": ("operational", None),      # logoff
+    "67023": ("operational", None),      # logon type assigned
+    "67024": ("operational", None),      # special privileges assigned to new logon
+    "67027": ("operational", None),      # process created (4688) — volume
+    "67028": ("operational", None),      # special privileges assigned
+    "60642": ("operational", None),      # scheduled task observed
+    # --- Windows, mapped 2026-10-03 from observed alert descriptions -------
+    # Group / privilege changes. 60160 and 60154 are the privilege-escalation
+    # pair: an unmapped 60154 minted a real tier-2 escalation during technique
+    # testing, because it fell through to DEFAULT_CATEGORY=operational and the
+    # analyst's high-severity path escalated. security/analyst keeps them as
+    # reviewable cases without the escalation.
+    "60160": ("security", "analyst"),    # domain users group changed
+    # Registry integrity / persistence. 750/594 are FIM (noise at L5 but they
+    # are the syscheck equivalents already mapped at 550/553/554); 598/751/752
+    # are registry key/value create+delete, the persistence surface.
+    "750":   ("security", "analyst"),    # registry value integrity changed
+    "594":   ("security", "analyst"),    # registry key integrity changed
+    "598":   ("security", "analyst"),    # registry key entry added
+    "751":   ("security", "analyst"),    # registry value entry deleted
+    "752":   ("security", "analyst"),    # registry value entry added
+    # Service manipulation — persistence (matches 4697/7045 above)
+    "61138": ("security", "analyst"),    # new windows service created
+    "61104": ("security", "analyst"),    # service startup type changed
+    # CIS/SCA compliance. Deliberately None: these are posture findings, not
+    # adversary activity, and 19005/19014 reach level 9 which would escalate
+    # under the operational default on every sweep.
+    "19005": ("compliance", None),       # SCA summary
+    "19010": ("compliance", None),       # CIS: audit process creation
+    "19013": ("compliance", None),       # CIS: enforce password policy
+    "19014": ("compliance", None),       # CIS: enforce password policy
+    # Host lifecycle / operational noise. 503 fires on every agent restart and
+    # 60730 on every unclean shutdown — both would generate steady churn.
+    "503":   ("operational", None),      # wazuh agent started
+    "60137": ("operational", None),      # windows user logoff
+    "60132": ("operational", None),      # system time changed
+    "60730": ("operational", None),      # inconsistent system shutdown
+    "61102": ("operational", None),      # windows system error event
+    "23502": ("operational", None),      # CVE solvability notice
 }
 
 NOISE_RULES: frozenset = settings.noise_rules

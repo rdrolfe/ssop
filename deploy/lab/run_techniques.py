@@ -185,7 +185,11 @@ def cleanup(t: dict) -> str:
     host = t["exec_host"]
     ip = {"win-target": "192.168.1.78", "c2-sink": "192.168.1.79"}[host]
     user = "Administrator" if host == "win-target" else "lab"
-    return ssh(ip, user, c, timeout=60)[:300]
+    # Cleanup is PowerShell too — same cmd.exe wrapping as fire().
+    if "powershell" not in c.lower()[:20]:
+        escaped = c.replace('"', chr(92) + '"')
+        c = "powershell -NoProfile -NonInteractive -Command \"" + escaped + "\""
+    return ssh(ip, user, c, timeout=90)[:300]
 
 
 def main() -> int:
