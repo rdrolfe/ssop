@@ -22,7 +22,7 @@
     "collected_channels": [
       "Security"
     ],
-    "sysmon": "INSTALLED 2026-10-03. Sysmon 15.2.22 on .78, signature Verified (CN=Microsoft Windows Publisher, thumbprint CDCC1456D261BC0EB00975F46DFFB2E24592EDAD). Sysmon64 + SysmonDrv services both Running. Lab config filters ProcessCreate, NetworkConnect (445/3389/135), CreateRemoteThread, ImageLoad (lsass.exe), RegistryEvent (CurrentVersion\\Run) and FileCreate (Windows\\Temp).",
+    "sysmon": "VERIFIED END TO END 2026-10-03. Sysmon 15.2.22, signature Valid (CN=Microsoft Windows Publisher). Sysmon64+SysmonDrv Running. Agent ossec.conf is at C:\\Program Files (x86)\\ossec-agent\\ossec.conf (NOT etc\\); agent log at ...\\ossec-agent\\ossec.log (NOT logs\\). FIXED: the agent had NO localfile for Microsoft-Windows-Sysmon/Operational (4 channels existed: Application, Security, System, active-responses), so 268+ events were logging locally and never collected. Added the localfile, validated ossec.conf as XML, restarted agent.",
     "process_creation_4688": "ENABLED 2026-10-03 (was: No Auditing). auditpol now Success and Failure for Process Creation, Account Management, Task Scheduler, Registry.",
     "implication": "Only techniques that emit Security-channel events are verifiable. Anything needing 4688, Sysmon, or PowerShell 4104 is NOT detectable on this host as configured.",
     "rule_ids_already_firing": [
@@ -42,7 +42,51 @@
       "61102",
       "61138"
     ],
-    "alerts_last_14d": 35
+    "alerts_last_14d": 35,
+    "sysmon_field_paths": "CORRECTED FIELD PATHS \u2014 earlier notes said data.eventid and sysmon_eventid; both are WRONG and return 0 docs. Real paths: decoder is {name: windows_eventchannel}, Sysmon event id is data.win.system.eventID, and event fields are under data.win.eventdata.* (e.g. image, commandLine, parentImage, originalFileName). Sysmon also emits native Windows ids on the same channel (4624, 4634, 4672, 4688).",
+    "sysmon_to_wazuh_observed": {
+      "note": "Empirical, from the indexer over 6h. NOT assumed mappings.",
+      "1": {
+        "wazuh": [
+          "92032",
+          "92052"
+        ],
+        "meaning": "Sysmon process creation; 92052 L4 = cmd.exe from abnormal parent, 92032 L3 = suspicious cmd shell"
+      },
+      "4624": {
+        "wazuh": [
+          "60106",
+          "67024"
+        ],
+        "meaning": "Windows logon success (native)"
+      },
+      "4634": {
+        "wazuh": [
+          "60137",
+          "67023"
+        ],
+        "meaning": "Windows logoff (native)"
+      },
+      "4672": {
+        "wazuh": [
+          "67028"
+        ],
+        "meaning": "special privileges assigned to new logon (native)"
+      },
+      "4688": {
+        "wazuh": [
+          "67027"
+        ],
+        "meaning": "process created (native, also fires via Security channel)"
+      },
+      "16384": {
+        "wazuh": [
+          "60642"
+        ],
+        "meaning": "software protection service scheduled task"
+      },
+      "chain": "60000 (decoded_as windows_eventchannel) -> 60004 (channel match) -> 61600-61639 and 92000-range"
+    }
   },
   "prerequisites": [
     {
@@ -209,5 +253,10 @@
       "analyst sweep after deploy: 'Analyzed 10 alerts, escalated 0'",
       "cleanup: REMOVED - no persistence left behind"
     ]
-  }
+  },
+  "open_items": [
+    "Sysmon IDs 3/7/8/10/11/13/22 are NOT yet observed because the Sysmon config include-filter suppresses most events. Widen the filter to exercise them (T1003.001 LSASS ProcessAccess = ID 10 is blocked in the catalog as do-not-run precisely because Sysmon was absent; it can now be reconsidered).",
+    "Manager logs 785k+ 'Too many fields for JSON decoder' errors starting 15:35, BEFORE the Sysmon change at 22:36 \u2014 pre-existing, unrelated to Sysmon, likely from the synthetic injector. Worth its own ticket.",
+    ".78 host clock is ~3h behind Hermes; host 10:45 vs Hermes 13:45."
+  ]
 }

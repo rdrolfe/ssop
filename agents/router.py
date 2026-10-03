@@ -153,6 +153,14 @@ RULE_MAP: dict[str, tuple[str, str | None]] = {
     "60730": ("operational", None),      # inconsistent system shutdown
     "61102": ("operational", None),      # windows system error event
     "23502": ("operational", None),      # CVE solvability notice
+    # --- Sysmon (verified flowing 2026-10-03) -----------------------------
+    # Confirmed empirically: decoder=windows_eventchannel, Wazuh rules 92032/92052
+    # from data.win.system.eventID=1 (Sysmon process creation). 92052 at L4 is
+    # cmd.exe spawned by an abnormal parent - genuinely worth a look, and rare.
+    # 92032 stays log-only: it fires on every cmd.exe shell including our own
+    # SSH-driven commands, so L3+analyst would be pure noise on this host.
+    "92052": ("security", "analyst"),    # cmd.exe from abnormal parent process
+    "92032": ("operational", None),      # suspicious cmd shell execution (volume)
 }
 
 NOISE_RULES: frozenset = settings.noise_rules
