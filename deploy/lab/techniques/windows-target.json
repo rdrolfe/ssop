@@ -256,7 +256,7 @@
   },
   "open_items": [
     "Sysmon IDs 3/7/8/10/11/13/22 are NOT yet observed because the Sysmon config include-filter suppresses most events. Widen the filter to exercise them (T1003.001 LSASS ProcessAccess = ID 10 is blocked in the catalog as do-not-run precisely because Sysmon was absent; it can now be reconsidered).",
-    "Manager logs 785k+ 'Too many fields for JSON decoder' errors starting 15:35, BEFORE the Sysmon change at 22:36 \u2014 pre-existing, unrelated to Sysmon, likely from the synthetic injector. Worth its own ticket.",
+    "OPEN/UNROOTED 2026-10-05: manager .75 logs 'Too many fields for JSON decoder' from wazuh-analysisd, ~802k cumulative, 100% of recent log lines, still firing. It is in the DECODE path (pre-rules), so events are arriving that analysisd cannot parse - unknown whether they are silently dropped. CORRECTION: an earlier note here said the errors started 15:35 on 2026-10-03; that was a docker log-buffer artifact. Container StartedAt is 2026-09-30 and the buffer rotated; earliest visible error is 2026-10-05 06:57. Ruled out: the synthetic injector (writes to the INDEXER, never manager:1514) and the Sysmon channel (.78 agent log clean; only ~18 alerts/10min vs thousands of errors). Manager also runs a custom IRIS integration whose integrations.log stalled 2026-09-04. Treat manager detection coverage as partially unverified.",
     ".78 clock is CORRECT - do not 'fix' it. Verified 2026-10-03: .78 UTC and Hermes UTC agree to the second (delta 0.0s). .78 is Pacific Standard Time with DST active, so it shows -07:00 (PDT) while BaseUtcOffset reports -08:00. That difference is DST, not drift. W32Time Running, stratum 5, synced. Comparing wall-clock to Hermes (EDT) always LOOKS like a 3h gap; compare UTC."
   ]
 }
