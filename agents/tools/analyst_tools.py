@@ -131,6 +131,22 @@ class AnalystClient:
                 "drill": True,
                 **c,
             }
+        # LAB GATE: a real ATT&CK technique fired by deploy/lab/run_techniques.py.
+        # The detection is genuine, so it still opens a case and stays
+        # reviewable — but it must never escalate. Rule 60154 (Administrators
+        # Group Changed, L12) minted a real tier-2 escalation from lab traffic
+        # before this gate existed, which broke the zero-escalation invariant
+        # every drill wave is supposed to hold.
+        from tools.ontology import is_lab_traffic
+        if is_lab_traffic(alert):
+            return {
+                "verdict": "note",
+                "confidence": "high",
+                "rationale": ("real-technique lab traffic — case opened for review, "
+                              "escalation withheld (lab gate)"),
+                "lab": True,
+                **c,
+            }
         # STATEFUL STEP — consult the tuning ledger: has this rule_id been
         # adjudicated? If yes, the prior decision is policy (idempotent; we
         # never re-decide a tuned class). Human-written entries are final.

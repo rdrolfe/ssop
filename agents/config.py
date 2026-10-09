@@ -233,6 +233,27 @@ class Settings:
         ip for ip in _env("SSOP_DRILL_ENTITY_IPS",
                           "192.168.250.0/24,10.6.6.0/24,10.10.0.0/16").split(",") if ip)
 
+    # --- real-adversary lab (deploy/lab/run_techniques.py) -----------------
+    # Hosts where REAL techniques execute on a schedule. Their alerts are
+    # genuine detections with real indexer alert_ids, so drill_alert_prefixes
+    # can never match them and the drill_hosts gate does not apply. Labelled
+    # explicitly instead, so "lab traffic" is a property of the event rather
+    # than of where the host happens to sit. 60154 previously minted a real
+    # tier-2 escalation from lab traffic because nothing labelled it.
+    # Lab alerts still open cases (the detection is real and worth reviewing);
+    # they are held out of the tuning ledger and never escalate.
+    lab_hosts: frozenset[str] = frozenset(
+        h for h in _env("SSOP_LAB_HOSTS",
+                        "WIN-SBUNBSBHIUG,c2-sink").split(",") if h)
+    # Field the technique runner stamps on every alert it causes, so a lab
+    # detection stays identifiable even if the alert reaches a shared host.
+    lab_label_field: str = _env("SSOP_LAB_LABEL_FIELD", "data.ssop_lab")
+    lab_label_value: str = _env("SSOP_LAB_LABEL_VALUE", "real-technique")
+    # Tuning-ledger protection. When true, lab-labelled alerts can NEVER
+    # produce an auto_fp ledger entry: production policy is not tuned from
+    # adversary traffic we generated ourselves.
+    lab_excluded_from_tuning: bool = _env_bool("SSOP_LAB_EXCLUDED_FROM_TUNING", "true")
+
     # --- router ---
     router_interval_s: int = _env_int("ROUTER_INTERVAL_S", 180)
     burst_window_min: int = _env_int("ROUTER_BURST_WINDOW_MIN", 10)

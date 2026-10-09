@@ -498,6 +498,7 @@ class TuningLedger:
         exclude_hosts: list | None = None,
         state: str = PROPOSED,
         commit_sig: str = "",
+        alert: dict | None = None,
     ) -> bool:
         """Upsert a tuning entry. Human writes are final; analyst seeds mark source.
 
@@ -515,6 +516,25 @@ class TuningLedger:
         """
         if decision not in FINAL_DECISIONS:
             raise TuningError(f"invalid decision {decision!r}; expected one of {sorted(FINAL_DECISIONS)}")
+        # TUNING-LEDGER PROTECTION (lab): production detection policy must never
+        # be tuned from adversary traffic SSOP generated itself. The lab runner's
+        # technique choices are not ground truth about real false positives —
+        # learning policy from them would encode our own choices as if they were
+        # the environment's. `alert` is optional because seeding callers (the
+        # verify matrix) have no alert; when supplied, a lab-labelled alert is
+        # refused rather than silently recorded.
+        if alert is not None:
+            from tools.ontology import lab_tuning_forbidden
+            try:
+                if lab_tuning_forbidden(alert):
+                    raise TuningError(
+                        "refusing to tune from real-technique lab traffic "
+                        "(SSOP_LAB_EXCLUDED_FROM_TUNING): production policy is not "
+                        "learned from adversary traffic we generated")
+            except TuningError:
+                raise
+            except Exception:  # noqa: BLE001 — never block a write on a gate bug
+                pass
         try:
             pid = self._point_id(rule_id)
             # FAIL CLOSED on state: an unrecognized value becomes PROPOSED, so a

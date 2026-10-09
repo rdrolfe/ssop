@@ -87,6 +87,25 @@ class Indexer:
         with op.open(req, timeout=30) as r:
             return json.loads(r.read().decode())
 
+    @classmethod
+    def from_env(cls) -> "Indexer":
+        """Build from the standard SSOP indexer env vars.
+
+        The runner lives outside agent-runtime, so it cannot import
+        IndexerTransport. Reads the same WAZUH_INDEXER_* env the runtime uses
+        and falls back to the known lab indexer on .75. Credentials are never
+        written to the repo.
+        """
+        host = os.environ.get("WAZUH_INDEXER_HOST", "192.168.1.75")
+        port = int(os.environ.get("WAZUH_INDEXER_PORT", "9200"))
+        user = os.environ.get("WAZUH_INDEXER_USERNAME", "")
+        pw = os.environ.get("WAZUH_INDEXER_PASSWORD", "")
+        if not pw:
+            raise RuntimeError(
+                "indexer credentials not in env: set WAZUH_INDEXER_PASSWORD "
+                "(and WAZUH_INDEXER_USERNAME) to run the invariant gate")
+        return cls(host, port, user, pw)
+
     def rule_ids(self, agent: str, since: str) -> dict[str, int]:
         q = {"size": 0,
              "query": {"bool": {"filter": [
@@ -97,6 +116,57 @@ class Indexer:
         return {b["key"]: b["doc_count"]
                 for b in r["aggregations"]["rules"]["buckets"]}
 
+    def count(self, index: str, since: str, extra_filter: dict | None = None) -> int:
+        """Total docs in an index since a timestamp (optionally filtered)."""
+        filters: list[dict] = [{"range": {"timestamp": {"gte": since}}}]
+        if extra_filter:
+            filters.append(extra_filter)
+        q = {"size": 0, "query": {"bool": {"filter": filters}}}
+        r = self._get(index, q)
+        return int(r["hits"]["total"]["value"])
+
+    def case_tier_counts(self, since: str) -> dict:
+        """Tier-2+ escalations recorded since a timestamp.
+
+        The invariant every wave must hold: a technique we generated ourselves
+        may open cases, but it must NEVER mint a tier-2 escalation. Rule 60154
+        broke this before the lab gate existed, and broke it AGAIN on
+        2026-10-05 while this gate was being written.
+
+        NOTE: there is no `ssop-cases` or `ssop-tuning` index. Everything —
+        verdicts, tiers, cases, escalations — lands in the single `ssop-events`
+        index, filtered by `actor`. Querying `ssop-cases*` returns zero docs
+        without erroring, which reads as a passing gate. Verified with _cat/indices.
+        """
+        q = {"size": 0,
+             "query": {"bool": {"filter": [
+                 {"range": {"ts": {"gte": since}}},
+                 {"term": {"actor": "analyst"}},
+                 {"range": {"tier": {"gte": 2}}}]}},
+             "aggs": {"t": {"terms": {"field": "tier", "size": 5}}}}
+        r = self._get("ssop-events/_search", q)
+        total = int(r["hits"]["total"]["value"])
+        by_tier = {b["key"]: b["doc_count"]
+                   for b in r.get("aggregations", {}).get("t", {}).get("buckets", [])}
+        return {"total_tier2_plus": total, "by_tier": by_tier}
+
+    def analyst_events(self, since: str) -> int:
+        """Count of analyst decisions since a timestamp (case-creation signal)."""
+        return self.count_actor("ssop-events/_search", since, "analyst")
+
+    def count_actor(self, index: str, since: str, actor: str) -> int:
+        filters = [{"range": {"ts": {"gte": since}}}, {"term": {"actor": actor}}]
+        q = {"size": 0, "query": {"bool": {"filter": filters}}}
+        return int(self._get(index, q)["hits"]["total"]["value"])
+
+    def ledger_tuning(self) -> int:
+        """Tuning-ledger writes. There is no separate tuning index — ledger
+        decisions are ssop-events with actor=supervisory, so growth in those is
+        the forbidden side effect to watch for."""
+        q = {"size": 0,
+             "query": {"bool": {"filter": [{"term": {"actor": "supervisory"}}]}}}
+        return int(self._get("ssop-events/_search", q)["hits"]["total"]["value"])
+
     def describe(self, agent: str, since: str) -> str:
         q = {"size": 0,
              "query": {"bool": {"filter": [
@@ -106,6 +176,52 @@ class Indexer:
         r = self._get("wazuh-alerts-4.x-*/_search", q)
         return {b["key"]: b["doc_count"]
                 for b in r["aggregations"]["d"]["buckets"]}
+
+
+def assert_invariants(idx: Indexer, fired_at: str) -> dict:
+    """Post-wave gate. Returns a report; raises AssertionError on violation.
+
+    Three things must hold after a wave of real techniques:
+      1. no tier-2 escalation was minted (the drill invariant)
+      2. the tuning ledger did not grow (production policy is never learned
+         from adversary traffic we generated ourselves)
+      3. at least one case was opened (non-vacuity: a wave that detects
+         nothing and escalates nothing has silently stopped working)
+
+    (3) is the one that catches a decode regression. On 2026-10-05 the manager
+    was silently discarding 1.6M events with "Too many fields for JSON decoder";
+    every assertion here would still have passed. Case creation is the only
+    signal that says the pipeline actually moved an alert end to end.
+    """
+    rep: dict = {"fired_at": fired_at, "violations": []}
+
+    esc = idx.case_tier_counts(fired_at)
+    rep["escalations"] = esc
+    if esc["total_tier2_plus"] > 0:
+        rep["violations"].append(
+            f"tier-2 escalation(s) minted from lab traffic: {esc['total_tier2_plus']}")
+
+    led = idx.ledger_tuning()
+    rep["tuning_ledger_total"] = led
+    rep["tuning_delta"] = led - _LEDGER_BASELINE
+    if led > _LEDGER_BASELINE:
+        rep["violations"].append(
+            f"tuning ledger grew by {led - _LEDGER_BASELINE} "
+            "(lab traffic must never tune production policy)")
+
+    cases = idx.analyst_events(fired_at)
+    rep["analyst_events"] = cases
+    if cases == 0:
+        rep["violations"].append(
+            "the analyst recorded nothing - the wave did not reach the "
+            "decision chain end to end (possible decode/deadline regression)")
+
+    if rep["violations"]:
+        raise AssertionError("wave invariant violated: " + "; ".join(rep["violations"]))
+    return rep
+
+
+_LEDGER_BASELINE = 0
 
 
 def auditpol_state() -> dict[str, str]:
@@ -202,9 +318,23 @@ def main() -> int:
     ap.add_argument("--enable-prereqs", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-cleanup", action="store_true")
+    ap.add_argument("--assert-invariants", action="store_true",
+                    help="after the wave, assert zero escalations, zero "
+                         "tuning-ledger growth, and >=1 case opened")
     a = ap.parse_args()
 
     doc = load()
+
+    # Capture the ledger size BEFORE anything fires, so growth is attributable.
+    if a.assert_invariants:
+        global _LEDGER_BASELINE
+        try:
+            _LEDGER_BASELINE = Indexer.from_env().ledger_tuning()
+            print(f"lab gate: tuning-ledger baseline = {_LEDGER_BASELINE}")
+        except Exception as e:  # noqa: BLE001
+            print(f"lab gate: could not read ledger baseline ({e}); "
+                  "invariant check will still assert zero growth from 0")
+            _LEDGER_BASELINE = 0
 
     if a.list:
         print(f"{'ID':<40} {'MITRE':<12} {'TYPE':<10} RISK")
@@ -261,10 +391,36 @@ def main() -> int:
         time.sleep(45)
 
         fired_at = r["fired_at"]
+        t["_fired_at"] = fired_at
         if not a.no_cleanup and t.get("cleanup"):
             print(f"    cleanup: {cleanup(t)}")
 
         print(f"    detect-expected: {t.get('detect')}")
+
+    # Post-wave invariant gate. Deliberately AFTER all techniques have run and
+    # cleaned up, and after the pipeline has had time to produce cases.
+    if a.assert_invariants and not a.dry_run:
+        # The analyst sweeps on a 5-minute timer (ssop-analyst.timer), not
+        # continuously. Waiting less than a full period produces a FALSE
+        # "analyst recorded nothing" failure: on 2026-10-05 a 60s wait reported
+        # a broken pipeline when the sweep simply had not run yet. Default to
+        # 330s so the assertion always covers at least one complete period.
+        wait_s = int(os.environ.get("SSOP_WAVE_QA_WAIT_S", "330"))
+        print(f"\n    waiting {wait_s}s for the analyst sweep (5m timer) "
+              "before asserting...")
+        time.sleep(wait_s)
+        wave_start = chosen[0].get("_fired_at") if chosen else None
+        wave_start = min((t.get("_fired_at") for t in chosen
+                          if t.get("_fired_at")), default=None)
+        try:
+            rep = assert_invariants(Indexer.from_env(), wave_start)
+            print("\nlab gate PASSED:")
+            print(f"    escalations (tier2+) : {rep['escalations']['total_tier2_plus']}")
+            print(f"    tuning ledger delta   : {rep['tuning_delta']}")
+            print(f"    analyst events        : {rep.get('analyst_events', 0)}")
+        except AssertionError as e:
+            print(f"\nlab gate FAILED: {e}")
+            return 2
 
     print("\ndone.")
     return 0

@@ -123,6 +123,46 @@ def entity_scope_from_alert(alert: dict) -> str:
         return ""
 
 
+def is_lab_traffic(alert: dict) -> bool:
+    """True when this alert was caused by the real-technique lab runner.
+
+    Two independent signals, either sufficient:
+      1. the alert carries the runner's explicit label
+         (data.ssop_lab == "real-technique"), or
+      2. it came from a configured lab host.
+
+    Signal 2 is the safety net: a technique fires a real command on a real
+    host, and the Wazuh agent attributes the resulting event to that host. If
+    the label is ever lost in the pipeline, the host check still holds. The
+    label is preferred because it survives the alert landing on a shared host.
+
+    Deliberately NOT a drill replay. A lab alert is a true detection: it opens a
+    case and stays reviewable. What it must never do is tune production policy
+    or escalate - both of which consult this function separately.
+    """
+    try:
+        data = alert.get("data") or {}
+        if not isinstance(data, dict):
+            return False
+        if str(data.get("ssop_lab") or "") == settings.lab_label_value:
+            return True
+        agent = alert.get("agent") or {}
+        host = (agent.get("name") if isinstance(agent, dict) else "") or ""
+        return bool(host) and host in settings.lab_hosts
+    except Exception:  # noqa: BLE001 — must never break triage
+        return False
+
+
+def lab_tuning_forbidden(alert: dict) -> bool:
+    """True when this alert must never produce a tuning-ledger entry.
+
+    Production detection policy tuned from adversary traffic we generated
+    ourselves would encode our own technique choices as ground truth. The
+    ledger is for learning from real-world false positives.
+    """
+    return bool(settings.lab_excluded_from_tuning) and is_lab_traffic(alert)
+
+
 def is_drill_replay(alert: dict) -> tuple[bool, str]:
     """True when the alert is a known synthetic drill replay (layer-2 gate).
 
@@ -136,6 +176,13 @@ def is_drill_replay(alert: dict) -> tuple[bool, str]:
     try:
         alert_id = str(alert.get("_id") or alert.get("id")
                        or alert.get("data", {}).get("id") or "")
+        # Real-adversary lab first: a technique fired by run_techniques.py
+        # produces a genuine detection with a real alert_id, so no synthetic
+        # prefix can ever match it. Labelled explicitly instead. This still
+        # opens a case (the detection is real) but keeps it out of tuning and
+        # off the escalation path - see is_lab_traffic().
+        if is_lab_traffic(alert):
+            return False, ""
         if any(alert_id.startswith(p) for p in settings.drill_alert_prefixes):
             agent = alert.get("agent") or {}
             host = (agent.get("name") if isinstance(agent, dict) else "") or ""

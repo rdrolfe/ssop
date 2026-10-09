@@ -66,6 +66,14 @@ TRACKED=(
   tools/investigator.py
   tools/tuning_tools.py
   tools/ontology.py
+  # Added 2026-10-05. tools/analyst_tools.py was MISSING from this list, so the
+  # runtime ran a copy from 2026-09-16 that no deploy ever refreshed. That file
+  # contains the analyst's escalation decision - the single place a verdict
+  # becomes a tier-2 escalation - so a gate added to it in the repo silently
+  # never reached production. The lab gate was deployed, verified, and did not
+  # work; the cause was this omission, not the gate.
+  # RULE: any new file under agents/tools/ MUST be added here in the same change.
+  tools/analyst_tools.py
   tools/tls.py
   tools/ingest_bots.py
   tools/observables.py
