@@ -101,8 +101,19 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
     out: dict[str, Any] = {"verdict": v["verdict"], "case_id": None,
                            "attached": False, "escalated": False,
                            "observables": [], "enrichments": []}
-    if not (v["verdict"] == "escalate" or v.get("existing_chain")):
+    # `lab` is set by the lab gate in verdict(). Lab traffic is a REAL detection
+    # (the command ran, the rule matched), so the gate withholds ESCALATION, not
+    # VISIBILITY — it must still open a case. Checking only for
+    # "escalate"/existing_chain here dropped every lab alert on the floor: no
+    # case, no spine event, and the wave gate's "the analyst recorded something"
+    # assertion could therefore never pass on a healthy wave.
+    is_lab = bool(v.get("lab"))
+    if not (v["verdict"] == "escalate" or v.get("existing_chain") or is_lab):
         return out
+    # What gets recorded on the case timeline. A chain-attach records "escalate"
+    # today, so this preserves that byte-for-byte for non-lab traffic while
+    # keeping a lab case's own timeline honest about what was decided.
+    recorded_verdict = "note" if is_lab else "escalate"
     # Extract IOCs (adopted SO concept — first-class observables on the case).
     # Extract from the ALERT (raw/normalized fields srcip/dstip/etc.), NOT
     # the verdict dict — the verdict carries entity_srcip/entity_dstip which
@@ -125,7 +136,7 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
         cid = v["existing_chain"]
         cases.append_event(
             cid, "analyst", "verdict",
-            {"verdict": "escalate", "rationale": v["rationale"], "observables": obs,
+            {"verdict": recorded_verdict, "rationale": v["rationale"], "observables": obs,
              "enrichments": enrichments, **{k: v[k] for k in ("level", "category", "agent")}},
         )
         out.update({"case_id": cid, "attached": True})
@@ -146,9 +157,13 @@ def process_alert(alert: dict[str, Any], escalate: bool = True) -> dict[str, Any
     _persist_investigation(cases, case["case_id"], alert, obs)
     cases.append_event(
         case["case_id"], "analyst", "verdict",
-        {"verdict": "escalate", "rationale": v["rationale"], **{k: v[k] for k in ("level", "category", "agent")}},
+        {"verdict": recorded_verdict, "rationale": v["rationale"], **{k: v[k] for k in ("level", "category", "agent")}},
     )
-    if escalate:
+    # The escalation guard the lab gate depends on. `escalate` is the CALLER's
+    # permission (True for the live sweep), not a decision about this alert, so
+    # without `not is_lab` a lab alert that now reaches this block would mint the
+    # very tier-2 escalation the gate exists to prevent.
+    if escalate and not is_lab:
         esc = escalator.escalate(
             tier=2,
             title=f"[ANALYST] {case['case_id']} {v['description'][:60]}",
@@ -170,6 +185,7 @@ def node_analyze_recent(state: AnalystState) -> AnalystState:
             return state
         lines = []
         opened = 0
+        escalations = 0
         for alert in alerts:
             v = analyst.verdict(alert)
             # Tolerate backend field differences: Wazuh uses 'timestamp'/
@@ -189,7 +205,14 @@ def node_analyze_recent(state: AnalystState) -> AnalystState:
                 else:
                     lines.append(f"    case={res['case_id']} escalated -> {res.get('escalated')}")
                 opened += 1
-        state["result"] = f"Analyzed {len(alerts)} alerts, escalated {opened}:\n" + "\n".join(lines)
+            if res.get("escalated"):
+                escalations += 1
+        # The counter is CASES (minted or attached), not escalations. Reporting it
+        # as "escalated N" read as N tier-2 tickets; once lab traffic began opening
+        # cases the line said "escalated 10" for a wave that escalated nothing.
+        state["result"] = (
+            f"Analyzed {len(alerts)} alerts, {opened} cases "
+            f"({escalations} escalated):\n" + "\n".join(lines))
     except Exception as e:
         state["error"] = f"Analyze failed: {e}"
         state["result"] = state["error"]

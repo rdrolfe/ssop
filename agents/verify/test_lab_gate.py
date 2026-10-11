@@ -74,6 +74,23 @@ def main():
     for u in ("ssop-wave.service", "ssop-wave.timer"):
         check(f"deploy/systemd/{u} exists", (ROOT / "deploy" / "systemd" / u).is_file())
 
+    print("lab gate: lab traffic opens a case but never escalates")
+    # The lab verdict is "note". Until 2026-10-11 process_alert() admitted only
+    # "escalate" or existing_chain past its early return, so EVERY lab alert was
+    # dropped: no case, no spine event, and the wave gate's "the analyst recorded
+    # something" assertion could never pass. The lab term has to be explicit.
+    analyst_src = (ROOT / "agents" / "analyst.py").read_text()
+    check("process_alert admits lab verdicts to case minting",
+          'v.get("existing_chain") or is_lab' in analyst_src)
+    check("lab traffic is excluded from the escalation call",
+          "if escalate and not is_lab" in analyst_src)
+    check("a lab case timeline records the real verdict, not escalate",
+          "recorded_verdict" in analyst_src)
+    # ...and the case must be CHAINED, or a wave (100+ alerts) mints 100 cases.
+    at_src = (ROOT / "agents" / "tools" / "analyst_tools.py").read_text()
+    check("lab branch chains on host+rule with no time bound",
+          "recent_host_cases" in at_src and "open_only=True" in at_src)
+
     print("lab gate: invariant gate is wired")
     runner = (ROOT / "deploy" / "lab" / "run_techniques.py").read_text()
     for needle, label in [
@@ -81,7 +98,13 @@ def main():
         ("def assert_invariants", "gate function defined"),
         ("total_tier2_plus", "gate asserts zero escalations"),
         ("tuning_delta", "gate asserts zero ledger growth"),
-        ("analyst_events", "gate asserts the analyst recorded something"),
+        # Non-vacuity is measured as DETECTION, not as "the analyst recorded
+        # something". The old form counted actor=analyst documents in ssop-events
+        # -- shipped ESCALATION TICKETS, i.e. the thing assertion 1 forbids -- so
+        # assertions 1 and 3 were mutually exclusive and the gate failed on every
+        # healthy wave.
+        ("expected_wazuh_rules", "gate resolves the expected Wazuh rule ids"),
+        ("victim_alerts_by_rule", "gate asserts the detection landed on the victim"),
     ]:
         check(label, needle in runner)
     # The wildcard-index trap: ssop-cases* / ssop-tuning* do not exist and

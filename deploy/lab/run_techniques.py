@@ -24,6 +24,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -186,20 +187,58 @@ class Indexer:
                 for b in r["aggregations"]["d"]["buckets"]}
 
 
-def assert_invariants(idx: Indexer, fired_at: str) -> dict:
+VICTIM_AGENT = "WIN-SBUNBSBHIUG"
+
+
+def expected_wazuh_rules(techniques: list[dict]) -> tuple[list[str], list[str]]:
+    """Wazuh rule ids that would prove each technique detected, plus the ones
+    that yield none.
+
+    Two sources, because the catalog records two different identifiers and
+    conflating them is how the (unused) verify() reported a demonstrably working
+    technique as unmatched: `observed_rules` is what Wazuh actually emitted, and
+    `detect` is prose that usually leads with the WINDOWS event id (4698, 4720) —
+    which is not a Wazuh rule id and can never match one in a bucket of rule ids.
+    Wazuh rule ids in this deployment are five digits (60106, 67027, 92032), so
+    from `detect` only five-digit tokens are accepted.
+    """
+    expected: list[str] = []
+    unresolved: list[str] = []
+    for t in techniques:
+        ids = [str(r) for r in (t.get("observed_rules") or [])]
+        ids += re.findall(r"\b\d{5}\b", " ".join(t.get("detect") or []))
+        ids = list(dict.fromkeys(ids))
+        if ids:
+            expected += ids
+        else:
+            unresolved.append(t["id"])
+    return list(dict.fromkeys(expected)), unresolved
+
+
+def assert_invariants(idx: Indexer, fired_at: str,
+                      techniques: list[dict] | None = None) -> dict:
     """Post-wave gate. Returns a report; raises AssertionError on violation.
 
     Three things must hold after a wave of real techniques:
       1. no tier-2 escalation was minted (the drill invariant)
       2. the tuning ledger did not grow (production policy is never learned
          from adversary traffic we generated ourselves)
-      3. at least one case was opened (non-vacuity: a wave that detects
-         nothing and escalates nothing has silently stopped working)
+      3. the wave's OWN detection is visible on the sensor (non-vacuity: a wave
+         that detects nothing and escalates nothing has silently stopped
+         working)
 
     (3) is the one that catches a decode regression. On 2026-10-05 the manager
     was silently discarding 1.6M events with "Too many fields for JSON decoder";
-    every assertion here would still have passed. Case creation is the only
-    signal that says the pipeline actually moved an alert end to end.
+    assertions 1 and 2 would both still have passed.
+
+    (3) WAS ORIGINALLY "did the analyst record something", counted as
+    actor=analyst documents in ssop-events, and that assertion could never pass.
+    Those documents are SHIPPED ESCALATION TICKETS (escalate_tools ->
+    ship_ticket_doc) — they are precisely what assertion 1 forbids, so 1 and 3
+    were mutually exclusive and the gate failed on every healthy wave. A case
+    mint does not write to ssop-events at all; verdicts and cases live in the
+    Qdrant spine and audit/cases.jsonl. Measured 2026-10-11 on the first
+    scheduled run: alerts on the victim, ledger 0, escalations 0, gate FAILED.
     """
     rep: dict = {"fired_at": fired_at, "violations": []}
 
@@ -217,12 +256,22 @@ def assert_invariants(idx: Indexer, fired_at: str) -> dict:
             f"tuning ledger grew by {led - _LEDGER_BASELINE} "
             "(lab traffic must never tune production policy)")
 
-    cases = idx.analyst_events(fired_at)
-    rep["analyst_events"] = cases
-    if cases == 0:
+    expected, unresolved = expected_wazuh_rules(techniques or [])
+    seen = idx.rule_ids(VICTIM_AGENT, fired_at)
+    rep["victim_alerts_by_rule"] = seen
+    rep["expected_rules"] = expected
+    rep["detected"] = [r for r in expected if seen.get(r)]
+    if unresolved:
+        rep["techniques_without_a_resolvable_rule"] = unresolved
+    if expected and not rep["detected"]:
         rep["violations"].append(
-            "the analyst recorded nothing - the wave did not reach the "
-            "decision chain end to end (possible decode/deadline regression)")
+            "none of the wave's expected rules appeared on %s (%s) - the "
+            "detection did not land (possible decode, agent, or rule regression)"
+            % (VICTIM_AGENT, ", ".join(expected)))
+    elif not seen:
+        rep["violations"].append(
+            "no alerts at all on %s since the wave fired - the sensor or the "
+            "decode path is down" % VICTIM_AGENT)
 
     if rep["violations"]:
         raise AssertionError("wave invariant violated: " + "; ".join(rep["violations"]))
@@ -434,11 +483,20 @@ def main() -> int:
         wave_start = min((t.get("_fired_at") for t in chosen
                           if t.get("_fired_at")), default=None)
         try:
-            rep = assert_invariants(Indexer.from_env(), wave_start)
+            rep = assert_invariants(Indexer.from_env(), wave_start, chosen)
             print("\nlab gate PASSED:")
             print(f"    escalations (tier2+) : {rep['escalations']['total_tier2_plus']}")
             print(f"    tuning ledger delta   : {rep['tuning_delta']}")
-            print(f"    analyst events        : {rep.get('analyst_events', 0)}")
+            print(f"    expected rules        : "
+                  f"{', '.join(rep['expected_rules']) or '(none resolvable)'}")
+            print(f"    detected on the victim: "
+                  f"{', '.join(rep['detected']) or '(NONE - not asserted)'}")
+            print(f"    rules seen on victim  : {len(rep['victim_alerts_by_rule'])}")
+            if rep.get("techniques_without_a_resolvable_rule"):
+                print("    WARNING: no Wazuh rule id resolvable for "
+                      + ", ".join(rep["techniques_without_a_resolvable_rule"])
+                      + " - add observed_rules to the catalog or that technique's "
+                        "detection is not asserted")
         except AssertionError as e:
             print(f"\nlab gate FAILED: {e}")
             return 2

@@ -139,12 +139,28 @@ class AnalystClient:
         # every drill wave is supposed to hold.
         from tools.ontology import is_lab_traffic
         if is_lab_traffic(alert):
+            # Host+rule recidivism, exactly as dispatch_infra does it: an OPEN lab
+            # case for this host+rule absorbs every later identical detection until
+            # a human closes it. Without this the lab branch returns no
+            # existing_chain (it short-circuits before the recidivism block below),
+            # so a wave -- which emits upwards of a hundred alerts -- would mint
+            # one case per alert and flood the spine with lab noise.
+            lab_chain = None
+            try:
+                from tools.registry import get_cases
+                found = get_cases().recent_host_cases(
+                    c.get("agent"), rule_id=c.get("rule_id"),
+                    window_s=None, open_only=True)
+                lab_chain = found[0].get("case_id") if found else None
+            except Exception:  # noqa: BLE001 — chain lookup must never break triage
+                lab_chain = None
             return {
                 "verdict": "note",
                 "confidence": "high",
                 "rationale": ("real-technique lab traffic — case opened for review, "
                               "escalation withheld (lab gate)"),
                 "lab": True,
+                "existing_chain": lab_chain,
                 **c,
             }
         # STATEFUL STEP — consult the tuning ledger: has this rule_id been
