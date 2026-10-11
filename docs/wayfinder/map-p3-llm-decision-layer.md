@@ -97,7 +97,7 @@ its way to.
   built.** The operator's described loop — alert → investigated → human
   approves → rule tuned → suppressed if FP → baseline grows until only noise
   surfaces — is `TuningLedger` + the pre-heuristic ledger consult at
-  `tools/analyst_tools.py:134-160` + the ledger write inside
+  `tools/analyst_tools.py:188-193` + the ledger write inside
   `tools/supervisory_tools.adjudicate()`. **The model is not needed to close
   it; building it as first described would add a step to a loop that already
   turns.** The real hole is narrower and better: the ledger learns only from

@@ -2,6 +2,7 @@
   "schema": "ssop/attack-technique-set/v1",
   "version": 1,
   "charted": "2026-10-03",
+  "rules_harvested": "2026-10-11",
   "hosts": {
     "attacker": {
       "name": "c2-sink",
@@ -127,7 +128,13 @@
       ],
       "requires": "none",
       "risk": "low",
-      "notes": "Every SSH session triggers this. Baseline noise, not an attack on its own."
+      "observed_rules": [
+        "60106",
+        "67028"
+      ],
+      "verified": true,
+      "harvested": "2026-10-11",
+      "notes": "Every SSH session triggers this. Baseline noise, not an attack on its own. Its detection IS the session baseline, so observed_rules here records what a healthy session emits rather than anything distinctive."
     },
     {
       "id": "T1136.001-create-account-local",
@@ -149,8 +156,11 @@
       "observed_rules": [
         "60109",
         "60110",
-        "67027"
-      ]
+        "60111",
+        "60154",
+        "60160"
+      ],
+      "harvested": "2026-10-11"
     },
     {
       "id": "T1053.005-scheduled-task",
@@ -166,7 +176,13 @@
       "requires": "auditpol: Detailed Tracking > Task Scheduler = Success",
       "cleanup": "Unregister-ScheduledTask -TaskName 'ssop_lab_task' -Confirm:$false -ErrorAction SilentlyContinue",
       "risk": "medium",
-      "notes": "Rule 60642 already fires on this host so detection is PROVEN, not theoretical."
+      "harvested": "2026-10-11",
+      "verified": true,
+      "observed_rules": [
+        "92032",
+        "92021"
+      ],
+      "notes": "EXECUTION-LEVEL detection only. Harvested 2026-10-11: 92032/92021 (Sysmon process creation for the chain sshd.exe -> cmd.exe -> powershell.exe) appear in the technique window and NOT in an idle control window, so they are attributable to the execution - but they are generic to running PowerShell on this host, not to the scheduled task. The ARTIFACT-level detection (4698) produced no Wazuh rule even after the documented prerequisite was enabled and re-measured (auditpol Task Scheduler = Success and Failure). 60642 is NOT this technique's detection: it also appears in the T1136.001 window and comes from the host's own Software Protection scheduled tasks."
     },
     {
       "id": "T1547.001-registry-run-key",
@@ -182,7 +198,12 @@
       "requires": "auditpol: Registry = Success",
       "cleanup": "Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'ssop_lab_persist' -ErrorAction SilentlyContinue",
       "risk": "low",
-      "notes": "Classic persistence. Low blast radius, easy cleanup."
+      "harvested": "2026-10-11",
+      "verified": true,
+      "observed_rules": [
+        "92032"
+      ],
+      "notes": "Classic persistence. Low blast radius, easy cleanup. Harvested 2026-10-11: EXECUTION-LEVEL detection only - 92032 (Sysmon process creation for the powershell chain) is attributable, but generic to running PowerShell here. The registry write itself is NOT detected: 4657 requires a per-key SACL (auditpol /resourceSACL), which enabling the Registry subcategory alone does not create."
     },
     {
       "id": "T1003.001-lsass-memdump",
@@ -213,7 +234,12 @@
       ],
       "requires": "sshd running (confirmed STATE 4 RUNNING)",
       "risk": "low",
-      "notes": "Attacker-side on .79, victim-side log on .78. Two agents see this one."
+      "observed_rules": [
+        "67023",
+        "67024"
+      ],
+      "harvested": "2026-10-11",
+      "notes": "Attacker-side on .79, victim-side log on .78. Two agents see this one. Harvested 2026-10-11: counts matched the 6 attempts, but 67023/67024 also appear at low counts in the other windows, so treat the attribution as MODERATE confidence rather than proven."
     },
     {
       "id": "T1046-port-scan",
@@ -228,7 +254,9 @@
       ],
       "requires": "none",
       "risk": "low",
-      "notes": "Establishes the service inventory Wazuh would alert on during recon."
+      "verified": false,
+      "harvested": "2026-10-11",
+      "notes": "Establishes the service inventory Wazuh would alert on during recon. NOT VERIFIED: measured 2026-10-11 the victim emitted exactly the control baseline, so this host does NOT alert on inbound connection attempts. The technique executes and its output is real; there is simply no detection to assert."
     }
   ],
   "ledger_protection": {
@@ -256,6 +284,7 @@
     ]
   },
   "open_items": [
+    "HARVESTED 2026-10-11: every runnable technique was fired once with an idle control window before it, and the rules Wazuh actually emitted were written into observed_rules. Result: only T1078 (session baseline by design) and T1136.001 (60109/60110/60111/60154/60160) are detectable on this host. T1053.005, T1547.001 and T1046 emit NOTHING distinguishable from a session. A wave made only of undetectable techniques now asserts WEAKLY (session baseline) and says so in the unit journal.",
     "RESOLVED 2026-10-05 (was: OPEN/UNROOTED): the manager's 'Too many fields for JSON decoder' flood (1,612,496 errors, ~1,984/min) was caused by analysisd.decoder_order_size=256 in internal_options.conf. Windows/Sysmon events carry data.win.* trees wider than 256 fields, so analysisd refused to decode them. Raised to 1024 and restarted via wazuh-control. Verified 0 errors/min with analysisd confirmed running, and T1136.001 then produced 68 alerts on .78 all decoded as windows_eventchannel. Separately, the custom-wazuh_iris.py integration was owned by UID 1000 while wazuh-integratord runs as UID 999 - chgrp wazuh fixed 488 exec failures. MEASUREMENT WARNING: docker logs rotates and undercounts (802k shown vs 1.6M real) and invents false start times; count in the container's ossec.log and take timed deltas. kill -TERM on wazuh-analysisd does not restart it - use wazuh-control restart.",
     "Sysmon IDs 3/7/8/10/11/13/22 are NOT yet observed because the Sysmon config include-filter suppresses most events. Widen the filter to exercise them (T1003.001 LSASS ProcessAccess = ID 10 is blocked in the catalog as do-not-run precisely because Sysmon was absent; it can now be reconsidered).",
     ".78 clock is CORRECT - do not 'fix' it. Verified 2026-10-03: .78 UTC and Hermes UTC agree to the second (delta 0.0s). .78 is Pacific Standard Time with DST active, so it shows -07:00 (PDT) while BaseUtcOffset reports -08:00. That difference is DST, not drift. W32Time Running, stratum 5, synced. Comparing wall-clock to Hermes (EDT) always LOOKS like a 3h gap; compare UTC."

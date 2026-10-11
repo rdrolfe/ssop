@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from config import settings
 from logging_setup import get_logger
 from tools.indexer_client import IndexerClient, IndexerError
 
 logger = get_logger(__name__)
+
+# Memoized POSITIVE lab-chain lookups, keyed (agent, rule_id). See the lab gate
+# in verdict(): the chain lookup is a full case-store scan, so a burst of alerts
+# sharing one rule otherwise costs one scan per alert inside a 300s sweep budget.
+_LAB_CHAIN_CACHE: Dict[Tuple[str, str], str] = {}
 
 
 class AnalystClient:
@@ -85,6 +90,12 @@ class AnalystClient:
             "timestamp": alert.get("timestamp") or alert.get("@timestamp"),
         }
 
+    def reset_lab_chain_cache(self) -> None:
+        """Drop memoized lab-chain hits. Called at the start of a sweep so no
+        result can leak between runs (the live sweep is a fresh process per
+        tick, but the matrix/verify drivers reuse one interpreter)."""
+        _LAB_CHAIN_CACHE.clear()
+
     def verdict(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Produce the analyst verdict: escalate vs note.
 
@@ -145,15 +156,26 @@ class AnalystClient:
             # existing_chain (it short-circuits before the recidivism block below),
             # so a wave -- which emits upwards of a hundred alerts -- would mint
             # one case per alert and flood the spine with lab noise.
-            lab_chain = None
-            try:
-                from tools.registry import get_cases
-                found = get_cases().recent_host_cases(
-                    c.get("agent"), rule_id=c.get("rule_id"),
-                    window_s=None, open_only=True)
-                lab_chain = found[0].get("case_id") if found else None
-            except Exception:  # noqa: BLE001 — chain lookup must never break triage
-                lab_chain = None
+            # The lookup is a full case-store scan (~2s against ~750 cases), so
+            # serving a burst that shares one rule cost one scan PER ALERT -- 60
+            # alerts of one rule was 120s of a 300s sweep budget. Memoize the
+            # POSITIVE hits: the first alert of a burst still scans and mints, the
+            # second finds the minted case and caches it, and the rest are free.
+            # A cached NEGATIVE would mint one case per alert -- the flood this
+            # chain exists to prevent.
+            key = (str(c.get("agent")), str(c.get("rule_id")))
+            lab_chain = _LAB_CHAIN_CACHE.get(key)
+            if lab_chain is None:
+                try:
+                    from tools.registry import get_cases
+                    found = get_cases().recent_host_cases(
+                        c.get("agent"), rule_id=c.get("rule_id"),
+                        window_s=None, open_only=True)
+                    if found:
+                        lab_chain = found[0].get("case_id")
+                        _LAB_CHAIN_CACHE[key] = lab_chain
+                except Exception:  # noqa: BLE001 — chain lookup must never break triage
+                    lab_chain = None
             return {
                 "verdict": "note",
                 "confidence": "high",

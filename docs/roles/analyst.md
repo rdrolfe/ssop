@@ -11,7 +11,7 @@ SIEM — by construction it cannot change infrastructure.
 
 ## Decision flow
 
-### 1. Classify → category + severity (`analyst_tools.py:55-85`)
+### 1. Classify → category + severity (`analyst_tools.py:60-91`)
 Category is the SINGLE shared source of truth — `tools/ontology.py`
 `categorize_alert()` — used identically by the analyst verdict and the router
 dispatch (no local re-derivation; that drift is what let a tuned-FP rule be
@@ -25,9 +25,9 @@ treated differently by each path — the Sep 2026 dpkg flood). Heuristics on
 - `policy`/`vulnerability` → **compliance**
 - else → **operational**
 
-Severity: `level >= settings.high_level (7)` → high (`analyst_tools.py:66-71`).
+Severity: `level >= settings.high_level (7)` → high (`analyst_tools.py:73-76`).
 
-### 2. Verdict (`analyst_tools.py:87-215`)
+### 2. Verdict (`analyst_tools.py:99-298`)
 In priority order:
 1. **Known-FP rule** (`rule_id in settings.fp_rule_ids`, default `{510}`)
    → `note` (`:102-110`).

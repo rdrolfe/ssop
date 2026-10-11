@@ -7,6 +7,7 @@ the check is non-vacuous:
   - a citation pointing past EOF    -> caught (range)
   - a symbol moved out of its range -> caught (symbol)
 """
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -49,6 +50,14 @@ FILES = [
 ]
 
 
+# Any analyst_tools.py line-range citation. The negative controls below used to
+# hardcode the exact numbers ("analyst_tools.py:55-85"), so re-anchoring a
+# citation in the docs turned the probe into a SILENT NO-OP: the replace matched
+# nothing, no problem was planted, nothing was caught, and the test still printed
+# a verdict. Match the shape and assert the plant landed.
+CITE_RE = re.compile(r"`analyst_tools\.py:\d+-\d+`")
+
+
 def _src(rel: str) -> Path:
     """Map a repo-relative citation path onto THIS host's tree."""
     if rel.startswith("agents/"):
@@ -83,25 +92,35 @@ def main() -> int:
 
     # 1. Past-EOF range
     build()
+    planted = 0
     for md in (REPO / "docs" / "roles").glob("*.md"):
         t = md.read_text()
-        md.write_text(t.replace("`analyst_tools.py:55-85`", "`analyst_tools.py:999-85`"))
+        t2, k = CITE_RE.subn("`analyst_tools.py:999-85`", t, count=1)
+        if k:
+            planted += 1
+        md.write_text(t2)
     probs = check_docs(REPO)
     caught = [p for p in probs if p["kind"] == "range"]
-    print(f"past-EOF: {len(probs)} problems, {len(caught)} range-caught")
-    if not caught:
+    print(f"past-EOF: {len(probs)} problems, {len(caught)} range-caught (planted {planted})")
+    if not caught or planted == 0:
         fails += 1
 
     # 2. Symbol moved out of range (`high_level` named on the same line as
     #    `analyst_tools.py:66-71`; window 10-20 does not contain it)
     build()
+    planted = 0
     for md in (REPO / "docs" / "roles").glob("*.md"):
-        t = md.read_text()
-        md.write_text(t.replace("`analyst_tools.py:66-71`", "`analyst_tools.py:10-20`"))
+        out = []
+        for line in md.read_text().split("\n"):
+            if "high_level" in line and CITE_RE.search(line):
+                line = CITE_RE.sub("`analyst_tools.py:10-20`", line, count=1)
+                planted += 1
+            out.append(line)
+        md.write_text("\n".join(out))
     probs = check_docs(REPO)
     caught = [p for p in probs if p["kind"] == "symbol"]
-    print(f"symbol-moved: {len(probs)} problems, {len(caught)} symbol-caught")
-    if not caught:
+    print(f"symbol-moved: {len(probs)} problems, {len(caught)} symbol-caught (planted {planted})")
+    if not caught or planted == 0:
         fails += 1
 
     shutil.rmtree(REPO, ignore_errors=True)

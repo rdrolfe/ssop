@@ -186,6 +186,7 @@ def node_analyze_recent(state: AnalystState) -> AnalystState:
         lines = []
         opened = 0
         escalations = 0
+        analyst.reset_lab_chain_cache()
         for alert in alerts:
             v = analyst.verdict(alert)
             # Tolerate backend field differences: Wazuh uses 'timestamp'/

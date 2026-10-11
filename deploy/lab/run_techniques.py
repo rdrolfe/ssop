@@ -189,6 +189,16 @@ class Indexer:
 
 VICTIM_AGENT = "WIN-SBUNBSBHIUG"
 
+# Rules the victim emits for ANY SSH session to it (measured 2026-10-11 against
+# a control window with no technique fired: the control produced only 67027).
+# Used as a FALLBACK expectation when no technique in the wave has a
+# technique-specific rule, so assertion 3 always asserts something. This is
+# strictly weaker -- it proves the pipeline moved an alert, not that this
+# technique was seen -- and the report says so rather than crediting it as a
+# detection. A wave that asserts NOTHING reads as coverage while measuring
+# nothing, which is the failure this whole gate exists to avoid.
+SESSION_BASELINE_RULES = ["60106", "67028", "67027"]
+
 
 def expected_wazuh_rules(techniques: list[dict]) -> tuple[list[str], list[str]]:
     """Wazuh rule ids that would prove each technique detected, plus the ones
@@ -257,6 +267,9 @@ def assert_invariants(idx: Indexer, fired_at: str,
             "(lab traffic must never tune production policy)")
 
     expected, unresolved = expected_wazuh_rules(techniques or [])
+    if not expected:
+        expected = list(SESSION_BASELINE_RULES)
+        rep["asserted_weakly"] = True
     seen = idx.rule_ids(VICTIM_AGENT, fired_at)
     rep["victim_alerts_by_rule"] = seen
     rep["expected_rules"] = expected
@@ -495,8 +508,13 @@ def main() -> int:
             if rep.get("techniques_without_a_resolvable_rule"):
                 print("    WARNING: no Wazuh rule id resolvable for "
                       + ", ".join(rep["techniques_without_a_resolvable_rule"])
-                      + " - add observed_rules to the catalog or that technique's "
-                        "detection is not asserted")
+                      + " - the detection of those techniques is NOT asserted")
+            if rep.get("asserted_weakly"):
+                print("    WARNING: asserted WEAKLY - no technique in this wave has a "
+                      "technique-specific rule, so this only proves the pipeline "
+                      "moved an alert, NOT that any technique was seen. Harvest "
+                      "observed_rules for these techniques before trusting the "
+                      "green.")
         except AssertionError as e:
             print(f"\nlab gate FAILED: {e}")
             return 2

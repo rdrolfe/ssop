@@ -35,7 +35,7 @@ Three mechanisms, all shipped, in the order they run.
 ### 1. The ledger is consulted *before* the heuristics
 
 Every classification first asks: has a human already decided about this rule?
-The consult sits at `tools/analyst_tools.py:134-160`, ahead of any heuristic
+The consult sits at `tools/analyst_tools.py:188-193`, ahead of any heuristic
 evaluation. A rule with a suppressing committed entry is recorded as
 `Basis.TUNED_ENTRY` and stops there.
 
