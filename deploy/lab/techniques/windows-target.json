@@ -170,8 +170,8 @@
       "type": "powershell",
       "command": "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c whoami > C:\\Windows\\Temp\\ssop_task.txt'; $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10); Register-ScheduledTask -TaskName 'ssop_lab_task' -Action $a -Trigger $t -Force -ErrorAction Stop | Out-Null; Write-Output REGISTERED",
       "detect": [
-        "4698 scheduled task created",
-        "60642 (wazuh scheduled task rule, already firing)"
+        "92032 sysmon process creation for the powershell chain (EXECUTION level - the only attributable rule)",
+        "4698 scheduled task creation: NOT DETECTED on this host, no Wazuh rule maps it"
       ],
       "requires": "auditpol: Detailed Tracking > Task Scheduler = Success",
       "cleanup": "Unregister-ScheduledTask -TaskName 'ssop_lab_task' -Confirm:$false -ErrorAction SilentlyContinue",
