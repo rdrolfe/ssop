@@ -197,6 +197,7 @@
       "requires": "Sysmon (absent)",
       "cleanup": "del C:\\Windows\\Temp\\ssop_lsass.dmp",
       "risk": "HIGH",
+      "do_not_run": true,
       "notes": "DO NOT RUN without Sysmon. Would be undetectable here and touches credential material."
     },
     {

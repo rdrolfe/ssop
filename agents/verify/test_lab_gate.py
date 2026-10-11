@@ -62,6 +62,17 @@ def main():
     deploy = (ROOT / "deploy" / "deploy_runtime.sh").read_text()
     for f in ("tools/analyst_tools.py", "tools/tuning_tools.py", "tools/ontology.py"):
         check(f"deploy_runtime.sh tracks {f}", f in deploy)
+    # Timer-executed lab tooling is load-bearing, and an untracked copy is the
+    # same defect as the analyst_tools.py omission above: invisible to every other
+    # gate while the host runs something older. run_techniques.py was exactly that
+    # until 2026-10-11 - the runtime copy still waited 60s after the wave, so the
+    # gate reported a healthy pipeline as broken.
+    for f in ("deploy/lab/run_techniques.py",
+              "deploy/lab/ssop-wave.sh",
+              "deploy/lab/techniques/windows-target.json"):
+        check(f"deploy_runtime.sh tracks {f} (timer-executed)", f in deploy)
+    for u in ("ssop-wave.service", "ssop-wave.timer"):
+        check(f"deploy/systemd/{u} exists", (ROOT / "deploy" / "systemd" / u).is_file())
 
     print("lab gate: invariant gate is wired")
     runner = (ROOT / "deploy" / "lab" / "run_techniques.py").read_text()
@@ -79,6 +90,10 @@ def main():
           "ssop-cases*/_search" not in runner)
     check("gate does not query the non-existent ssop-tuning index",
           "ssop-tuning*/_search" not in runner)
+    # The wave must never auto-select a technique the catalog defers: selection is
+    # position-based, so without this filter T1003.001 (LSASS) lands in a rotation
+    # block and an unattended timer fires it daily for a week.
+    check("wave excludes do_not_run techniques", "do_not_run" in runner)
 
     if FAILED:
         print(f"\nLAB GATE SUITE: FAIL ({len(FAILED)})")

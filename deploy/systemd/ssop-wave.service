@@ -1,0 +1,17 @@
+[Unit]
+Description=SSOP wave (real adversary techniques on the lab victim + invariant gate)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ssop-agent
+Group=ssop
+WorkingDirectory=/home/rdrolfe/agent-runtime
+ExecStart=/home/rdrolfe/agent-runtime/deploy/lab/ssop-wave.sh
+Nice=10
+# A wave is 2 techniques x (fire + 45s settle) + a post-wave wait that
+# deliberately exceeds one analyst sweep period (330s). Measured ~9 min;
+# 30 min of headroom so a hung SSH session fails the unit as a TIMEOUT
+# rather than being killed mid-cleanup.
+TimeoutStartSec=1800

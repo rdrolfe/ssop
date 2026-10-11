@@ -82,6 +82,22 @@ TRACKED=(
   tools/__init__.py
 )
 
+# Lab-side tooling that is now LOAD BEARING, because a systemd TIMER runs it.
+# These live under deploy/lab/ in the repo and keep that path on the runtime --
+# they are not agents/ files, so the agents/-prefix drop does not apply.
+#
+# RULE: anything a TIMER executes must be listed here. A scheduled job running an
+# untracked copy of a file is the same defect as the analyst_tools.py omission
+# above -- the repo looks right while the host runs something older. It was
+# exactly that again: until 2026-10-11 the runtime copy of run_techniques.py was
+# a version whose post-wave wait was 60s, so the gate reported a healthy pipeline
+# as broken. The wave timer would have failed spuriously every morning.
+TRACKED_LAB=(
+  deploy/lab/run_techniques.py
+  deploy/lab/ssop-wave.sh
+  deploy/lab/techniques/windows-target.json
+)
+
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 grn() { printf '\033[32m%s\033[0m\n' "$*"; }
 
@@ -113,11 +129,47 @@ if [[ $CHECK_ONLY -eq 0 ]]; then
   echo
 fi
 
+# --- tracked lab tooling (timer-executed) ----------------------------------
+# Kept as its own list because the repo->runtime path mapping differs: agents/
+# is dropped for TRACKED, but deploy/lab/ keeps its full path.
+if [[ $CHECK_ONLY -eq 0 ]]; then
+  echo "-- copying tracked lab tools"
+  for f in "${TRACKED_LAB[@]}"; do
+    src="$REPO/$f"
+    [[ -f "$src" ]] || { red "MISSING IN REPO: $f"; exit 1; }
+    "${SSH[@]}" "$USER@$HOST" "mkdir -p '$RT/$(dirname "$f")'"
+    scp -q -p -i "$KEY" -o BatchMode=yes "$src" "$USER@$HOST:$RT/$f"
+    # scp -p preserves the repo mode; a wrapper a unit ExecStarts must be +x on
+    # the runtime regardless of what the checkout has.
+    case "$f" in *.sh) "${SSH[@]}" "$USER@$HOST" "chmod +x '$RT/$f'";; esac
+    printf '   %s\n' "$f"
+  done
+  echo "-- deployed $((${#TRACKED[@]} + ${#TRACKED_LAB[@]})) files"
+  echo
+fi
+
 # --- verify md5 (the gate; never assume the copy worked) -------------------
 echo "-- verifying repo and runtime agree"
 fails=0
 for f in "${TRACKED[@]}"; do
   local_md5=$(md5sum "$REPO/agents/$f" 2>/dev/null | cut -d' ' -f1)
+  rt_md5=$("${SSH[@]}" "$USER@$HOST" "md5sum '$RT/$f' 2>/dev/null | cut -d' ' -f1" || true)
+  if [[ -z "$rt_md5" ]]; then
+    red "   MISSING ON RUNTIME  $f"
+    fails=$((fails + 1))
+  elif [[ "$local_md5" != "$rt_md5" ]]; then
+    red "   MISMATCH            $f"
+    echo "      repo=$local_md5"
+    echo "      rt  =$rt_md5"
+    fails=$((fails + 1))
+  else
+    printf '   ok  %s\n' "$f"
+  fi
+done
+
+# --- verify the tracked lab tools (same gate, different path mapping) ------
+for f in "${TRACKED_LAB[@]}"; do
+  local_md5=$(md5sum "$REPO/$f" 2>/dev/null | cut -d' ' -f1)
   rt_md5=$("${SSH[@]}" "$USER@$HOST" "md5sum '$RT/$f' 2>/dev/null | cut -d' ' -f1" || true)
   if [[ -z "$rt_md5" ]]; then
     red "   MISSING ON RUNTIME  $f"
@@ -161,6 +213,6 @@ if [[ $fails -gt 0 ]]; then
   red "DEPLOY FAILED -- $fails file(s) not in sync. Do not assume .29 is current."
   exit 1
 fi
-grn "DEPLOY OK -- $((${#TRACKED[@]})) files verified identical."
+grn "DEPLOY OK -- $((${#TRACKED[@]} + ${#TRACKED_LAB[@]})) files verified identical."
 echo "   Next: restart the units that import the changed modules, e.g."
 echo "     sudo systemctl restart ssop-analyst ssop-hunt"

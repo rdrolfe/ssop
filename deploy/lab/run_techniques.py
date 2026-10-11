@@ -34,7 +34,15 @@ import paramiko
 
 HERE = Path(__file__).resolve().parent
 TECHNIQUES = HERE / "techniques" / "windows-target.json"
-SSH_KEY = os.path.expanduser("~/.ssh/hermes_ssop")
+
+# Key used to reach the lab hosts. Overridable because this runner now executes
+# from the UNATTENDED plane (ssop-wave.service runs as ssop-agent, whose HOME is
+# /home/rdrolfe/agent-runtime), where a bare "~" expands INSIDE the runtime tree
+# rather than to the human home. The scheduled unit sets SSOP_LAB_SSH_KEY
+# explicitly so the dependency is stated rather than implied; the default keeps
+# the manual, human-plane invocation working unchanged.
+SSH_KEY = os.path.expanduser(os.environ.get("SSOP_LAB_SSH_KEY",
+                                            "~/.ssh/hermes_ssop"))
 
 # Windows-target audit subcategories we must enable for detection to be possible.
 AUDIT_PREREQS = {
@@ -360,7 +368,20 @@ def main() -> int:
     if a.wave:
         day = dt.date.today()
         idx = day.toordinal()
-        techs = doc["techniques"]
+        # Exclude techniques the catalog marks do_not_run. Selection is
+        # position-based, so without this filter the wave WILL pick a technique
+        # the operator has explicitly deferred: T1003.001 (LSASS memory access)
+        # sat in the 2026-10-25 week block, so an unattended daily timer would
+        # have dumped credential material every morning for a week. A
+        # do_not_run technique stays reachable via --technique, which is a
+        # deliberate act; --wave is not.
+        techs = [t for t in doc["techniques"] if not t.get("do_not_run")]
+        skipped = [t["id"] for t in doc["techniques"] if t.get("do_not_run")]
+        if skipped:
+            print(f"wave: excluding do_not_run: {', '.join(skipped)}")
+        if not techs:
+            print("wave: no runnable techniques in the catalog")
+            return 1
         window = 2
         start = (idx // 7 * window) % len(techs)
         chosen = [techs[(start + i) % len(techs)] for i in range(window)]

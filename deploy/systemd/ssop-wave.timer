@@ -1,0 +1,26 @@
+# SSOP wave — daily REAL-technique execution against the lab victim, followed by
+# the invariant gate (zero tier-2 escalations, zero tuning-ledger growth, and a
+# positive signal that the decision chain moved an alert end to end).
+#
+# Cadence: daily 05:00, deliberately clear of the other standing duties --
+# selfheal 03:07 and intel 03:34 (both host-maintenance), drill 06:00, and the
+# 08:00 digest. Overlapping the drill would be ambiguous rather than merely
+# noisy: the drill fires its own alerts and mints its own case, so a wave gate
+# running across it could attribute the drill's traffic to the wave.
+#
+# Persistent=true: if the host is down at 05:00 (brownouts are a known failure
+# mode here), the wave runs once on recovery rather than being skipped -- a
+# silently skipped coverage check is indistinguishable from a passing one.
+#
+# Cost: ~9 min of oneshot work per day, plus ~10 min of the analyst's own timer
+# inside the assertion window.
+[Unit]
+Description=SSOP wave (daily real-technique execution + invariant gate)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
